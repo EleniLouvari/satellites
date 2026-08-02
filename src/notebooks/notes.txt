@@ -1,0 +1,21 @@
+Blue -> Water Quality
+Green -> Vegetation Health
+Red -> Chrorofyll absorbion
+Red Edge -> Stress detection
+NIR -> Biomass
+SWIR -> Moisture Stress
+
+Helathy Vegetation
+1. High NIR
+2. Low Red
+3. High NDVI
+
+Diseaced Vegetation
+1. Lower NIR
+2. Higher Red
+3. Lower NDVI
+4. Higher SWIR
+
+Early disease Indicators
+1. Decrease in NDVI, NDRE, Chlorofyll
+2. Increase in Surface Temperature, SWIR reflectance

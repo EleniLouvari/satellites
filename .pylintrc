@@ -1,0 +1,7 @@
+[MASTER]
+"pylint.args": ["--disable=C0111", "--max-line-length=150"]
+ignore-patterns=__pycache__
+ignore-patterns=__pycache__/*
+ignore-patterns=**/.ipynb_checkpoints
+ignore-patterns=**/.ipynb_checkpoints/
+ignore-patterns=*.tmp,**/*.tmp
