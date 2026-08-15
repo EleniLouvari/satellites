@@ -8,6 +8,7 @@ from .persistence import save_json
 from .config import ClassificationPipelineConfig
 
 
+# Centralize behavior shared by every pipeline stage to keep step implementations focused.
 class PipelineStepBase:
     """Provide shared schema and artifact helpers for step classes."""
 

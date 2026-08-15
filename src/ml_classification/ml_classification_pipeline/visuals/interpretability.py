@@ -11,6 +11,8 @@ import pandas as pd
 
 from ..core.persistence import ensure_dir
 
+# Interpretability routines degrade gracefully when optional SHAP support is unavailable.
+
 
 def save_feature_importance_plot(
     importance_df: pd.DataFrame,

@@ -1,0 +1,57 @@
+{
+  "source_geometry": "C:\\gr_parcels\\all_predicted_parcels_labels.parquet",
+  "source_features": "C:\\gr_parcels\\CropClassification-AllZones-FullSeason\\train_test_input\\final_data_with_holdout.csv",
+  "crs": "{\"$schema\": \"https://proj.org/schemas/v0.7/projjson.schema.json\", \"type\": \"ProjectedCRS\", \"name\": \"GGRS87 / Greek Grid\", \"base_crs\": {\"type\": \"GeographicCRS\", \"name\": \"GGRS87\", \"datum\": {\"type\": \"GeodeticReferenceFrame\", \"name\": \"Greek Geodetic Reference System 1987\", \"ellipsoid\": {\"name\": \"GRS 1980\", \"semi_major_axis\": 6378137, \"inverse_flattening\": 298.257222101}}, \"coordinate_system\": {\"subtype\": \"ellipsoidal\", \"axis\": [{\"name\": \"Geodetic latitude\", \"abbreviation\": \"Lat\", \"direction\": \"north\", \"unit\": \"degree\"}, {\"name\": \"Geodetic longitude\", \"abbreviation\": \"Lon\", \"direction\": \"east\", \"unit\": \"degree\"}]}, \"id\": {\"authority\": \"EPSG\", \"code\": 4121}}, \"conversion\": {\"name\": \"Greek Grid\", \"method\": {\"name\": \"Transverse Mercator\", \"id\": {\"authority\": \"EPSG\", \"code\": 9807}}, \"parameters\": [{\"name\": \"Latitude of natural origin\", \"value\": 0, \"unit\": \"degree\", \"id\": {\"authority\": \"EPSG\", \"code\": 8801}}, {\"name\": \"Longitude of natural origin\", \"value\": 24, \"unit\": \"degree\", \"id\": {\"authority\": \"EPSG\", \"code\": 8802}}, {\"name\": \"Scale factor at natural origin\", \"value\": 0.9996, \"unit\": \"unity\", \"id\": {\"authority\": \"EPSG\", \"code\": 8805}}, {\"name\": \"False easting\", \"value\": 500000, \"unit\": \"metre\", \"id\": {\"authority\": \"EPSG\", \"code\": 8806}}, {\"name\": \"False northing\", \"value\": 0, \"unit\": \"metre\", \"id\": {\"authority\": \"EPSG\", \"code\": 8807}}]}, \"coordinate_system\": {\"subtype\": \"Cartesian\", \"axis\": [{\"name\": \"Easting\", \"abbreviation\": \"E\", \"direction\": \"east\", \"unit\": \"metre\"}, {\"name\": \"Northing\", \"abbreviation\": \"N\", \"direction\": \"north\", \"unit\": \"metre\"}]}, \"scope\": \"Engineering survey, topographic mapping.\", \"area\": \"Greece - onshore.\", \"bbox\": {\"south_latitude\": 34.88, \"west_longitude\": 19.57, \"north_latitude\": 41.75, \"east_longitude\": 28.3}, \"id\": {\"authority\": \"EPSG\", \"code\": 2100}}",
+  "selection_bounds_epsg2100": [
+    357000.0,
+    4506000.0,
+    360000.0,
+    4509000.0
+  ],
+  "actual_bounds_epsg2100": [
+    356919.76399993896,
+    4505896.089000225,
+    359987.33500003815,
+    4509010.0069999695
+  ],
+  "parcels": 479,
+  "original_classes": 19,
+  "model_classes": 14,
+  "long_rows": 3832,
+  "periods": [
+    "2024-04-15",
+    "2024-04-30",
+    "2024-05-15",
+    "2024-05-30",
+    "2024-06-15",
+    "2024-06-30",
+    "2024-07-15",
+    "2024-07-30"
+  ],
+  "safe_long_features": [
+    "GLCM.ASM_mean",
+    "GLCM.CON_mean",
+    "GLCM.COR_mean",
+    "GLCM.DIS_mean",
+    "GLCM.ENT_mean",
+    "GLCM.HOM_mean",
+    "GLCM.MAX_mean",
+    "GLCM.ME_mean",
+    "GLCM.NRG_mean",
+    "GLCM.VAR_mean",
+    "MNDWI_mean",
+    "MSAVI_mean",
+    "PSRI_mean",
+    "SAR_VH_mean",
+    "SAR_VV_mean"
+  ],
+  "dated_source_feature_columns": 68,
+  "wide_columns_including_geometry": 88,
+  "long_columns_including_geometry": 38,
+  "duplicate_parcel_ids_wide": 0,
+  "duplicate_parcel_periods_long": 0,
+  "null_geometries": 0,
+  "invalid_geometries": 0,
+  "dated_feature_null_cells_wide": 0,
+  "initial_prediction_agreement": 0.7098121085594989
+}

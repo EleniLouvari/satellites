@@ -14,6 +14,8 @@ _CSV_EXTENSION = ".csv"
 _PKL_EXTENSION = ".pkl"
 _XZ_EXTENSION = ".xz"
 _GDB_EXTENSION = ".gdb"
+_PARQUET_EXTENSION = ".parquet"
+_GEOPARQUET_EXTENSION = ".geoparquet"
 
 
 def is_valid_path_filename(input_str: str) -> bool:
@@ -718,8 +720,8 @@ def read_data(
 ) -> Union[pd.DataFrame, gpd.GeoDataFrame]:
     """General-purpose function to read a file in various supported formats and return a DataFrame or GeoDataFrame.
 
-    Supported formats include: pickle (.pkl, .xz), shapefiles (.shp), file geodatabases (.gdb),
-    geopackages (.gpkg), CSV (.csv), Excel (.xlsx, .xls).
+    Supported formats include: pickle (.pkl, .xz), Parquet and GeoParquet (.parquet, .geoparquet),
+    shapefiles (.shp), file geodatabases (.gdb), geopackages (.gpkg), CSV (.csv), and Excel (.xlsx, .xls).
 
     Parameters
     ----------
@@ -763,6 +765,8 @@ def read_data(
         _CSV_EXTENSION,
         _XLSX_EXTENSION,
         _XLS_EXTENSION,
+        _PARQUET_EXTENSION,
+        _GEOPARQUET_EXTENSION,
     ]
     needed_shapefile_ext = [_SHP_EXTENSION, ".shx", ".prj", ".dbf"]
 
@@ -814,6 +818,8 @@ def read_data(
         _CSV_EXTENSION: lambda: read_csv(full_path, watch_curly_brackets, encoding, delimiter),
         _XLSX_EXTENSION: lambda: pd.read_excel(full_path, parse_dates=True, sheet_name=sheet_name, converters=converters),
         _XLS_EXTENSION: lambda: pd.read_excel(full_path, parse_dates=True, sheet_name=sheet_name, converters=converters),
+        _PARQUET_EXTENSION: lambda: read_parquet(full_path),
+        _GEOPARQUET_EXTENSION: lambda: gpd.read_parquet(full_path),
     }
 
     reader = readers.get(ext)
@@ -828,9 +834,10 @@ def write_data(
 ) -> None:
     """General function to export a DataFrame or GeoDataFrame to a file in various formats.
 
-    Supported output formats include: pickle (.pkl, .pkl.xz), shapefile (.shp), geopackage (.gpkg),
-    CSV (.csv), and Excel (.xlsx). If no extension is provided, the function defaults to .gpkg for GeoDataFrames
-    and .pkl.xz for regular DataFrames.
+    Supported output formats include: pickle (.pkl, .pkl.xz), Parquet and GeoParquet (.parquet, .geoparquet),
+    shapefile (.shp), geopackage (.gpkg), CSV (.csv), and Excel (.xlsx). A GeoDataFrame written to .parquet
+    is automatically stored as GeoParquet. If no extension is provided, the function defaults to .gpkg for
+    GeoDataFrames and .pkl.xz for regular DataFrames.
 
     Parameters
     ----------
@@ -881,6 +888,8 @@ def write_data(
         _CSV_EXTENSION: lambda: write_csv(df, file_path, plain_csv),
         _XLSX_EXTENSION: lambda: write_excel(df, file_path),
         _XLS_EXTENSION: lambda: write_excel(df, file_path),
+        _PARQUET_EXTENSION: lambda: write_parquet(df, file_path),
+        _GEOPARQUET_EXTENSION: lambda: write_geoparquet(df, file_path),
     }
 
     writer = writers.get(ext)
@@ -888,6 +897,28 @@ def write_data(
         writer()
     else:
         raise ValueError(f"Unsupported file extension: {ext}")
+
+
+def read_parquet(file_path: str) -> Union[pd.DataFrame, gpd.GeoDataFrame]:
+    """Read Parquet data, returning a GeoDataFrame when GeoParquet metadata is present."""
+    try:
+        return gpd.read_parquet(file_path)
+    except ValueError as error:
+        if "geo metadata" not in str(error).lower():
+            raise
+        return pd.read_parquet(file_path)
+
+
+def write_parquet(df: Union[pd.DataFrame, gpd.GeoDataFrame], file_path: str) -> None:
+    """Write a DataFrame as Parquet or a GeoDataFrame as GeoParquet."""
+    df.to_parquet(file_path, index=False)
+
+
+def write_geoparquet(df: gpd.GeoDataFrame, file_path: str) -> None:
+    """Write a GeoDataFrame as GeoParquet."""
+    if not isinstance(df, gpd.GeoDataFrame):
+        raise ValueError("GeoParquet output requires a GeoDataFrame.")
+    df.to_parquet(file_path, index=False)
 
 
 def write_shapefile(df: gpd.GeoDataFrame, file_path: str) -> None:

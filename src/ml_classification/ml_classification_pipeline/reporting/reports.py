@@ -9,6 +9,7 @@ import pandas as pd
 from .html import write_html_report
 
 
+# Each writer adapts stage-specific results to the shared HTML report renderer.
 def write_check_report(
     config,
     summary: dict[str, Any],

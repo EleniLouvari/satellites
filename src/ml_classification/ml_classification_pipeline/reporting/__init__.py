@@ -10,6 +10,7 @@ from .reports import (
     write_train_report,
 )
 
+# Define the supported reporting surface explicitly for package consumers.
 __all__ = [
     "write_html_report",
     "write_check_report",

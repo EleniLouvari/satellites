@@ -7,6 +7,7 @@ from .metrics import *  # noqa: F401,F403
 from .persistence import *  # noqa: F401,F403
 from .selection import *  # noqa: F401,F403
 
+# Re-export the most commonly used core primitives from a single import location.
 __all__ = [
     "PipelineStepBase",
     "ClassificationPipelineConfig",

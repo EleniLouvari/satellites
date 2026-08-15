@@ -10,6 +10,7 @@ import pandas as pd
 from sklearn.experimental import enable_halving_search_cv  # noqa: F401
 from sklearn.model_selection import HalvingRandomSearchCV
 
+# Successive halving limits compute by pruning weak parameter candidates early.
 from ..core.metrics import load_modeling_context
 from ..core.persistence import (
     calculate_time_duration,

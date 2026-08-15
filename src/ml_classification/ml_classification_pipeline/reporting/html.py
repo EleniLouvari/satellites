@@ -10,6 +10,7 @@ import pandas as pd
 
 from ..core.persistence import append_log, ensure_dir
 
+# Escape externally supplied text before interpolating it into generated HTML.
 
 def write_html_report(
     output_path: str | Path,

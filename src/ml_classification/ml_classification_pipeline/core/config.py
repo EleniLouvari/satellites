@@ -7,7 +7,7 @@ from pathlib import Path
 import warnings
 
 
-
+# Slots prevent accidental runtime configuration attributes caused by misspellings.
 @dataclass(slots=True)
 class ClassificationPipelineConfig:
     """Store validated configuration values used by all pipeline steps."""
@@ -19,6 +19,18 @@ class ClassificationPipelineConfig:
     reset_project_dir_on_run_check: bool = True
     fail_on_cleanup_error: bool = False
     id_column: str = "row_id"
+    time_column: str | None = None
+    reshape_time_series: bool = False
+    prediction_cutoff: str | None = None
+    apply_iqr: bool = False
+    iqr_lower_quantile: float = 0.25
+    iqr_upper_quantile: float = 0.75
+    iqr_multiplier: float = 1.5
+    spatial_interpolation_method: str | None = None
+    spatial_interpolation_max_distance_in_meters: float | None = None
+    spatial_interpolation_variogram_lags: int = 15
+    spatial_interpolation_variogram_max_distance_in_meters: float | None = None
+    enforce_unique_ids: bool = True
     test_size: float = 0.2
     cv_folds: int = 5
     random_state: int = 42
@@ -38,12 +50,16 @@ class ClassificationPipelineConfig:
     max_map_geometries: int = 20000
     float_dtype: str = "float32"
     spatial_split: bool = False
+    spatial_split_method: str = "by_group"
     spatial_split_grid_size: int = 10
     label_balancing_method: str = "none"
     smote_k_neighbors: int = 5
     prediction_column: str | None = None
     prediction_filled_column: str | None = None
     probability_prefix: str = "probability"
+    prediction_confidence_threshold: float = 0.60
+    prediction_confidence_column: str = "prediction_confidence"
+    prediction_review_column: str = "prediction_needs_review"
     output_schema_version: str = "1.0.0"
     log_filename: str = "pipeline.log"
     step_names: tuple[str, ...] = field(
@@ -69,6 +85,13 @@ class ClassificationPipelineConfig:
         self.selection_type = self.selection_type.strip().lower()
         self.cv_ranking_method = self.cv_ranking_method.strip().lower()
         self.label_balancing_method = self.label_balancing_method.strip().lower()
+        self.spatial_split_method = self.spatial_split_method.strip().lower()
+        if self.time_column is not None:
+            self.time_column = self.time_column.strip()
+        if self.prediction_cutoff is not None:
+            self.prediction_cutoff = str(self.prediction_cutoff).strip()
+        if self.spatial_interpolation_method is not None:
+            self.spatial_interpolation_method = self.spatial_interpolation_method.strip().lower()
 
     def _validate_strings_and_sequences(self) -> None:
         """Validate categorical options and sequence-based configuration fields."""
@@ -81,10 +104,43 @@ class ClassificationPipelineConfig:
             raise ValueError(
                 "label_balancing_method must be one of: 'none', 'random_oversample', or 'smote'."
             )
+        if self.spatial_split_method not in {"by_group", "by_row"}:
+            raise ValueError("spatial_split_method must be either 'by_group' or 'by_row'.")
         if not self.feature_columns:
             raise ValueError("feature_columns must contain at least one feature name.")
         if len(set(self.feature_columns)) != len(self.feature_columns):
             raise ValueError("feature_columns contains duplicate names. Provide unique feature names only.")
+        if self.reshape_time_series and not self.time_column:
+            raise ValueError("time_column is required when reshape_time_series=True.")
+        if not isinstance(self.apply_iqr, bool):
+            raise TypeError("apply_iqr must be a bool.")
+        if self.spatial_interpolation_method not in {None, "nearest", "idw", "kriging"}:
+            raise ValueError(
+                "spatial_interpolation_method must be None, 'nearest', 'idw', or 'kriging'."
+            )
+        if (
+            self.spatial_interpolation_method == "idw"
+            and self.spatial_interpolation_max_distance_in_meters is None
+        ):
+            raise ValueError(
+                "spatial_interpolation_max_distance_in_meters is required for idw interpolation."
+            )
+        if (
+            self.spatial_interpolation_method == "kriging"
+            and self.spatial_interpolation_variogram_max_distance_in_meters is None
+        ):
+            raise ValueError(
+                "spatial_interpolation_variogram_max_distance_in_meters is required for kriging interpolation."
+            )
+        forbidden_features = {self.id_column, self.target_column, "geometry"}
+        if self.time_column:
+            forbidden_features.add(self.time_column)
+        leaked_features = sorted(forbidden_features.intersection(self.feature_columns))
+        if leaked_features:
+            raise ValueError(
+                "Identifiers, target, geometry and the raw time column cannot be model features. "
+                f"Remove: {leaked_features}"
+            )
 
         # Acceptable values for selected models:
         # ----------------------------------------
@@ -131,6 +187,29 @@ class ClassificationPipelineConfig:
             (int(self.max_map_geometries) >= 1, "max_map_geometries must be >= 1."),
             (int(self.spatial_split_grid_size) >= 2, "spatial_split_grid_size must be >= 2."),
             (int(self.smote_k_neighbors) >= 1, "smote_k_neighbors must be >= 1."),
+            (
+                0.0 <= float(self.iqr_lower_quantile) < float(self.iqr_upper_quantile) <= 1.0,
+                "IQR quantiles must satisfy 0 <= iqr_lower_quantile < iqr_upper_quantile <= 1.",
+            ),
+            (float(self.iqr_multiplier) > 0, "iqr_multiplier must be > 0."),
+            (
+                self.spatial_interpolation_max_distance_in_meters is None
+                or float(self.spatial_interpolation_max_distance_in_meters) > 0,
+                "spatial_interpolation_max_distance_in_meters must be positive when provided.",
+            ),
+            (
+                int(self.spatial_interpolation_variogram_lags) >= 1,
+                "spatial_interpolation_variogram_lags must be >= 1.",
+            ),
+            (
+                self.spatial_interpolation_variogram_max_distance_in_meters is None
+                or float(self.spatial_interpolation_variogram_max_distance_in_meters) > 0,
+                "spatial_interpolation_variogram_max_distance_in_meters must be positive when provided.",
+            ),
+            (
+                0.0 <= float(self.prediction_confidence_threshold) <= 1.0,
+                "prediction_confidence_threshold must be between 0 and 1.",
+            ),
         )
         for condition, message in numeric_validations:
             if not condition:

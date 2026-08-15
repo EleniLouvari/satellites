@@ -1,0 +1,16 @@
+feature,safe_for_ml,available_periods,total_periods
+GLCM.ASM_mean,True,4,8
+GLCM.CON_mean,True,4,8
+GLCM.COR_mean,True,4,8
+GLCM.DIS_mean,True,4,8
+GLCM.ENT_mean,True,4,8
+GLCM.HOM_mean,True,4,8
+GLCM.MAX_mean,True,4,8
+GLCM.ME_mean,True,4,8
+GLCM.NRG_mean,True,4,8
+GLCM.VAR_mean,True,4,8
+MNDWI_mean,True,2,8
+MSAVI_mean,True,8,8
+PSRI_mean,True,2,8
+SAR_VH_mean,True,8,8
+SAR_VV_mean,True,8,8

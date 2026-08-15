@@ -41,8 +41,16 @@ config = ClassificationPipelineConfig(
     target_column="label",
     feature_columns=["f1", "f2", "f3"],
     id_column="row_id",
+    apply_iqr=False,
+    iqr_lower_quantile=0.25,
+    iqr_upper_quantile=0.75,
+    iqr_multiplier=1.5,
+    # Works with the original input table as well as reshaped time-series data.
+    spatial_interpolation_method="nearest",  # None, nearest, idw, or kriging
+    spatial_interpolation_max_distance_in_meters=None,  # required for idw
     cv_ranking_method="score_minus_std",
     spatial_split=False,
+    spatial_split_method="by_group",
     spatial_split_grid_size=10,
     label_balancing_method="none",  # options: none, random_oversample, smote
     smote_k_neighbors=5,
@@ -57,6 +65,39 @@ pipeline.run_train()
 pipeline.run_evaluate()
 pipeline.run_predict()
 ```
+
+When `apply_iqr=True`, numeric values outside the configured IQR fences are
+replaced with nulls. Spatial interpolation, when configured, runs afterward and
+can fill those nulls. IQR bounds and replacement counts are written to the
+check summary.
+
+Parcel time-series usage:
+
+```python
+non_features = {"class", "parcel_id", "period_start", "period_end", "geometry", "batch_number"}
+features = [column for column in observations.columns if column not in non_features]
+
+config = ClassificationPipelineConfig(
+    project_dir="src/my_crop_classifier",
+    target_column="class",
+    id_column="parcel_id",
+    time_column="period_start",
+    reshape_time_series=True,
+    prediction_cutoff="2024-09-30",
+    # Optional spatial filling of the generated period features.
+    spatial_interpolation_method="nearest",
+    feature_columns=features,
+    spatial_split=True,
+    selection_type="soft_voting",
+    top_voting_models=3,
+    prediction_confidence_threshold=0.60,
+)
+```
+
+This mode pivots parcel-period observations to one row per parcel, rejects
+identifier/time leakage, holds out complete spatial grid cells, selects the
+voting members from spatial cross-validation, and reserves the test split for
+final reporting only.
 
 Artifacts are saved inside:
 
@@ -94,5 +135,7 @@ Label balancing (optional):
 Spatial train-test split (optional):
 
 - `spatial_split=False` keeps standard stratified random splitting.
-- `spatial_split=True` switches to a spatially uniform, class-wise train-test split.
+- `spatial_split=True` enables a spatial train-test split.
+- `spatial_split_method="by_group"` holds out complete grid cells so train and test are spatially disjoint.
+- `spatial_split_method="by_row"` samples rows from across the grid while preserving every class in both sets; grid cells can occur in both sets.
 - `spatial_split_grid_size` controls the grid granularity used to enforce spatial coverage.

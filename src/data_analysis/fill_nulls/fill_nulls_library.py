@@ -45,6 +45,16 @@ class _GeometryHelpers:
         unit_to_metres = gdf.crs.axis_info[0].unit_conversion_factor
         return float(value_in_feet) * 0.3048 / unit_to_metres
 
+    @staticmethod
+    def convert_value_in_m_to_df_units(gdf, value_in_metres):
+        """Convert metres to the linear units of a projected GeoDataFrame CRS."""
+        if gdf.crs is None:
+            raise ValueError('A CRS is required for distance-based interpolation.')
+        if gdf.crs.is_geographic:
+            raise ValueError('Distance-based interpolation requires a projected CRS.')
+        unit_to_metres = gdf.crs.axis_info[0].unit_conversion_factor
+        return float(value_in_metres) / unit_to_metres
+
 
 cm_l = _CommonHelpers()
 geom_l = _GeometryHelpers()
@@ -244,14 +254,26 @@ def fill_missing_values_in_text_fields(df, string_null_values_list, cols_to_skip
     return df
 
 
-def fill_null_values_using_interpolation(gdf, method, fill_col_name, null_value, max_distance_in_feet=None, variogram_lags=15, variogram_lags_max_dist=None, plot=True):
+def fill_null_values_using_interpolation(
+    gdf,
+    method,
+    fill_col_name,
+    null_value,
+    max_distance_in_meters=None,
+    variogram_lags=15,
+    variogram_lags_max_dist_in_meters=None,
+    plot=True,
+):
     """
     Fill nulls in the <fill_col_name>. column of a GeoDataFrame with non-nulls values using different methods.
 
     Parameters:
         gdf (geopandas.GeoDataFrame): Input GeoDataFrame.
-        method (str): Method for filling nulls. Options: 'nearest_neighbor', 'inverse_distance_weighting', 'kriging'.
-        install_year_column (str): Name of the column containing installation years. Default is <fill_col_name>.
+        method (str): Interpolation method: 'nearest', 'idw', or 'kriging'.
+        fill_col_name (str): Numeric column whose null values will be filled.
+        max_distance_in_meters (float): Required IDW search distance in metres.
+        variogram_lags_max_dist_in_meters (float): Required kriging variogram
+            maximum distance in metres.
 
     Returns:
         geopandas.GeoDataFrame: GeoDataFrame with nulls filled in the <fill_col_name> column.
@@ -291,12 +313,28 @@ def fill_null_values_using_interpolation(gdf, method, fill_col_name, null_value,
     if method == "nearest":
         filled_nulls = fill_nulls_nearest_neighbor(gdf_nulls, gdf_no_nulls, fill_col_name)
     elif method == "idw":
-        assert max_distance_in_feet is not None, f"The {max_distance_in_feet} is none. Please provide a valid number!"
-        max_distance = geom_l.convert_value_in_ft_to_df_units(gdf, max_distance_in_feet)
+        if max_distance_in_meters is None:
+            raise ValueError("max_distance_in_meters is required for idw interpolation.")
+        if not np.isfinite(float(max_distance_in_meters)) or float(max_distance_in_meters) <= 0:
+            raise ValueError("max_distance_in_meters must be a positive finite number.")
+        max_distance = geom_l.convert_value_in_m_to_df_units(gdf, max_distance_in_meters)
         filled_nulls = fill_nulls_inverse_distance_weighting(gdf_nulls, gdf_no_nulls, fill_col_name, max_distance)
     elif method == "kriging":
-        assert variogram_lags_max_dist is not None, f"The {variogram_lags_max_dist} is none. Please provide a valid number!"
-        max_distance = geom_l.convert_value_in_ft_to_df_units(gdf, variogram_lags_max_dist)
+        if variogram_lags_max_dist_in_meters is None:
+            raise ValueError(
+                "variogram_lags_max_dist_in_meters is required for kriging interpolation."
+            )
+        if (
+            not np.isfinite(float(variogram_lags_max_dist_in_meters))
+            or float(variogram_lags_max_dist_in_meters) <= 0
+        ):
+            raise ValueError(
+                "variogram_lags_max_dist_in_meters must be a positive finite number."
+            )
+        max_distance = geom_l.convert_value_in_m_to_df_units(
+            gdf,
+            variogram_lags_max_dist_in_meters,
+        )
         best_model, best_params = calculate_variogram(gdf_no_nulls, attribute_column=fill_col_name, variogram_lags=variogram_lags,
                                                       max_distance=max_distance, plot=plot)
         filled_nulls = fill_nulls_kriging(gdf_nulls, gdf_no_nulls, fill_col_name, variogram_model_name=best_model,

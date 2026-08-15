@@ -5,11 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
 import numpy as np
 import pandas as pd
 import seaborn as sns
 
 from ..core.persistence import ensure_dir
+
+# Map helpers keep spatial coordinates attached while converting model output into visuals.
 
 
 def save_label_map(
@@ -39,7 +42,14 @@ def save_label_map(
         class_df.plot(ax=ax, color=color_map[label], markersize=14, linewidth=0.6, label=label)
     ax.set_title(title)
     ax.set_axis_off()
-    ax.legend(title=label_column, loc="center left", bbox_to_anchor=(1.01, 0.5), frameon=True)
+    legend_handles = [Patch(facecolor=color_map[label], edgecolor="none", label=label) for label in labels]
+    ax.legend(
+        handles=legend_handles,
+        title=label_column,
+        loc="center left",
+        bbox_to_anchor=(1.01, 0.5),
+        frameon=True,
+    )
     _save_figure(fig, output_path)
 
 

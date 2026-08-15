@@ -10,8 +10,30 @@ from .metrics import score_predictions
 from .persistence import print_formatted_txt, save_frame_csv
 
 
+# Selection scores use the same metric definitions as evaluation to avoid ranking drift.
+def rank_probability_models_from_cv(
+    config: ClassificationPipelineConfig,
+    cv_metrics_df: pd.DataFrame,
+    available_probability_models: set[str],
+) -> list[str]:
+    """Return probability-capable models in frozen cross-validation rank order."""
+    required_columns = {"model", "cv_ranking_metric"}
+    missing = required_columns.difference(cv_metrics_df.columns)
+    if missing:
+        raise ValueError(f"CV metrics are missing required columns: {sorted(missing)}")
+    ranked = cv_metrics_df.sort_values(
+        ["cv_ranking_metric", "best_cv_score"],
+        ascending=[False, False],
+    )
+    models = [model for model in ranked["model"].tolist() if model in available_probability_models]
+    if config.top_voting_models is not None:
+        models = models[: config.top_voting_models]
+    return models
+
+
 def evaluate_voting_candidate(
     config: ClassificationPipelineConfig,
+    cv_metrics_df: pd.DataFrame,
     train_metrics_df: pd.DataFrame,
     test_metrics_df: pd.DataFrame,
     probability_cache_train: dict[str, np.ndarray],
@@ -24,16 +46,19 @@ def evaluate_voting_candidate(
     # Import plotting helpers lazily to avoid unnecessary import overhead.
     from ..visuals.plots import save_confusion_matrix_plot, save_model_comparison_plot
 
-    prob_models = [model for model in test_metrics_df["model"].tolist() if model in probability_cache_test]
-    if config.top_voting_models is not None:
-        prob_models = prob_models[-config.top_voting_models:]
-    best_single_model = test_metrics_df.iloc[-1]["model"]
-    best_single_score = float(test_metrics_df.iloc[-1][config.scoring_primary])
+    # Candidate order and final strategy are determined only by training CV.
+    # Holdout probabilities below are used solely to report the frozen strategy.
+    prob_models = rank_probability_models_from_cv(config, cv_metrics_df, set(probability_cache_test))
+    if not prob_models:
+        raise RuntimeError("No cross-validated model with predict_proba is available for final classification.")
+    best_single_model = prob_models[0]
+    best_single_score = float(cv_metrics_df.loc[cv_metrics_df["model"] == best_single_model, "cv_ranking_metric"].iloc[0])
     selection = {
         "selection_type": "single_model",
         "selected_models": [best_single_model],
-        "selected_metric": config.scoring_primary,
+        "selected_metric": f"cv_{config.cv_ranking_method}",
         "selected_score": best_single_score,
+        "selection_source": "cross_validation",
         "labels": labels,
     }
     if len(prob_models) < 2:
@@ -84,8 +109,9 @@ def evaluate_voting_candidate(
         selection = {
             "selection_type": "soft_voting",
             "selected_models": prob_models,
-            "selected_metric": config.scoring_primary,
-            "selected_score": float(voting_metrics_test[config.scoring_primary]),
+            "selected_metric": f"cv_{config.cv_ranking_method}",
+            "selected_score": float(cv_metrics_df.loc[cv_metrics_df["model"].isin(prob_models), "cv_ranking_metric", ].mean()),
+            "selection_source": "cross_validation",
             "labels": labels,
         }
     return selection

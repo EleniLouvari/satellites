@@ -14,6 +14,8 @@ from sklearn.metrics import (
     recall_score,
     roc_auc_score,
 )
+
+# Metric helpers in this module return serializable values suitable for reports and artifacts.
 from sklearn.preprocessing import LabelEncoder
 
 from .config import ClassificationPipelineConfig
@@ -43,11 +45,15 @@ def validate_input(df: pd.DataFrame, config: ClassificationPipelineConfig) -> No
         )
 
 
-def optimize_dataframe(df: pd.DataFrame, config: ClassificationPipelineConfig) -> pd.DataFrame:
+def optimize_dataframe(
+    df: pd.DataFrame,
+    config: ClassificationPipelineConfig,
+    feature_columns: list[str] | None = None,
+) -> pd.DataFrame:
     """Cast feature columns to optimized numeric/category dtypes for efficiency."""
     # Work on a copy to keep caller-provided data unchanged.
     optimized = df.copy()
-    for column in config.feature_columns:
+    for column in feature_columns or config.feature_columns:
         if pd.api.types.is_numeric_dtype(optimized[column]):
             optimized[column] = pd.to_numeric(optimized[column], errors="coerce").astype(config.float_dtype)
         else:
@@ -59,11 +65,12 @@ def build_feature_profile(
     df: pd.DataFrame,
     active_features: list[str],
     config: ClassificationPipelineConfig,
+    feature_columns: list[str] | None = None,
 ) -> pd.DataFrame:
     """Build a dataframe that summarizes feature dtypes, null rates, and activity."""
     # Collect one diagnostics row per requested feature column.
     rows = []
-    for column in config.feature_columns:
+    for column in feature_columns or config.feature_columns:
         rows.append(
             {
                 "feature": column,
@@ -110,8 +117,11 @@ def select_top_models_for_interpretability(
     base_df = metrics_df.loc[metrics_df["model"] != "soft_voting"].copy()
     if base_df.empty:
         return []
-    ranked_df = base_df.sort_values("test_metric" if "test_metric" in base_df.columns else "f1_macro", ascending=False)
-    if "test_metric" not in base_df.columns:
+    if "cv_ranking_metric" in base_df.columns:
+        ranked_df = base_df.sort_values("cv_ranking_metric", ascending=False)
+    else:
+        ranked_df = base_df.sort_values("test_metric" if "test_metric" in base_df.columns else "f1_macro", ascending=False)
+    if "cv_ranking_metric" not in base_df.columns and "test_metric" not in base_df.columns:
         metric_columns = [column for column in ("f1_macro", "balanced_accuracy", "f1_weighted", "accuracy") if column in base_df.columns]
         if metric_columns:
             ranked_df = base_df.sort_values(metric_columns[0], ascending=False)

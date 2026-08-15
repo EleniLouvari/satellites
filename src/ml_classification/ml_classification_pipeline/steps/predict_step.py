@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
+
+# Prediction reloads persisted training artifacts so inference matches the fitted feature space.
 from ..core.metrics import load_modeling_context
 from ..core.persistence import (
     load_joblib,
@@ -55,6 +58,11 @@ class PredictStep(PipelineStepBase):
         unknown_mask = final_df[self.config.target_column].isna()
         unknown_rows_before = int(unknown_mask.sum())
         final_df[self.config.prediction_column] = predictions
+        final_df[self.config.prediction_confidence_column] = np.max(probabilities, axis=1)
+        final_df[self.config.prediction_review_column] = (
+            final_df[self.config.prediction_confidence_column]
+            < self.config.prediction_confidence_threshold
+        )
         final_df[self.config.prediction_filled_column] = final_df[self.config.target_column].where(
             final_df[self.config.target_column].notna(),
             final_df[self.config.prediction_column],
@@ -70,6 +78,8 @@ class PredictStep(PipelineStepBase):
                     self.config.id_column,
                     self.config.target_column,
                     self.config.prediction_column,
+                    self.config.prediction_confidence_column,
+                    self.config.prediction_review_column,
                     self.config.prediction_filled_column,
                 ]
             ],
@@ -93,6 +103,8 @@ class PredictStep(PipelineStepBase):
                 "selected_models": selection["selected_models"],
                 "rows_filled": rows_filled,
                 "rows_unknown_original": unknown_rows_before,
+                "rows_needing_review": int(final_df[self.config.prediction_review_column].sum()),
+                "prediction_confidence_threshold": self.config.prediction_confidence_threshold,
                 "output_path": str(self.config.predict_dir / "final_predictions.joblib"),
             },
             "predict_summary",
@@ -107,6 +119,8 @@ class PredictStep(PipelineStepBase):
                     self.config.id_column,
                     self.config.target_column,
                     self.config.prediction_column,
+                    self.config.prediction_confidence_column,
+                    self.config.prediction_review_column,
                     self.config.prediction_filled_column,
                 ],
             },

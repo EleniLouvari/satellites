@@ -10,6 +10,8 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, ClassifierMixin, clone
+
+# Optional estimators are imported lazily below so the base pipeline remains lightweight.
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import (
     BaggingClassifier,

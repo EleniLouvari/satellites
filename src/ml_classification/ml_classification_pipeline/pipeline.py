@@ -11,6 +11,8 @@ from .core.persistence import print_formatted_txt, time_decorator
 from .core.config import ClassificationPipelineConfig
 from .steps import CheckStep, EvaluateStep, PredictStep, PrepareStep, TrainStep
 
+# Compose the individual step mixins here so callers can run the workflow through one object.
+
 
 class GeospatialClassificationPipeline(CheckStep, PrepareStep, TrainStep, EvaluateStep, PredictStep):
     """Compose all step mixins into a geospatial-ready classification workflow."""

@@ -299,6 +299,29 @@ def explode_multigeometries(df, geom_column="geometry"):
     return df
 
 
+def convert_multipolygons_to_polygons(df, geom_column="geometry"):
+    """Keep one row per feature by retaining each MultiPolygon's largest part.
+
+    Polygon geometries are returned unchanged. Smaller disconnected parts of a
+    MultiPolygon are discarded, which is appropriate when each row represents
+    one simple feature, such as an agricultural parcel. Unlike
+    :func:`explode_multigeometries`, this function does not duplicate rows or
+    feature identifiers.
+    """
+    if geom_column not in df.columns:
+        raise ValueError(f"{geom_column} column is not included in the dataframe!")
+
+    converted = df.copy()
+
+    def largest_polygon(geometry):
+        if isinstance(geometry, MultiPolygon) and not geometry.is_empty:
+            return max(geometry.geoms, key=lambda part: part.area)
+        return geometry
+
+    converted[geom_column] = converted[geom_column].map(largest_polygon)
+    return converted
+
+
 def get_line_coordinates(geometry, reverse=False):
     """Create a list of the coordinates of a line.
 

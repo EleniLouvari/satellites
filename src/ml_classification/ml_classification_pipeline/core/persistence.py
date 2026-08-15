@@ -10,6 +10,8 @@ import shutil
 import stat
 import sys
 import time
+
+# Filesystem helpers use consistent encodings and artifact paths across all pipeline stages.
 import traceback
 from contextlib import contextmanager, nullcontext, redirect_stderr, redirect_stdout
 from contextvars import ContextVar
@@ -263,8 +265,8 @@ def _delete_dir_with_repo_helper(folder: Path) -> bool:
     """Attempt directory deletion via optional repository helper library."""
     # Gracefully fall back when helper modules are unavailable.
     try:
-        generic_library = importlib.import_module("common_libraries.generic_library")
-        generic_library.delete_folder(str(folder))
+        io_library = importlib.import_module("common_libraries.io_library")
+        io_library.delete_folder(str(folder))
         return not folder.exists()
     except Exception:
         return False

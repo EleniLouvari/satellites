@@ -10,6 +10,8 @@ import pandas as pd
 import seaborn as sns
 from sklearn.metrics import ConfusionMatrixDisplay, PrecisionRecallDisplay, RocCurveDisplay
 
+# Plot functions save deterministic artifacts so reports can link to known filenames.
+
 from ..core.persistence import ensure_dir
 
 

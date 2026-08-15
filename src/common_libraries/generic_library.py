@@ -2,28 +2,7 @@ from import_libraries import *
 import global_variables as gb_l
 import common_libraries.geom_library as geom_l
 import common_libraries.generic_library as cm_l
-
-def is_valid_path_filename(input_str):
-    # 1. Check if the input is a string
-    if not isinstance(input_str, str):
-        return False
-
-    # 2. Use pathlib to handle the path structure
-    path_obj = pathlib.Path(input_str)
-
-    # 3. Check if it has a valid file extension (e.g., .txt, .jpg)
-    has_extension = path_obj.suffix != ""
-
-    # 4. Ensure the filename part is valid (not a directory)
-    if not path_obj.name or not has_extension:
-        return False
-
-    # 5. Check if the path exists and is a file
-    if os.path.exists(input_str) and path_obj.is_file():
-        return True
-
-    return False
-
+import common_libraries.io_library as io_l
 
 def nearest_odd(number):
     if number % 2 == 1:
@@ -66,57 +45,6 @@ def time_decorator(func):
 def reset_index(*dfs):
     for df in dfs:
         df.reset_index(inplace=True, drop=True)
-
-
-def separate_path_filename_extension(filepath):
-    # Split the path, filename, and extension
-    path, filename_with_extension = os.path.split(filepath)
-    filename, extension = os.path.splitext(filename_with_extension)
-    return path, filename, extension
-
-
-def close_open_files(file_path):
-    for proc in psutil.process_iter(['pid', 'name', 'open_files']):
-        try:
-            if any(file.path == file_path for file in proc.info['open_files'] or []):
-                proc.kill()  # Forcefully close the process holding the file
-                print(f"Closed process {proc.info['name']} (PID: {proc.info['pid']})")
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            continue
-
-
-def delete_file(file_path):
-    close_open_files(file_path)
-    if os.path.exists(file_path):
-        os.remove(file_path)
-        print(f"{file_path} has been deleted.")
-    else:
-        print(f"{file_path} does not exist.")
-
-
-def delete_folder(folder_path):
-    folder_path = folder_path.replace("\\", "/")
-    if os.path.exists(folder_path):  # Check if the folder exists
-        print(f"Folder '{folder_path}' exists. Deleting...")
-        try:
-            # Remove the folder and its contents
-            shutil.rmtree(folder_path)
-            print(f"Folder '{folder_path}' deleted successfully.")
-        except Exception as e:
-            print(f"Failed to delete folder '{folder_path}': {e}")
-
-
-def create_folder(folder_path):
-    folder_path = folder_path.replace("\\", "/")
-    if not os.path.exists(folder_path):
-        try:
-            # Create the folder
-            os.makedirs(folder_path)
-            print(f"Folder '{folder_path}' created successfully.")
-        except Exception as e:
-            print(f"Failed to create folder '{folder_path}': {e}")
-    else:
-        print(f"Folder '{folder_path}' already exists.")
 
 
 def save_ml_model(model, file_path):
@@ -181,37 +109,6 @@ def fix_json_chars_in_column_values(df, col_to_exclude):
     return df
 
 
-def read_types_from_csvt(file_path):
-    """
-    Purpose: Read data with csvt format from <file_path> and save the types for each field into a dictionary.
-    If there is datetime format we keep the field name into <dates> and we remove this field from dictionary,
-    so we can read the types correctly into read_data for csv files.
-    file_path: file path in .csvt format
-    """
-    with open(file_path, mode='r') as infile:
-        reader = csv.reader(infile)
-        my_dict = {rows[0]: rows[1] for rows in reader}
-        dates = []
-        for k, v in my_dict.items():
-            if "datetime" in v:
-                dates = [k]
-                my_dict = {key: val for key, val in my_dict.items() if key != k}
-    return dates, my_dict
-
-
-def write_to_typed_csv(df, file_path):
-    """
-    Purpose: writes <df> into the given <file_path> using a typed csv format that
-    includes in the header the field types like this:   x {float64}, y {int64}, z {object}
-    """
-    new_columns = {}
-    for i, col_type in enumerate(df.dtypes):
-        col_name = df.columns[i]
-        new_columns[col_name] = col_name + " {" + str(col_type) + "}"
-    df2 = df.rename(columns=new_columns)
-    df2.to_csv(file_path, index=False)
-
-
 def convert_datetime_to_string(df):
     """
     Coverts datetime column to string of a given dataframe.
@@ -225,72 +122,6 @@ def convert_datetime_to_string(df):
         if pd.api.types.is_datetime64_any_dtype(df_copy[col]):
             df_copy[col] = df_copy[col].astype(str)
     return df_copy
-
-
-def read_csv(file_path, watch_curly_brackets, encoding, delimiter):
-    """
-    Reads the csv file given in <file_path>
-    It can read it 3 different formats:
-      * typed csv (file types included in the header)
-      * csv files with an accompanying '.csvt' file that contains the file types
-      * plain vanilla csv without type info
-
-    Keyword arguments:
-    file_path --  The file path to read
-    watch_curly_brackets -- whether to watch for curly brackets in the header
-    encoding --  csv encoding
-    delimiter -- delimiter of the file
-    :return: the dataframe read from the csv file
-    """
-
-    # read the first line to understand if it's a typed csv or not
-    header = pd.read_csv(file_path, nrows=0).columns.tolist() # this gives us a list of headers, split properly
-
-    # it's a typed csv, that has the col types in the header
-    if all(" {" in col for col in header) and watch_curly_brackets:
-        type_dict = {}
-        rename_dict = {}
-        date_cols = []
-
-        for col in header:
-            tokens = col.split(" {")
-            assert len(tokens) == 2, f"Failed to read correctly header: {header} of typed csv file: {file_path}"
-            col_name = tokens[0].strip('"')  # strip off any quotes
-            col_type = tokens[1].replace("}", "")
-
-            if "datetime" in col_type:
-                date_cols.append(col)
-            else:
-                type_dict[col] = col_type
-            rename_dict[col] = col_name
-
-        df = pd.read_csv(file_path, parse_dates=date_cols, dtype=type_dict, encoding=encoding)
-        df.rename(columns=rename_dict, inplace=True)
-    elif os.path.isfile(file_path + "t"):  # it's a csv with an accompanying .csvt file containing the col types
-        dates, type_dict = read_types_from_csvt(file_path + "t")
-        df = pd.read_csv(file_path, parse_dates=dates, dtype=type_dict, encoding=encoding)
-    else:
-        # it's a vanilla csv without col type info or we don't want to rename the column names based on curly
-        # brackets flag
-        df = pd.read_csv(file_path, low_memory=False, encoding=encoding, delimiter=delimiter)
-
-    return df
-
-
-def shapefile_helper(path_with_filenm, needed_shapefile_ext):
-    """Checks if we have all needed file extensions in order to read correctly the shapefile.
-
-    Keyword arguments:
-    path_with_filenm -- the path to the file containing the filename and the extension we already found
-    needed_shapefile_ext -- the needed extension in order to read the shapefile
-    """
-    file_name_without_ext, ext = os.path.splitext(path_with_filenm)
-    if ext != ".shp":
-        return
-    all_files = glob(f"{file_name_without_ext}.*")
-    all_shapefile_ext_present = all(any(file.endswith(ext) for file in all_files) for ext in needed_shapefile_ext)
-    if not all_shapefile_ext_present:
-        raise ValueError("Some required Shapefile extensions are missing.")
 
 
 def handle_xlsx_file(file_path, watch_curly_brackets, encoding):
@@ -309,7 +140,7 @@ def handle_xlsx_file(file_path, watch_curly_brackets, encoding):
                            f"(StarCalc)\":59,34,UTF8 \"{file_path}\" --outdir {out_dir}"
     os.system(libre_office_command)
     file_path = f"{os.path.splitext(file_path)[0]}.csv"
-    df = read_csv(file_path, watch_curly_brackets, encoding, delimiter=";")
+    df = io_l.read_csv(file_path, watch_curly_brackets, encoding, delimiter=";")
     os.remove(file_path)
     return df
 
@@ -319,126 +150,6 @@ def convert_datetime_to_object(df):
         if "datetime64" in str(df[col].dtype):
             df[col] = df[col].astype(object)
     return df
-
-
-def read_data(file_path, file_name=None, layer=None, sheet_name=0, watch_curly_brackets=True,
-              encoding=None, delimiter=None, converters=None):
-    allowed_ext = ['.pkl', '.pkl.xz', '.xz', '.shp', '.gdb', '.gpkg', '.csv', '.xlsx', '.xls']
-    needed_shapefile_ext = ['.shp', '.shx', '.prj', '.dbf']
-
-    if " " in file_path:
-        raise ValueError("The file path contains space characters, which may lead to issues.")
-
-    if isinstance(file_name, dict):
-        layer = file_name.get('layer', layer)
-        sheet_name = file_name.get('sheet', sheet_name)
-        file_path = os.path.join(file_path, file_name["file"])
-        file_name = None
-
-    file_path = file_path.replace("\\", "/")
-
-    if file_name is None:
-        directory_path, file_name = os.path.split(file_path)
-        file_path = directory_path + "/"
-
-    file_name_without_ext, ext = os.path.splitext(file_name)
-    if not ext:
-        matching_files = glob(os.path.join(file_path, f"{file_name_without_ext}.*"))
-        allowed_files = [f for f in matching_files if os.path.splitext(f)[1] in allowed_ext]
-        if not allowed_files:
-            raise FileNotFoundError(f"No matching files found for: {file_name_without_ext} with accepted extension.")
-        full_path = max(allowed_files, key=os.path.getmtime)
-    else:
-        full_path = os.path.join(file_path, file_name)
-
-    ext = os.path.splitext(full_path)[1]
-    print(f"Reading file: {full_path}")
-
-    if ext in ('.shp', '.gpkg', '.gdb'):
-        shapefile_helper(full_path, needed_shapefile_ext)
-
-    readers = {
-        '.pkl': lambda: pd.read_pickle(full_path, compression=None),
-        '.xz': lambda: pd.read_pickle(full_path, compression="xz"),
-        '.shp': lambda: gpd.read_file(full_path),
-        '.gpkg': lambda: gpd.read_file(full_path, layer=layer),
-        '.gdb': lambda: gpd.read_file(full_path, layer=layer),
-        '.csv': lambda: read_csv(full_path, watch_curly_brackets, encoding, delimiter),
-        '.xlsx': lambda: pd.read_excel(full_path, parse_dates=True, sheet_name=sheet_name, converters=converters),
-        '.xls': lambda: pd.read_excel(full_path, parse_dates=True, sheet_name=sheet_name, converters=converters)
-    }
-
-    reader = readers.get(ext)
-    if reader:
-        return reader()
-    else:
-        raise ValueError(f"Unsupported file extension: {ext}")
-
-
-def write_data(df, file_path, file_name=None, plain_csv=False):
-    df = df.copy()
-    if file_name:
-        file_path = os.path.join(file_path, file_name)
-    file_path = file_path.replace("\\", "/")
-
-    _, ext = os.path.splitext(file_path)
-
-    if not ext:
-        ext = ".gpkg" if "geometry" in df.columns else ".pkl.xz"
-        file_path += ext
-
-    if os.path.exists(file_path):
-        print(f"Removing existing file: {file_path}")
-        os.remove(file_path)
-
-    print(f"Writing file: {file_path}")
-
-    writers = {
-        '.pkl': lambda: df.to_pickle(file_path, compression=None),
-        '.pkl.xz': lambda: df.to_pickle(file_path, compression="xz"),
-        '.shp': lambda: write_shapefile(df, file_path),
-        '.gpkg': lambda: write_geopackage(df, file_path),
-        '.csv': lambda: write_csv(df, file_path, plain_csv),
-        '.xlsx': lambda: write_excel(df, file_path)
-    }
-
-    writer = writers.get(ext)
-    if writer:
-        writer()
-    else:
-        raise ValueError(f"Unsupported file extension: {ext}")
-
-
-def write_shapefile(df, file_path):
-    if isinstance(df, gpd.GeoDataFrame):
-        df_no_datetime = convert_datetime_to_string(df)
-        df_no_datetime.to_file(file_path, driver="ESRI Shapefile", index=False)
-    else:
-        print("Cannot save a non-geodataframe as a shapefile - converting to pandas...")
-        pd.DataFrame(df).to_csv(os.path.splitext(file_path)[0] + ".csv", index=False)
-
-
-def write_geopackage(df, file_path):
-    if isinstance(df, gpd.GeoDataFrame):
-        df.to_file(file_path, driver="GPKG", index=False)
-    else:
-        raise ValueError("Cannot save a non-geodataframe as a geopackage.")
-
-
-def write_csv(df, file_path, plain_csv):
-    if "geometry" in df.columns:
-        raise Exception("We cannot save geometry data into csv. Use .pkl, .shp, or .gpkg formats.")
-    if plain_csv:
-        df.to_csv(file_path, index=False)
-    else:
-        write_to_typed_csv(df, file_path)
-
-
-def write_excel(df, file_path):
-    if "geometry" in df.columns:
-        print("Geometry column found. It will be dropped.")
-        df.drop(column="geometry", inplace=True)
-    df.to_excel(file_path, header=True, index=False)
 
 
 def standardize_fields(df, field_mapping, reverse=False):
@@ -1147,7 +858,7 @@ def convert_gdb_to_gpkg(gdb_file, output_file):
     for layer in tqdm(fiona.listlayers(gdb_file), desc="Exporting feature classes"):
         print("----------------------------------------------------------------------")
         print(f"Layer: {layer}")
-        gdf = read_data(file_path=gdb_file, layer=layer)
+        gdf = io_l.read_data(file_path=gdb_file, layer=layer)
         if not gdf.empty:
             gdf = convert_columns_to_string(gdf)
             gdf.to_file(output_file, layer=layer, driver="GPKG")

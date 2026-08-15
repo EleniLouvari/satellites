@@ -8,6 +8,8 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import classification_report, confusion_matrix, precision_recall_fscore_support, roc_auc_score
 
+# Evaluation operates only on held-out data to keep reported model comparisons unbiased.
+
 from ..core.metrics import (
     extract_feature_importance_frame,
     load_modeling_context,
@@ -120,6 +122,7 @@ class EvaluateStep(PipelineStepBase):
         test_df = load_joblib(self.config.prepare_dir / "test_dataset.joblib")
         context = load_modeling_context(self.config)
         model_specs = load_json(self.config.train_dir / "model_specs.json")
+        cv_metrics_df = pd.read_csv(self.config.train_dir / "training_summary.csv")
         labels = context["labels"]
         active_features = context["active_features"]
         train_df = load_joblib(self.config.prepare_dir / "train_dataset.joblib")
@@ -226,7 +229,7 @@ class EvaluateStep(PipelineStepBase):
         )
 
         interpretability_rows: list[dict[str, Any]] = []
-        available_interpretability_models = test_metrics_df.loc[test_metrics_df["model"] != "soft_voting", "model"].tolist()
+        available_interpretability_models = cv_metrics_df["model"].tolist()
         effective_interpretability_top_models = min(
             self.config.interpretability_top_models,
             len(available_interpretability_models),
@@ -241,7 +244,7 @@ class EvaluateStep(PipelineStepBase):
                 "WARNING",
             )
         interpretability_models = select_top_models_for_interpretability(
-            test_metrics_df,
+            cv_metrics_df,
             effective_interpretability_top_models,
         )
         tree_like_models = {
@@ -259,6 +262,12 @@ class EvaluateStep(PipelineStepBase):
                 continue
             row = {
                 "model": model_name,
+                "cv_ranking_metric": float(
+                    cv_metrics_df.loc[
+                        cv_metrics_df["model"] == model_name,
+                        "cv_ranking_metric",
+                    ].iloc[0]
+                ),
                 "test_metric": float(
                     test_metrics_df.loc[test_metrics_df["model"] == model_name, self.config.scoring_primary].iloc[0]
                 ),
@@ -324,6 +333,7 @@ class EvaluateStep(PipelineStepBase):
 
         selection = evaluate_voting_candidate(
             config=self.config,
+            cv_metrics_df=cv_metrics_df,
             train_metrics_df=train_metrics_df,
             test_metrics_df=test_metrics_df,
             probability_cache_train=probability_cache_train,
@@ -333,9 +343,11 @@ class EvaluateStep(PipelineStepBase):
             labels=labels,
         )
 
-        prob_models = [model for model in test_metrics_df["model"].tolist() if model in probability_cache_test]
-        if self.config.top_voting_models is not None:
-            prob_models = prob_models[-self.config.top_voting_models :]
+        prob_models = (
+            list(selection["selected_models"])
+            if selection["selection_type"] == "soft_voting"
+            else []
+        )
         if len(prob_models) >= 2:
             averaged_probs_train = np.zeros_like(probability_cache_train[prob_models[0]], dtype=np.float64)
             averaged_probs_test = np.zeros_like(probability_cache_test[prob_models[0]], dtype=np.float64)
