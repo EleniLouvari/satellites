@@ -1,4 +1,10 @@
-"""Plotting helpers for class balance, metrics, confusion matrices, and diagnostics."""
+"""Plotting helpers for class balance, metrics, confusion matrices, and diagnostics.
+
+This module contains small helpers that produce deterministic image files used
+by the pipeline reporting stage. Functions are defensive: they return early on
+empty inputs so report generation does not fail when optional artifacts are
+missing.
+"""
 
 from __future__ import annotations
 
@@ -16,6 +22,8 @@ from ..core.persistence import ensure_dir
 
 
 sns.set_theme(style="whitegrid")
+# Apply a global seaborn theme once so all exported plot files share a
+# consistent visual style across the pipeline.
 
 
 def _confusion_matrix_tick_fontsize(labels: list[str]) -> float:
@@ -89,11 +97,7 @@ def save_split_distribution_plot(train_target: pd.Series, test_target: pd.Series
 
 
 def save_train_test_feature_distributions(
-    train_df: pd.DataFrame,
-    test_df: pd.DataFrame,
-    feature_columns: list[str],
-    output_path: str | Path,
-    max_features: int = 9,
+    train_df: pd.DataFrame, test_df: pd.DataFrame, feature_columns: list[str], output_path: str | Path, max_features: int = 9
 ) -> None:
     """Save feature distribution comparisons for train and test datasets."""
     # Cap plotted features to keep the grid compact and readable.
@@ -110,35 +114,23 @@ def save_train_test_feature_distributions(
         test_series = test_df[feature]
         if pd.api.types.is_numeric_dtype(train_series):
             sns.histplot(
-                data=train_df,
-                x=feature,
-                bins=30,
-                color="blue",
-                label="Train Data",
-                kde=True,
-                ax=ax,
-                alpha=0.35,
-                stat="count",
+                data=train_df, x=feature, bins=30, color="blue", label="Train Data", kde=True, ax=ax, alpha=0.35, stat="count"
             )
             sns.histplot(
-                data=test_df,
-                x=feature,
-                bins=30,
-                color="red",
-                label="Test Data",
-                kde=True,
-                ax=ax,
-                alpha=0.35,
-                stat="count",
+                data=test_df, x=feature, bins=30, color="red", label="Test Data", kde=True, ax=ax, alpha=0.35, stat="count"
             )
         else:
-            plot_df = pd.concat(
-                [
-                    train_series.astype(str).value_counts(normalize=True).rename("train"),
-                    test_series.astype(str).value_counts(normalize=True).rename("test"),
-                ],
-                axis=1,
-            ).fillna(0.0).head(12)
+            plot_df = (
+                pd.concat(
+                    [
+                        train_series.astype(str).value_counts(normalize=True).rename("train"),
+                        test_series.astype(str).value_counts(normalize=True).rename("test"),
+                    ],
+                    axis=1,
+                )
+                .fillna(0.0)
+                .head(12)
+            )
             plot_df.plot(kind="bar", ax=ax, color=["blue", "red"])
         ax.set_title(f"{feature}: Train vs Test")
         ax.set_xlabel(feature)
@@ -195,26 +187,14 @@ def save_search_results_plot(results_df: pd.DataFrame, output_path: str | Path, 
     _save_figure(fig, output_path)
 
 
-def save_cv_fold_comparison_plot(
-    fold_scores_df: pd.DataFrame,
-    output_path: str | Path,
-    metric_name: str,
-) -> None:
+def save_cv_fold_comparison_plot(fold_scores_df: pd.DataFrame, output_path: str | Path, metric_name: str) -> None:
     """Save per-fold line plots for best model CV scores."""
     # Compare fold stability across models on a shared axis.
     if fold_scores_df.empty:
         return
     fig, ax = plt.subplots(figsize=(12, 7))
     sns.lineplot(
-        data=fold_scores_df,
-        x="fold",
-        y="score",
-        hue="model",
-        style="model",
-        markers=True,
-        dashes=False,
-        linewidth=2,
-        ax=ax,
+        data=fold_scores_df, x="fold", y="score", hue="model", style="model", markers=True, dashes=False, linewidth=2, ax=ax
     )
     ax.set_title(f"Best CV Score per Fold by Model ({metric_name})")
     ax.set_xlabel("Fold")
@@ -240,38 +220,19 @@ def save_model_comparison_plot(metrics_df: pd.DataFrame, output_path: str | Path
     _save_figure(fig, output_path)
 
 
-def save_confusion_matrix_plot(
-    y_true,
-    y_pred,
-    labels: list[str],
-    output_path: str | Path,
-    title: str,
-) -> None:
+def save_confusion_matrix_plot(y_true, y_pred, labels: list[str], output_path: str | Path, title: str) -> None:
     """Save a confusion matrix plot for predicted versus true labels."""
     # Use sklearn display helpers to keep label ordering consistent.
     fig, ax = plt.subplots(figsize=(8, 7))
     ConfusionMatrixDisplay.from_predictions(
-        y_true,
-        y_pred,
-        display_labels=labels,
-        xticks_rotation=45,
-        cmap="Blues",
-        ax=ax,
-        colorbar=False,
+        y_true, y_pred, display_labels=labels, xticks_rotation=45, cmap="Blues", ax=ax, colorbar=False
     )
     _style_confusion_matrix_axes(ax, labels)
     ax.set_title(title)
     _save_figure(fig, output_path)
 
 
-def save_binary_evaluation_panel(
-    y_true,
-    y_pred,
-    y_proba,
-    labels: list[str],
-    output_path: str | Path,
-    model_name: str,
-) -> None:
+def save_binary_evaluation_panel(y_true, y_pred, y_proba, labels: list[str], output_path: str | Path, model_name: str) -> None:
     """Save a two-panel binary evaluation figure with ROC and confusion matrix."""
     # Combine probability and classification diagnostics into one figure.
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
@@ -282,13 +243,7 @@ def save_binary_evaluation_panel(
         roc_legend.remove()
     axes[0].set_title(f"ROC Curve: {model_name}")
     ConfusionMatrixDisplay.from_predictions(
-        y_true,
-        y_pred,
-        display_labels=labels,
-        xticks_rotation=45,
-        cmap="Blues",
-        ax=axes[1],
-        colorbar=False,
+        y_true, y_pred, display_labels=labels, xticks_rotation=45, cmap="Blues", ax=axes[1], colorbar=False
     )
     _style_confusion_matrix_axes(axes[1], labels)
     axes[1].set_title(f"Confusion Matrix: {model_name}")
@@ -296,12 +251,7 @@ def save_binary_evaluation_panel(
 
 
 def save_multiclass_evaluation_panel(
-    y_true,
-    y_pred,
-    y_proba,
-    labels: list[str],
-    output_path: str | Path,
-    model_name: str,
+    y_true, y_pred, y_proba, labels: list[str], output_path: str | Path, model_name: str
 ) -> None:
     """Save a multiclass panel with one-vs-rest ROC and confusion matrix."""
     # Skip plotting when the problem is not truly multiclass.
@@ -313,24 +263,13 @@ def save_multiclass_evaluation_panel(
         class_truth = (y_true_array == str(class_label)).astype(int)
         if class_truth.sum() == 0 or class_truth.sum() == len(class_truth):
             continue
-        RocCurveDisplay.from_predictions(
-            class_truth,
-            y_proba[:, class_index],
-            name=f"{class_label} vs rest",
-            ax=axes[0],
-        )
+        RocCurveDisplay.from_predictions(class_truth, y_proba[:, class_index], name=f"{class_label} vs rest", ax=axes[0])
     roc_legend = axes[0].get_legend()
     if roc_legend is not None:
         roc_legend.remove()
     axes[0].set_title(f"Multiclass ROC: {model_name}")
     ConfusionMatrixDisplay.from_predictions(
-        y_true,
-        y_pred,
-        display_labels=labels,
-        xticks_rotation=45,
-        cmap="Blues",
-        ax=axes[1],
-        colorbar=False,
+        y_true, y_pred, display_labels=labels, xticks_rotation=45, cmap="Blues", ax=axes[1], colorbar=False
     )
     _style_confusion_matrix_axes(axes[1], labels)
     axes[1].set_title(f"Confusion Matrix: {model_name}")
@@ -338,12 +277,7 @@ def save_multiclass_evaluation_panel(
 
 
 def save_binary_curve_plots(
-    y_true,
-    y_proba,
-    output_dir: str | Path,
-    model_name: str,
-    pos_label=None,
-    include_roc: bool = True,
+    y_true, y_proba, output_dir: str | Path, model_name: str, pos_label=None, include_roc: bool = True
 ) -> None:
     """Save binary ROC and precision-recall curve plots."""
     # Ensure the output directory exists before writing curve images.
@@ -363,13 +297,7 @@ def save_binary_curve_plots(
     _save_figure(fig, output_dir / f"{model_name}_pr_curve.png")
 
 
-def save_multiclass_roc_plot(
-    y_true,
-    y_proba,
-    labels: list[str],
-    output_path: str | Path,
-    model_name: str,
-) -> None:
+def save_multiclass_roc_plot(y_true, y_proba, labels: list[str], output_path: str | Path, model_name: str) -> None:
     """Save one-vs-rest ROC curves for multiclass predictions."""
     # Plot a curve per class only when positive and negative examples exist.
     if len(labels) < 3:
@@ -380,12 +308,7 @@ def save_multiclass_roc_plot(
         class_truth = (y_true_array == str(class_label)).astype(int)
         if class_truth.sum() == 0 or class_truth.sum() == len(class_truth):
             continue
-        RocCurveDisplay.from_predictions(
-            class_truth,
-            y_proba[:, class_index],
-            name=f"{class_label} vs rest",
-            ax=ax,
-        )
+        RocCurveDisplay.from_predictions(class_truth, y_proba[:, class_index], name=f"{class_label} vs rest", ax=ax)
     roc_legend = ax.get_legend()
     if roc_legend is not None:
         roc_legend.remove()

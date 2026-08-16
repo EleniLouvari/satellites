@@ -5,7 +5,7 @@ import common_libraries.logging_library as log_l
 
 
 from global_variables import _BIG_TIF_YES, _EPSG_PREFIX, BLOCKSIZE, COORD_ROUNDING, EPSG_4326
-from import_libraries import *  # NOSONAR
+from import_libraries import *  # NOSONAR # NOSONAR
 
 
 def _extract_source_georeferencing(
@@ -383,9 +383,10 @@ def define_resampling_algorithm(resample_alg: str = "nearest", for_library: str 
             "q1": Resampling.q1,
             "q3": Resampling.q3,
         }
-        # Default to bilinear if an invalid method is provided
+        # Default to nearest if an invalid method is provided (fail-safe)
         if resample_alg.lower() not in resampling_methods:
-            raise AttributeError(f"Invalid resampling method: '{resample_alg}'")
+            log_l.log_message(logger, f"Invalid resampling method '{resample_alg}'. Falling back to 'nearest'.")
+            return Resampling.nearest
         return resampling_methods[resample_alg.lower()]
     elif for_library == "gdal":
         resample_alg = "near" if resample_alg == "nearest" else resample_alg

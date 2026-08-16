@@ -1,7 +1,7 @@
 """Library containing functions for input/output files."""
 
 import common_libraries.logging_library as log_l
-from import_libraries import *  # NOSONAR
+from import_libraries import *  # NOSONAR # NOSONAR
 from pathlib import Path
 import stat
 
@@ -717,6 +717,7 @@ def read_data(
     encoding: Optional[str] = None,
     delimiter: Optional[str] = None,
     converters: Optional[Dict[str, Callable[[Any], Any]]] = None,
+    fid_as_index: bool = False,
 ) -> Union[pd.DataFrame, gpd.GeoDataFrame]:
     """General-purpose function to read a file in various supported formats and return a DataFrame or GeoDataFrame.
 
@@ -741,6 +742,8 @@ def read_data(
         Delimiter for CSV files.
     converters : Optional[Dict[str, Callable[[Any], Any]]]
         Custom converters for reading Excel files.
+    fid_as_index : bool, optional
+        Preserve a vector datasource's feature ID as the dataframe index.
 
     Returns
     -------
@@ -812,9 +815,9 @@ def read_data(
     readers = {
         _PKL_EXTENSION: lambda: pd.read_pickle(full_path, compression=None),
         _XZ_EXTENSION: lambda: pd.read_pickle(full_path, compression="xz"),
-        _SHP_EXTENSION: lambda: gpd.read_file(full_path),
-        _GPKG_EXTENSION: lambda: gpd.read_file(full_path, layer=layer),
-        _GDB_EXTENSION: lambda: gpd.read_file(full_path, layer=layer),
+        _SHP_EXTENSION: lambda: gpd.read_file(full_path, fid_as_index=fid_as_index),
+        _GPKG_EXTENSION: lambda: gpd.read_file(full_path, layer=layer, fid_as_index=fid_as_index),
+        _GDB_EXTENSION: lambda: gpd.read_file(full_path, layer=layer, fid_as_index=fid_as_index),
         _CSV_EXTENSION: lambda: read_csv(full_path, watch_curly_brackets, encoding, delimiter),
         _XLSX_EXTENSION: lambda: pd.read_excel(full_path, parse_dates=True, sheet_name=sheet_name, converters=converters),
         _XLS_EXTENSION: lambda: pd.read_excel(full_path, parse_dates=True, sheet_name=sheet_name, converters=converters),
@@ -830,7 +833,11 @@ def read_data(
 
 
 def write_data(
-    df: Union[pd.DataFrame, gpd.GeoDataFrame], file_path: str, file_name: Optional[str] = None, plain_csv: bool = False
+    df: Union[pd.DataFrame, gpd.GeoDataFrame],
+    file_path: str,
+    file_name: Optional[str] = None,
+    plain_csv: bool = False,
+    layer: Optional[str] = None,
 ) -> None:
     """General function to export a DataFrame or GeoDataFrame to a file in various formats.
 
@@ -849,6 +856,9 @@ def write_data(
         Optional file name to append to file_path. If None, file_path must include the name.
     plain_csv : bool, optional
         Indicates whether to export CSV without type info. Defaults to False.
+    layer : Optional[str]
+        GeoPackage layer name. Supplying a layer preserves other layers in an
+        existing GeoPackage.
 
     Returns
     -------
@@ -874,7 +884,7 @@ def write_data(
         file_path += ext
 
     # If file_path exists, remove it
-    if os.path.exists(file_path):
+    if os.path.exists(file_path) and not (ext == _GPKG_EXTENSION and layer is not None):
         print(f"Removing existing file: {file_path}")
         os.remove(file_path)
 
@@ -884,7 +894,7 @@ def write_data(
         _PKL_EXTENSION: lambda: df.to_pickle(file_path, compression=None),
         _PKL_XZ_EXTENSION: lambda: df.to_pickle(file_path, compression="xz"),
         _SHP_EXTENSION: lambda: write_shapefile(df, file_path),
-        _GPKG_EXTENSION: lambda: write_geopackage(df, file_path),
+        _GPKG_EXTENSION: lambda: write_geopackage(df, file_path, layer=layer),
         _CSV_EXTENSION: lambda: write_csv(df, file_path, plain_csv),
         _XLSX_EXTENSION: lambda: write_excel(df, file_path),
         _XLS_EXTENSION: lambda: write_excel(df, file_path),
@@ -945,7 +955,7 @@ def write_shapefile(df: gpd.GeoDataFrame, file_path: str) -> None:
         pd.DataFrame(df).to_csv(os.path.splitext(file_path)[0] + _CSV_EXTENSION, index=False)
 
 
-def write_geopackage(df: gpd.GeoDataFrame, file_path: str) -> None:
+def write_geopackage(df: gpd.GeoDataFrame, file_path: str, layer: Optional[str] = None) -> None:
     """Write a GeoDataFrame to a GeoPackage (.gpkg) file.
 
     Parameters
@@ -954,6 +964,8 @@ def write_geopackage(df: gpd.GeoDataFrame, file_path: str) -> None:
         The GeoDataFrame to be written.
     file_path : str
         The target file path for the GeoPackage.
+    layer : Optional[str]
+        Layer name to create or replace.
 
     Returns
     -------
@@ -966,7 +978,7 @@ def write_geopackage(df: gpd.GeoDataFrame, file_path: str) -> None:
 
     """
     if isinstance(df, gpd.GeoDataFrame):
-        df.to_file(file_path, driver="GPKG", index=False)
+        df.to_file(file_path, layer=layer, driver="GPKG", index=False)
     else:
         raise ValueError("Cannot save a non-geodataframe as a geopackage.")
 

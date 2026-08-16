@@ -19,9 +19,6 @@ class ClassificationPipelineConfig:
     reset_project_dir_on_run_check: bool = True
     fail_on_cleanup_error: bool = False
     id_column: str = "row_id"
-    time_column: str | None = None
-    reshape_time_series: bool = False
-    prediction_cutoff: str | None = None
     apply_iqr: bool = False
     iqr_lower_quantile: float = 0.25
     iqr_upper_quantile: float = 0.75
@@ -40,7 +37,7 @@ class ClassificationPipelineConfig:
     selection_type: str = "soft_voting"
     cv_ranking_method: str = "score_minus_std"
     rare_category_min_frequency: int | float = 10
-    max_search_candidates: int = 24
+    max_search_candidates: int = 40
     top_voting_models: int | None = None
     interpretability_top_models: int = 3
     interpretability_include_shap: bool = False
@@ -54,6 +51,10 @@ class ClassificationPipelineConfig:
     spatial_split_grid_size: int = 10
     label_balancing_method: str = "none"
     smote_k_neighbors: int = 5
+    optimize_class_probabilities: bool = False
+    probability_multiplier_grid: tuple[float, ...] = (0.8, 1.0, 1.2, 1.5, 2.0)
+    probability_optimization_iterations: int = 2
+    probability_optimization_max_accuracy_drop: float = 0.02
     prediction_column: str | None = None
     prediction_filled_column: str | None = None
     probability_prefix: str = "probability"
@@ -62,9 +63,7 @@ class ClassificationPipelineConfig:
     prediction_review_column: str = "prediction_needs_review"
     output_schema_version: str = "1.0.0"
     log_filename: str = "pipeline.log"
-    step_names: tuple[str, ...] = field(
-        default=("01_check", "02_prepare", "03_train", "04_evaluate", "05_predict"),
-    )
+    step_names: tuple[str, ...] = field(default=("01_check", "02_prepare", "03_train", "04_evaluate", "05_predict"))
     open_html_report: bool = False
 
     def __post_init__(self) -> None:
@@ -77,6 +76,10 @@ class ClassificationPipelineConfig:
         self._apply_safe_caps()
         self._set_default_output_columns()
 
+    # The following helper groups encapsulate normalization, validation,
+    # and safe-capping logic so the constructor remains easy to read and any
+    # validation failures raise clear, contextual errors during initialization.
+
     def _normalize_inputs(self) -> None:
         """Normalize configurable string and sequence inputs to canonical forms."""
         # Standardize model selection type values before validation.
@@ -86,11 +89,9 @@ class ClassificationPipelineConfig:
         self.cv_ranking_method = self.cv_ranking_method.strip().lower()
         self.label_balancing_method = self.label_balancing_method.strip().lower()
         self.spatial_split_method = self.spatial_split_method.strip().lower()
-        if self.time_column is not None:
-            self.time_column = self.time_column.strip()
-        if self.prediction_cutoff is not None:
-            self.prediction_cutoff = str(self.prediction_cutoff).strip()
+        self.probability_multiplier_grid = tuple(float(value) for value in self.probability_multiplier_grid)
         if self.spatial_interpolation_method is not None:
+            # Normalize user-provided method names to lowercase for later comparisons.
             self.spatial_interpolation_method = self.spatial_interpolation_method.strip().lower()
 
     def _validate_strings_and_sequences(self) -> None:
@@ -101,45 +102,30 @@ class ClassificationPipelineConfig:
         if self.cv_ranking_method not in {"mean_score", "score_minus_std"}:
             raise ValueError("cv_ranking_method must be either 'mean_score' or 'score_minus_std'.")
         if self.label_balancing_method not in {"none", "random_oversample", "smote"}:
-            raise ValueError(
-                "label_balancing_method must be one of: 'none', 'random_oversample', or 'smote'."
-            )
+            raise ValueError("label_balancing_method must be one of: 'none', 'random_oversample', or 'smote'.")
         if self.spatial_split_method not in {"by_group", "by_row"}:
             raise ValueError("spatial_split_method must be either 'by_group' or 'by_row'.")
         if not self.feature_columns:
             raise ValueError("feature_columns must contain at least one feature name.")
         if len(set(self.feature_columns)) != len(self.feature_columns):
             raise ValueError("feature_columns contains duplicate names. Provide unique feature names only.")
-        if self.reshape_time_series and not self.time_column:
-            raise ValueError("time_column is required when reshape_time_series=True.")
         if not isinstance(self.apply_iqr, bool):
             raise TypeError("apply_iqr must be a bool.")
+        if not isinstance(self.optimize_class_probabilities, bool):
+            raise TypeError("optimize_class_probabilities must be a bool.")
+        if not self.probability_multiplier_grid:
+            raise ValueError("probability_multiplier_grid must contain at least one value.")
         if self.spatial_interpolation_method not in {None, "nearest", "idw", "kriging"}:
-            raise ValueError(
-                "spatial_interpolation_method must be None, 'nearest', 'idw', or 'kriging'."
-            )
-        if (
-            self.spatial_interpolation_method == "idw"
-            and self.spatial_interpolation_max_distance_in_meters is None
-        ):
-            raise ValueError(
-                "spatial_interpolation_max_distance_in_meters is required for idw interpolation."
-            )
-        if (
-            self.spatial_interpolation_method == "kriging"
-            and self.spatial_interpolation_variogram_max_distance_in_meters is None
-        ):
-            raise ValueError(
-                "spatial_interpolation_variogram_max_distance_in_meters is required for kriging interpolation."
-            )
+            raise ValueError("spatial_interpolation_method must be None, 'nearest', 'idw', or 'kriging'.")
+        if self.spatial_interpolation_method == "idw" and self.spatial_interpolation_max_distance_in_meters is None:
+            raise ValueError("spatial_interpolation_max_distance_in_meters is required for idw interpolation.")
+        if self.spatial_interpolation_method == "kriging" and self.spatial_interpolation_variogram_max_distance_in_meters is None:
+            raise ValueError("spatial_interpolation_variogram_max_distance_in_meters is required for kriging interpolation.")
         forbidden_features = {self.id_column, self.target_column, "geometry"}
-        if self.time_column:
-            forbidden_features.add(self.time_column)
         leaked_features = sorted(forbidden_features.intersection(self.feature_columns))
         if leaked_features:
             raise ValueError(
-                "Identifiers, target, geometry and the raw time column cannot be model features. "
-                f"Remove: {leaked_features}"
+                f"Identifiers, target, geometry and the raw time column cannot be model features. Remove: {leaked_features}"
             )
 
         # Acceptable values for selected models:
@@ -168,6 +154,9 @@ class ClassificationPipelineConfig:
         if len(set(self.selected_models)) != len(self.selected_models):
             raise ValueError("selected_models contains duplicate names. Provide unique model names only.")
 
+    # Numeric validations are centralized so range checks produce consistent
+    # error messages and are easy to extend when new numeric options are added.
+
     def _validate_numeric_ranges(self) -> None:
         """Validate all numeric bounds and range constraints in configuration."""
         # Group validation rules to keep error messages explicit and consistent.
@@ -176,10 +165,7 @@ class ClassificationPipelineConfig:
             (int(self.cv_folds) >= 2, "cv_folds must be >= 2."),
             (int(self.n_jobs) != 0, "n_jobs cannot be 0. Use -1 or a positive integer."),
             (int(self.max_search_candidates) >= 2, "max_search_candidates must be >= 2."),
-            (
-                self.top_voting_models is None or int(self.top_voting_models) >= 2,
-                "top_voting_models must be >= 2 when provided.",
-            ),
+            (self.top_voting_models is None or int(self.top_voting_models) >= 2, "top_voting_models must be >= 2 when provided."),
             (int(self.interpretability_top_models) >= 0, "interpretability_top_models must be >= 0."),
             (int(self.shap_sample_size) >= 10, "shap_sample_size must be >= 10."),
             (int(self.feature_importance_top_n) >= 1, "feature_importance_top_n must be >= 1."),
@@ -187,6 +173,18 @@ class ClassificationPipelineConfig:
             (int(self.max_map_geometries) >= 1, "max_map_geometries must be >= 1."),
             (int(self.spatial_split_grid_size) >= 2, "spatial_split_grid_size must be >= 2."),
             (int(self.smote_k_neighbors) >= 1, "smote_k_neighbors must be >= 1."),
+            (
+                all(value > 0 for value in self.probability_multiplier_grid),
+                "probability_multiplier_grid values must all be > 0.",
+            ),
+            (
+                int(self.probability_optimization_iterations) >= 1,
+                "probability_optimization_iterations must be >= 1.",
+            ),
+            (
+                0.0 <= float(self.probability_optimization_max_accuracy_drop) < 1.0,
+                "probability_optimization_max_accuracy_drop must be between 0 and 1.",
+            ),
             (
                 0.0 <= float(self.iqr_lower_quantile) < float(self.iqr_upper_quantile) <= 1.0,
                 "IQR quantiles must satisfy 0 <= iqr_lower_quantile < iqr_upper_quantile <= 1.",
@@ -197,10 +195,7 @@ class ClassificationPipelineConfig:
                 or float(self.spatial_interpolation_max_distance_in_meters) > 0,
                 "spatial_interpolation_max_distance_in_meters must be positive when provided.",
             ),
-            (
-                int(self.spatial_interpolation_variogram_lags) >= 1,
-                "spatial_interpolation_variogram_lags must be >= 1.",
-            ),
+            (int(self.spatial_interpolation_variogram_lags) >= 1, "spatial_interpolation_variogram_lags must be >= 1."),
             (
                 self.spatial_interpolation_variogram_max_distance_in_meters is None
                 or float(self.spatial_interpolation_variogram_max_distance_in_meters) > 0,
@@ -221,8 +216,7 @@ class ClassificationPipelineConfig:
         selected_model_count = len(self.selected_models) if self.selected_models is not None else None
         if self.selection_type == "soft_voting" and selected_model_count is not None and selected_model_count < 2:
             warnings.warn(
-                "selection_type='soft_voting' requires at least 2 selected_models. Falling back to 'single_model'.",
-                stacklevel=2,
+                "selection_type='soft_voting' requires at least 2 selected_models. Falling back to 'single_model'.", stacklevel=2
             )
             self.selection_type = "single_model"
         self.top_voting_models = self._cap_with_warning(
@@ -252,22 +246,13 @@ class ClassificationPipelineConfig:
         if not self.prediction_filled_column:
             self.prediction_filled_column = f"{self.target_column}_filled"
 
-    def _cap_with_warning(
-        self,
-        value: int | None,
-        maximum: int | None,
-        field_name: str,
-        maximum_label: str,
-    ) -> int | None:
+    def _cap_with_warning(self, value: int | None, maximum: int | None, field_name: str, maximum_label: str) -> int | None:
         """Clip a numeric value to a maximum and warn when clipping occurs."""
         # Return early when clipping is not required.
         if value is None or maximum is None or value <= maximum:
             return value
         warnings.warn(
-            (
-                f"{field_name}={value} is larger than the number of {maximum_label} "
-                f"({maximum}). Using {maximum} instead."
-            ),
+            (f"{field_name}={value} is larger than the number of {maximum_label} ({maximum}). Using {maximum} instead."),
             stacklevel=2,
         )
         return maximum

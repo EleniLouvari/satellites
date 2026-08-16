@@ -1,0 +1,4 @@
+line-length = 130
+
+[format]
+skip-magic-trailing-comma = true

@@ -1,6 +1,7 @@
 from import_libraries import *
 import global_variables as gb_l
 import common_libraries.generic_library as cm_l
+import common_libraries.io_library as io_l
 
 
 def calc_vector_azimuth_dist(p1, p2):
@@ -138,7 +139,7 @@ def get_begin(x):
     """
     try:
         return Point(x.coords[0])
-    except Exception as e:
+    except Exception:
         return Point(x.geoms[0].coords[0])
 
 
@@ -152,7 +153,7 @@ def get_end(x):
     """
     try:
         return Point(x.coords[-1])
-    except Exception as e:
+    except Exception:
         return Point(x.geoms[-1].coords[-1])
 
 
@@ -168,7 +169,7 @@ def get_line_startend(geometry):
     try:
         start_point = get_begin(geometry)
         end_point = get_end(geometry)
-    except Exception as e:
+    except Exception:
         raise Exception(f"Unknown geometry type: {geometry.geom_type}")
 
     return start_point, end_point
@@ -334,7 +335,7 @@ def get_line_coordinates(geometry, reverse=False):
     geom_coords = []
     try:
         geom_coords = list(geometry.coords)
-    except Exception as e:
+    except Exception:
         for line in geometry.geoms:
             geom_coords.extend(list(line.coords))
 
@@ -428,17 +429,11 @@ def get_unit_of_length(df):
             else:
                 unit_name = "other"
 
-        if (
-                unit_name == "us survey foot"
-                or unit_name == "foot"
-                or unit_name == "ft"
-                or "+units=ft" in unit_name
-                or "+units=foot" in unit_name
-                or "+units=us-ft" in unit_name
-        ):
+        # Normalize common unit names and known proj4 suffixes
+        uname = unit_name.lower()
+        if any(k in uname for k in ("us survey foot", "foot", "ft", "+units=ft", "+units=foot", "+units=us-ft")):
             unit_name = "ft"
-
-        elif unit_name == "metre" or unit_name == "meter" or "+units=m" in unit_name:
+        elif any(k in uname for k in ("metre", "meter", "+units=m")):
             unit_name = "m"
         else:
             raise Exception("Unrecognized projection unit!")
@@ -1066,7 +1061,7 @@ def get_list_of_connected(g, x):
     """
     try:
         connections = list(g.neighbors(x))
-    except Exception as e:
+    except Exception:
         connections = []
     return connections
 
@@ -1659,7 +1654,7 @@ def get_geodataframe_US_state_and_center(df):
     df = df.copy()
 
     USA_states_shapefile = os.path.join(gb_l.gis_library_dir, "States", "USA_States.shp")
-    USA_states = gpd.read_file(USA_states_shapefile)
+    USA_states = io_l.read_data(USA_states_shapefile)
     if not USA_states.crs:
         raise Exception("States have no projection information")
 
@@ -1735,7 +1730,7 @@ def plot_azimuth_rose(df, azimuth_column, step=15, show_yticks=False, color_map=
     :param color_map: Colormap to use for the bars (e.g., 'viridis', 'plasma', 'coolwarm')
     """
     df = df.copy()
-    if not azimuth_column in df.columns:
+    if azimuth_column not in df.columns:
         df = calculate_line_azimuth(df, column_name=azimuth_column, norm=False, def_class=False)
 
     if pd.api.types.is_numeric_dtype(df[azimuth_column]) and (0 <= df[azimuth_column].max() <= 360):
@@ -1786,7 +1781,7 @@ def plot_azimuth_rose(df, azimuth_column, step=15, show_yticks=False, color_map=
     plt.title(title, y=1.1)
     plt.tight_layout()
 
-    if save_folder == "" and not save_folder is None:
+    if save_folder == "" and save_folder is not None:
         plt.show()
     else:
         plt.savefig(os.path.join(save_folder, "rose_diagram.png"))

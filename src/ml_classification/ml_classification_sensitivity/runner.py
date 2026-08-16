@@ -12,6 +12,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from common_libraries.io_library import read_data, write_data
+
 from ml_classification.ml_classification_pipeline.core.config import ClassificationPipelineConfig
 from ml_classification.ml_classification_pipeline.pipeline import GeospatialClassificationPipeline
 
@@ -217,7 +219,7 @@ class ClassificationSensitivityRunner:
         metrics_path = preferred if preferred.exists() else fallback
         if not metrics_path.exists():
             raise FileNotFoundError(f"Could not find test metrics CSV under: {config.evaluate_dir}")
-        return pd.read_csv(metrics_path)
+        return read_data(str(metrics_path), watch_curly_brackets=False)
 
     def _extract_model_accuracy(self, test_metrics: pd.DataFrame, model_name: str) -> float:
         """Extract test accuracy for a target model name.
@@ -262,7 +264,7 @@ class ClassificationSensitivityRunner:
         """
         # Save machine-readable summary for later analysis.
         csv_path = self.output_dir / "sensitivity_results.csv"
-        results_df.to_csv(csv_path, index=False)
+        write_data(results_df, str(csv_path), plain_csv=True)
         return csv_path
 
     def _create_accuracy_plot(self, results_df: pd.DataFrame) -> Path | None:
@@ -317,7 +319,7 @@ class ClassificationSensitivityRunner:
                 {"metric": "accuracy_minus_2std", "value": mean_acc - (2 * std_acc)},
             ]
         )
-        stats_df.to_csv(self.output_dir / "accuracy_summary_stats.csv", index=False)
+        write_data(stats_df, str(self.output_dir / "accuracy_summary_stats.csv"), plain_csv=True)
         return plot_path
 
     def _write_html_report(self, results_df: pd.DataFrame, plot_path: Path | None) -> Path:

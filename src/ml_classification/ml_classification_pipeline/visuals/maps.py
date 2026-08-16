@@ -1,5 +1,9 @@
-"""Map visualization helpers for static and interactive spatial outputs."""
+"""Map visualization helpers for static and interactive spatial outputs.
 
+Note: interactive maps use `folium` when available. Static map helpers
+expect a `geometry` column (GeoDataFrame) and, when possible, a CRS to
+produce sensible area-based selections for polygon sampling.
+"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -16,11 +20,7 @@ from ..core.persistence import ensure_dir
 
 
 def save_label_map(
-    df: pd.DataFrame,
-    label_column: str,
-    output_path: str | Path,
-    title: str = "Known Labels Map",
-    max_geometries: int = 1000,
+    df: pd.DataFrame, label_column: str, output_path: str | Path, title: str = "Known Labels Map", max_geometries: int = 1000
 ) -> None:
     """Save a static label map for geometries in the dataframe."""
     # Exit early when geometry information is missing or unusable.
@@ -43,13 +43,7 @@ def save_label_map(
     ax.set_title(title)
     ax.set_axis_off()
     legend_handles = [Patch(facecolor=color_map[label], edgecolor="none", label=label) for label in labels]
-    ax.legend(
-        handles=legend_handles,
-        title=label_column,
-        loc="center left",
-        bbox_to_anchor=(1.01, 0.5),
-        frameon=True,
-    )
+    ax.legend(handles=legend_handles, title=label_column, loc="center left", bbox_to_anchor=(1.01, 0.5), frameon=True)
     _save_figure(fig, output_path)
 
 
@@ -107,12 +101,7 @@ def save_interactive_label_map(
         geojson = folium.GeoJson(
             data=class_df.__geo_interface__,
             name=str(label),
-            style_function=lambda _feature, color=color: {
-                "color": color,
-                "weight": 2,
-                "fillColor": color,
-                "fillOpacity": 0.55,
-            },
+            style_function=lambda _feature, color=color: {"color": color, "weight": 2, "fillColor": color, "fillOpacity": 0.55},
             marker=folium.CircleMarker(radius=5, color=color, fill=True, fill_color=color, fill_opacity=0.85),
             tooltip=folium.GeoJsonTooltip(fields=[label_column], aliases=[f"{label_column}:"]),
         )
@@ -120,29 +109,25 @@ def save_interactive_label_map(
     folium.LayerControl(collapsed=False).add_to(fmap)
     output_path = Path(output_path)
     ensure_dir(output_path.parent)
-    fmap.get_root().html.add_child(
-        folium.Element(
-            f"<h3 style='position: fixed; top: 8px; left: 56px; z-index: 9999; background: rgba(255,255,255,0.9); padding: 6px 10px; border-radius: 6px; font-family: sans-serif;'>{title}</h3>"
-        )
+    # Keep the floating title readable without obscuring the map controls.
+    title_html = (
+        "<h3 style='position: fixed; top: 8px; left: 56px; z-index: 9999; "
+        "background: rgba(255,255,255,0.9); padding: 6px 10px; border-radius: 6px; "
+        f"font-family: sans-serif;'>{title}</h3>"
     )
+    fmap.get_root().html.add_child(folium.Element(title_html))
     fmap.save(str(output_path))
 
 
 def save_spatial_split_plot(
-    train_df: pd.DataFrame,
-    test_df: pd.DataFrame,
-    output_path: str | Path,
-    max_geometries: int = 1000,
-    random_state: int = 42,
+    train_df: pd.DataFrame, test_df: pd.DataFrame, output_path: str | Path, max_geometries: int = 1000, random_state: int = 42
 ) -> None:
     """Save a map comparing train and test geometry locations."""
     # Downsample geometries for plot readability and performance.
     if "geometry" not in train_df.columns or "geometry" not in test_df.columns:
         return
     train_plot_df = _sample_geometries_for_plot(
-        train_df.loc[train_df["geometry"].notna(), ["geometry"]].copy(),
-        max_geometries=max_geometries,
-        random_state=random_state,
+        train_df.loc[train_df["geometry"].notna(), ["geometry"]].copy(), max_geometries=max_geometries, random_state=random_state
     )
     test_plot_df = _sample_geometries_for_plot(
         test_df.loc[test_df["geometry"].notna(), ["geometry"]].copy(),
@@ -156,36 +141,17 @@ def save_spatial_split_plot(
     fig, ax = plt.subplots(figsize=(10, 8))
     if _geometry_is_points(train_plot_df):
         train_plot_df.plot(
-            ax=ax,
-            facecolor="none",
-            edgecolor="#2E86AB",
-            markersize=train_size,
-            linewidth=0.9,
-            marker="o",
-            label="train",
+            ax=ax, facecolor="none", edgecolor="#2E86AB", markersize=train_size, linewidth=0.9, marker="o", label="train"
         )
     else:
         train_plot_df.boundary.plot(ax=ax, color="#2E86AB", linewidth=0.7, label="train")
 
     if _geometry_is_points(test_plot_df):
         test_plot_df.plot(
-            ax=ax,
-            facecolor="none",
-            edgecolor="#D1495B",
-            markersize=test_size,
-            linewidth=0.9,
-            marker="o",
-            label="test",
+            ax=ax, facecolor="none", edgecolor="#D1495B", markersize=test_size, linewidth=0.9, marker="o", label="test"
         )
     else:
-        test_plot_df.plot(
-            ax=ax,
-            facecolor="#D1495B",
-            edgecolor="#9B2226",
-            alpha=0.35,
-            linewidth=0.5,
-            label="test",
-        )
+        test_plot_df.plot(ax=ax, facecolor="#D1495B", edgecolor="#9B2226", alpha=0.35, linewidth=0.5, label="test")
     ax.set_title("Spatial Split: Train vs Test")
     ax.legend()
     ax.set_axis_off()
@@ -193,22 +159,14 @@ def save_spatial_split_plot(
 
 
 def save_predicted_labels_map(
-    df: pd.DataFrame,
-    label_column: str,
-    output_path: str | Path,
-    title: str = "Predicted Labels Map",
-    max_geometries: int = 1000,
+    df: pd.DataFrame, label_column: str, output_path: str | Path, title: str = "Predicted Labels Map", max_geometries: int = 1000
 ) -> None:
     """Save a static map for predicted labels."""
     # Reuse the generic static label-map helper for prediction outputs.
     save_label_map(df, label_column, output_path, title=title, max_geometries=max_geometries)
 
 
-def _sample_geometries_for_plot(
-    df: pd.DataFrame,
-    max_geometries: int = 1000,
-    random_state: int = 42,
-) -> pd.DataFrame:
+def _sample_geometries_for_plot(df: pd.DataFrame, max_geometries: int = 1000, random_state: int = 42) -> pd.DataFrame:
     """Sample geometries for plotting while preserving key spatial patterns."""
     # Prefer point sampling and polygon area-based selection depending on geometry type.
     if df.empty or len(df) <= max_geometries:
@@ -240,6 +198,8 @@ def _sample_geometries_for_plot(
 def _select_largest_polygons(df: pd.DataFrame, max_geometries: int) -> pd.DataFrame:
     """Select the largest polygons by area for map plotting."""
     # Measure areas in a projected CRS when available for better comparability.
+    # Reproject to a metric CRS where possible to compute comparable polygon
+    # areas (EPSG:3857 is a pragmatic choice for visualization sampling).
     area_df = df.copy()
     try:
         working = area_df

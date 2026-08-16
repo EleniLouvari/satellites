@@ -55,10 +55,7 @@ class ContiguousLabelClassifier(BaseEstimator, ClassifierMixin):
     def get_params(self, deep=True):
         """Return estimator parameters following the scikit-learn protocol."""
         # Expose nested estimator parameters when deep inspection is requested.
-        params = {
-            "base_estimator": self.base_estimator,
-            "num_classes": self.num_classes,
-        }
+        params = {"base_estimator": self.base_estimator, "num_classes": self.num_classes}
         if deep and hasattr(self.base_estimator, "get_params"):
             for key, value in self.base_estimator.get_params(deep=True).items():
                 params[f"base_estimator__{key}"] = value
@@ -127,18 +124,11 @@ def _to_dense_matrix(X):
     return X.toarray() if hasattr(X, "toarray") else X
 
 
-def _build_pipeline_with_optional_balancer(
-    config: ClassificationPipelineConfig,
-    preprocessor,
-    model,
-):
+def _build_pipeline_with_optional_balancer(config: ClassificationPipelineConfig, preprocessor, model):
     """Build a preprocessing/model pipeline with optional label balancing."""
     # Start from the baseline pipeline used when balancing is disabled.
     method = config.label_balancing_method
-    base_steps = [
-        ("preprocessor", preprocessor),
-        ("model", model),
-    ]
+    base_steps = [("preprocessor", preprocessor), ("model", model)]
     if method == "none":
         return Pipeline(steps=base_steps)
 
@@ -153,27 +143,15 @@ def _build_pipeline_with_optional_balancer(
     over_sampling_module = _safe_import("imblearn.over_sampling")
     pipeline_module = _safe_import("imblearn.pipeline")
     if over_sampling_module is None or pipeline_module is None:
-        warnings.warn(
-            "Could not import imbalanced-learn over-sampling modules. Falling back to no balancing.",
-            stacklevel=2,
-        )
+        warnings.warn("Could not import imbalanced-learn over-sampling modules. Falling back to no balancing.", stacklevel=2)
         return Pipeline(steps=base_steps)
 
     if method == "random_oversample":
         sampler = over_sampling_module.RandomOverSampler(random_state=config.random_state)
-        return pipeline_module.Pipeline(
-            steps=[
-                ("preprocessor", preprocessor),
-                ("sampler", sampler),
-                ("model", model),
-            ]
-        )
+        return pipeline_module.Pipeline(steps=[("preprocessor", preprocessor), ("sampler", sampler), ("model", model)])
 
     if method == "smote":
-        sampler = over_sampling_module.SMOTE(
-            random_state=config.random_state,
-            k_neighbors=config.smote_k_neighbors,
-        )
+        sampler = over_sampling_module.SMOTE(random_state=config.random_state, k_neighbors=config.smote_k_neighbors)
         return pipeline_module.Pipeline(
             steps=[
                 ("preprocessor", preprocessor),
@@ -200,51 +178,34 @@ def build_model_candidates(
             builder=lambda: _build_pipeline_with_optional_balancer(
                 config,
                 _build_linear_preprocessor(config, numeric_features, categorical_features),
-                LogisticRegression(
-                    max_iter=2500,
-                    solver="saga",
-                    class_weight="balanced",
-                    random_state=config.random_state,
-                ),
+                LogisticRegression(max_iter=2500, solver="saga", class_weight="balanced", random_state=config.random_state),
             ),
-            param_distributions={
-                "model__C": [0.05, 0.1, 0.5, 1.0, 2.0, 5.0, 10.0],
-            },
+            param_distributions={"model__C": [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]},
         ),
         ModelCandidate(
             name="linear_sgd_classifier",
             builder=lambda: _build_pipeline_with_optional_balancer(
                 config,
                 _build_linear_preprocessor(config, numeric_features, categorical_features),
-                SGDClassifier(
-                    loss="log_loss",
-                    penalty="elasticnet",
-                    class_weight="balanced",
-                    random_state=config.random_state,
-                ),
+                SGDClassifier(loss="log_loss", penalty="elasticnet", class_weight="balanced", random_state=config.random_state),
             ),
-            param_distributions={
-                "model__alpha": [1e-5, 1e-4, 1e-3, 1e-2],
-                "model__l1_ratio": [0.0, 0.15, 0.5, 0.8, 1.0],
-            },
+            param_distributions={"model__alpha": [1e-4, 1e-3, 1e-2, 1e-1], "model__l1_ratio": [0.0, 0.15, 0.5, 0.8, 1.0]},
         ),
         ModelCandidate(
             name="random_forest",
             builder=lambda: _build_pipeline_with_optional_balancer(
                 config,
                 _build_tree_preprocessor(config, numeric_features, categorical_features),
-                RandomForestClassifier(
-                    random_state=config.random_state,
-                    n_jobs=1,
-                    class_weight="balanced_subsample",
-                ),
+                RandomForestClassifier(random_state=config.random_state, n_jobs=1, class_weight="balanced_subsample"),
             ),
             param_distributions={
-                "model__n_estimators": [200, 400, 600],
-                "model__max_depth": [None, 10, 20, 35],
-                "model__min_samples_split": [2, 5, 10],
-                "model__min_samples_leaf": [1, 2, 4],
-                "model__max_features": ["sqrt", 0.5, 1.0],
+                "model__n_estimators": [300, 500, 800],
+                "model__max_depth": [5, 8, 12, 16],
+                "model__min_samples_split": [10, 20, 40],
+                "model__min_samples_leaf": [3, 5, 10, 20],
+                "model__max_features": ["sqrt", "log2", 0.3, 0.5],
+                "model__max_samples": [0.6, 0.8, None],
+                "model__ccp_alpha": [0.0, 0.0001, 0.001, 0.005],
             },
         ),
         ModelCandidate(
@@ -253,17 +214,17 @@ def build_model_candidates(
                 config,
                 _build_tree_preprocessor(config, numeric_features, categorical_features),
                 ExtraTreesClassifier(
-                    random_state=config.random_state,
-                    n_jobs=1,
-                    class_weight="balanced",
+                    random_state=config.random_state, n_jobs=1, class_weight="balanced", bootstrap=True
                 ),
             ),
             param_distributions={
-                "model__n_estimators": [200, 400, 600],
-                "model__max_depth": [None, 10, 20, 35],
-                "model__min_samples_split": [2, 5, 10],
-                "model__min_samples_leaf": [1, 2, 4],
-                "model__max_features": ["sqrt", 0.5, 1.0],
+                "model__n_estimators": [300, 500, 800],
+                "model__max_depth": [5, 8, 12, 16],
+                "model__min_samples_split": [10, 20, 40],
+                "model__min_samples_leaf": [3, 5, 10, 20],
+                "model__max_features": ["sqrt", "log2", 0.3, 0.5],
+                "model__max_samples": [0.6, 0.8, None],
+                "model__ccp_alpha": [0.0, 0.0001, 0.001],
             },
         ),
         ModelCandidate(
@@ -271,17 +232,16 @@ def build_model_candidates(
             builder=lambda: _build_pipeline_with_optional_balancer(
                 config,
                 _build_dense_tree_preprocessor(config, numeric_features, categorical_features),
-                GradientBoostingClassifier(
-                    random_state=config.random_state,
-                ),
+                GradientBoostingClassifier(random_state=config.random_state),
             ),
             param_distributions={
-                "model__n_estimators": [100, 200, 300],
-                "model__learning_rate": [0.03, 0.05, 0.1, 0.2],
-                "model__max_depth": [2, 3, 5],
-                "model__min_samples_split": [2, 5, 10],
-                "model__min_samples_leaf": [1, 2, 4],
-                "model__subsample": [0.8, 1.0],
+                "model__n_estimators": [100, 200, 400],
+                "model__learning_rate": [0.01, 0.03, 0.05, 0.1],
+                "model__max_depth": [1, 2, 3],
+                "model__min_samples_split": [10, 20, 40],
+                "model__min_samples_leaf": [5, 10, 20],
+                "model__subsample": [0.6, 0.8],
+                "model__max_features": ["sqrt", 0.5, None],
             },
         ),
         ModelCandidate(
@@ -289,17 +249,15 @@ def build_model_candidates(
             builder=lambda: _build_pipeline_with_optional_balancer(
                 config,
                 _build_tree_preprocessor(config, numeric_features, categorical_features),
-                DecisionTreeClassifier(
-                    random_state=config.random_state,
-                    class_weight="balanced",
-                ),
+                DecisionTreeClassifier(random_state=config.random_state, class_weight="balanced"),
             ),
             param_distributions={
-                "model__max_depth": [None, 5, 10, 20, 35],
-                "model__min_samples_split": [2, 5, 10],
-                "model__min_samples_leaf": [1, 2, 4],
-                "model__criterion": ["gini", "entropy"],
+                "model__max_depth": [3, 5, 8, 12, 16],
+                "model__min_samples_split": [10, 20, 40],
+                "model__min_samples_leaf": [5, 10, 20, 40],
+                "model__criterion": ["gini", "entropy", "log_loss"],
                 "model__max_features": [None, "sqrt", 0.5],
+                "model__ccp_alpha": [0.0, 0.0001, 0.001, 0.005, 0.01],
             },
         ),
         ModelCandidate(
@@ -307,14 +265,13 @@ def build_model_candidates(
             builder=lambda: _build_pipeline_with_optional_balancer(
                 config,
                 _build_dense_linear_preprocessor(config, numeric_features, categorical_features),
-                KNeighborsClassifier(
-                    n_jobs=1,
-                ),
+                KNeighborsClassifier(n_jobs=1),
             ),
             param_distributions={
-                "model__n_neighbors": [1, 3, 5],
+                "model__n_neighbors": [5, 9, 15, 25, 40],
                 "model__weights": ["uniform", "distance"],
                 "model__p": [1, 2],
+                "model__leaf_size": [20, 30, 50],
             },
         ),
         ModelCandidate(
@@ -325,15 +282,16 @@ def build_model_candidates(
                 MLPClassifier(
                     random_state=config.random_state,
                     max_iter=1000,
-                    early_stopping=False,
-                    n_iter_no_change=15,
+                    early_stopping=True,
+                    validation_fraction=0.15,
+                    n_iter_no_change=20,
                     batch_size="auto",
                 ),
             ),
             param_distributions={
-                "model__hidden_layer_sizes": [(64,), (128,), (128, 64)],
-                "model__alpha": [1e-5, 1e-4, 1e-3],
-                "model__learning_rate_init": [0.001, 0.01],
+                "model__hidden_layer_sizes": [(32,), (64,), (64, 32)],
+                "model__alpha": [0.0001, 0.001, 0.01, 0.1],
+                "model__learning_rate_init": [0.0001, 0.0005, 0.001],
             },
         ),
         ModelCandidate(
@@ -345,27 +303,30 @@ def build_model_candidates(
                     estimator=DecisionTreeClassifier(
                         random_state=config.random_state,
                         class_weight="balanced",
+                        max_depth=10,
+                        min_samples_split=10,
+                        min_samples_leaf=5,
+                        max_features="sqrt",
                     ),
                     random_state=config.random_state,
                     n_jobs=1,
                 ),
             ),
             param_distributions={
-                "model__n_estimators": [50, 100, 200],
-                "model__max_samples": [0.5, 0.8, 1.0],
-                "model__max_features": [0.5, 0.8, 1.0],
+                "model__n_estimators": [100, 200, 400],
+                "model__max_samples": [0.5, 0.7, 0.9],
+                "model__max_features": [0.5, 0.7, 0.9],
+                "model__estimator__max_depth": [5, 8, 12, 16],
+                "model__estimator__min_samples_split": [10, 20, 40],
+                "model__estimator__min_samples_leaf": [3, 5, 10, 20],
             },
         ),
         ModelCandidate(
             name="bayesian",
             builder=lambda: _build_pipeline_with_optional_balancer(
-                config,
-                _build_dense_linear_preprocessor(config, numeric_features, categorical_features),
-                GaussianNB(),
+                config, _build_dense_linear_preprocessor(config, numeric_features, categorical_features), GaussianNB()
             ),
-            param_distributions={
-                "model__var_smoothing": [1e-9, 1e-8, 1e-7, 1e-6],
-            },
+            param_distributions={"model__var_smoothing": [1e-9, 1e-8, 1e-7, 1e-6]},
         ),
     ]
 
@@ -376,17 +337,15 @@ def build_model_candidates(
                 builder=lambda: _build_pipeline_with_optional_balancer(
                     config,
                     _build_hist_preprocessor(numeric_features),
-                    HistGradientBoostingClassifier(
-                        random_state=config.random_state,
-                        class_weight="balanced",
-                    ),
+                    HistGradientBoostingClassifier(random_state=config.random_state, class_weight="balanced"),
                 ),
                 param_distributions={
-                    "model__learning_rate": [0.03, 0.05, 0.1, 0.2],
-                    "model__max_depth": [None, 6, 10],
-                    "model__max_leaf_nodes": [15, 31, 63],
-                    "model__min_samples_leaf": [10, 20, 40],
-                    "model__l2_regularization": [0.0, 0.01, 0.1],
+                    "model__learning_rate": [0.01, 0.03, 0.05, 0.1],
+                    "model__max_iter": [100, 200, 400],
+                    "model__max_depth": [3, 5, 8],
+                    "model__max_leaf_nodes": [7, 15, 31],
+                    "model__min_samples_leaf": [20, 40, 60],
+                    "model__l2_regularization": [0.01, 0.1, 1.0, 10.0],
                 },
             )
         )
@@ -400,20 +359,21 @@ def build_model_candidates(
                     _build_dense_tree_preprocessor(config, numeric_features, categorical_features),
                     ContiguousLabelClassifier(
                         xgboost_module.XGBClassifier(
-                            random_state=config.random_state,
-                            n_jobs=1,
-                            eval_metric="mlogloss",
-                            verbosity=0,
+                            random_state=config.random_state, n_jobs=1, eval_metric="mlogloss", verbosity=0
                         ),
                         num_classes=num_classes,
                     ),
                 ),
                 param_distributions={
-                    "model__base_estimator__n_estimators": [100, 200, 300],
-                    "model__base_estimator__learning_rate": [0.03, 0.1, 0.2],
-                    "model__base_estimator__max_depth": [3, 5, 7],
-                    "model__base_estimator__subsample": [0.8, 1.0],
-                    "model__base_estimator__colsample_bytree": [0.8, 1.0],
+                    "model__base_estimator__n_estimators": [200, 400, 600],
+                    "model__base_estimator__learning_rate": [0.01, 0.03, 0.05, 0.1],
+                    "model__base_estimator__max_depth": [2, 3, 4, 5],
+                    "model__base_estimator__min_child_weight": [3, 5, 10],
+                    "model__base_estimator__subsample": [0.6, 0.8, 1.0],
+                    "model__base_estimator__colsample_bytree": [0.5, 0.7, 0.9],
+                    "model__base_estimator__reg_alpha": [0.0, 0.01, 0.1, 1.0],
+                    "model__base_estimator__reg_lambda": [1.0, 5.0, 10.0],
+                    "model__base_estimator__gamma": [0.0, 0.1, 0.5],
                 },
             )
         )
@@ -427,20 +387,21 @@ def build_model_candidates(
                     _build_dense_tree_preprocessor(config, numeric_features, categorical_features),
                     ContiguousLabelClassifier(
                         lightgbm_module.LGBMClassifier(
-                            random_state=config.random_state,
-                            n_jobs=1,
-                            verbose=-1,
-                            class_weight="balanced",
+                            random_state=config.random_state, n_jobs=1, verbose=-1, class_weight="balanced"
                         ),
                         num_classes=num_classes,
                     ),
                 ),
                 param_distributions={
-                    "model__base_estimator__n_estimators": [100, 200, 300],
-                    "model__base_estimator__learning_rate": [0.03, 0.1, 0.2],
-                    "model__base_estimator__num_leaves": [31, 63, 127],
-                    "model__base_estimator__max_depth": [-1, 5, 10],
-                    "model__base_estimator__min_child_samples": [10, 20, 40],
+                    "model__base_estimator__n_estimators": [200, 400, 600],
+                    "model__base_estimator__learning_rate": [0.01, 0.03, 0.05, 0.1],
+                    "model__base_estimator__num_leaves": [7, 15, 31],
+                    "model__base_estimator__max_depth": [3, 5, 8],
+                    "model__base_estimator__min_child_samples": [20, 40, 80],
+                    "model__base_estimator__subsample": [0.6, 0.8, 1.0],
+                    "model__base_estimator__colsample_bytree": [0.5, 0.7, 0.9],
+                    "model__base_estimator__reg_alpha": [0.0, 0.1, 1.0],
+                    "model__base_estimator__reg_lambda": [0.1, 1.0, 10.0],
                 },
             )
         )
@@ -471,78 +432,41 @@ def build_estimator_by_name(
 
 
 def _build_linear_preprocessor(
-    config: ClassificationPipelineConfig,
-    numeric_features: list[str],
-    categorical_features: list[str],
+    config: ClassificationPipelineConfig, numeric_features: list[str], categorical_features: list[str]
 ) -> ColumnTransformer:
     """Build a preprocessor suitable for linear models."""
     # Apply numeric scaling while keeping categorical output sparse.
-    return _build_preprocessor(
-        config,
-        numeric_features,
-        categorical_features,
-        scale_numeric=True,
-        dense_categorical=False,
-    )
+    return _build_preprocessor(config, numeric_features, categorical_features, scale_numeric=True, dense_categorical=False)
 
 
 def _build_tree_preprocessor(
-    config: ClassificationPipelineConfig,
-    numeric_features: list[str],
-    categorical_features: list[str],
+    config: ClassificationPipelineConfig, numeric_features: list[str], categorical_features: list[str]
 ) -> ColumnTransformer:
     """Build a preprocessor suitable for tree-based models."""
     # Skip scaling because tree models are scale-invariant.
-    return _build_preprocessor(
-        config,
-        numeric_features,
-        categorical_features,
-        scale_numeric=False,
-        dense_categorical=False,
-    )
+    return _build_preprocessor(config, numeric_features, categorical_features, scale_numeric=False, dense_categorical=False)
 
 
 def _build_hist_preprocessor(numeric_features: list[str]) -> ColumnTransformer:
     """Build a numeric-only preprocessor for histogram-based boosting."""
     # Keep preprocessing minimal because this estimator handles nonlinearity internally.
-    return ColumnTransformer(
-        transformers=[
-            ("numeric", SimpleImputer(strategy="median"), numeric_features),
-        ],
-        remainder="drop",
-    )
+    return ColumnTransformer(transformers=[("numeric", SimpleImputer(strategy="median"), numeric_features)], remainder="drop")
 
 
 def _build_dense_linear_preprocessor(
-    config: ClassificationPipelineConfig,
-    numeric_features: list[str],
-    categorical_features: list[str],
+    config: ClassificationPipelineConfig, numeric_features: list[str], categorical_features: list[str]
 ) -> ColumnTransformer:
     """Build a linear-model preprocessor that outputs dense features."""
     # Emit dense categorical matrices for estimators that require dense input.
-    return _build_preprocessor(
-        config,
-        numeric_features,
-        categorical_features,
-        scale_numeric=True,
-        dense_categorical=True,
-    )
+    return _build_preprocessor(config, numeric_features, categorical_features, scale_numeric=True, dense_categorical=True)
 
 
 def _build_dense_tree_preprocessor(
-    config: ClassificationPipelineConfig,
-    numeric_features: list[str],
-    categorical_features: list[str],
+    config: ClassificationPipelineConfig, numeric_features: list[str], categorical_features: list[str]
 ) -> ColumnTransformer:
     """Build a tree-model preprocessor that outputs dense features."""
     # Preserve tree-friendly numeric treatment while densifying categorical features.
-    return _build_preprocessor(
-        config,
-        numeric_features,
-        categorical_features,
-        scale_numeric=False,
-        dense_categorical=True,
-    )
+    return _build_preprocessor(config, numeric_features, categorical_features, scale_numeric=False, dense_categorical=True)
 
 
 def _build_preprocessor(
@@ -557,25 +481,14 @@ def _build_preprocessor(
     # Build numeric and categorical branches from the requested mode flags.
     numeric_transformer = SimpleImputer(strategy="median")
     if scale_numeric:
-        numeric_transformer = Pipeline(
-            steps=[
-                ("imputer", SimpleImputer(strategy="median")),
-                ("scaler", StandardScaler()),
-            ]
-        )
+        numeric_transformer = Pipeline(steps=[("imputer", SimpleImputer(strategy="median")), ("scaler", StandardScaler())])
 
-    encoder_kwargs = {
-        "handle_unknown": "infrequent_if_exist",
-        "min_frequency": config.rare_category_min_frequency,
-    }
+    encoder_kwargs = {"handle_unknown": "infrequent_if_exist", "min_frequency": config.rare_category_min_frequency}
     if dense_categorical:
         encoder_kwargs["sparse_output"] = False
 
     categorical_transformer = Pipeline(
-        steps=[
-            ("imputer", SimpleImputer(strategy="most_frequent")),
-            ("encoder", OneHotEncoder(**encoder_kwargs)),
-        ]
+        steps=[("imputer", SimpleImputer(strategy="most_frequent")), ("encoder", OneHotEncoder(**encoder_kwargs))]
     )
 
     return ColumnTransformer(

@@ -20,7 +20,7 @@ and a runner for measuring sensitivity to the random seed.
 
 | Step | Method | Purpose |
 | --- | --- | --- |
-| 1 | `run_check(df)` | Validate data, optionally reshape longitudinal observations, remove unusable features, profile the input, and persist it. |
+| 1 | `run_check(df)` | Validate one-row-per-entity input, remove unusable features, profile it, and persist it. |
 | 2 | `run_prepare()` | Encode labels and build the train/test split and reproducible CV folds. |
 | 3 | `run_train()` | Tune candidate estimators and persist each fitted best model and its CV results. |
 | 4 | `run_evaluate()` | Evaluate on the reserved test set, create diagnostics and interpretability outputs, and select a single model or soft-voting ensemble. |
@@ -56,12 +56,11 @@ summaries = pipeline.run_all(df)
 The target may be missing for rows that need classification, but the labeled
 subset must contain at least two classes and at least `cv_folds` observations
 per class. Numeric and categorical features are supported. The ID, target,
-geometry, and raw time columns must not be included in `feature_columns`.
+and geometry columns must not be included in `feature_columns`.
 
-If `id_column` is absent, the dataframe index is used, except in longitudinal
-mode where an explicit entity ID is required. A GeoDataFrame is required only
-for spatial splitting and meaningful map outputs; ordinary dataframe projects
-can use the default stratified split.
+If `id_column` is absent, the dataframe index is used. A GeoDataFrame is
+required only for spatial splitting and meaningful map outputs; ordinary
+dataframe projects can use the default stratified split.
 
 ### Important output-directory behavior
 
@@ -91,18 +90,25 @@ places for source data or code.
   `prediction_needs_review` (default `0.60`).
 - `open_html_report=True`: open generated HTML reports after writing them.
 
-For parcel-period data, configure the entity and time columns and let the check
-step pivot observations to one row per entity:
+Satellite zonal statistics already writes one ML-ready GeoParquet row per
+parcel. Select its dated `feature__YYYYMMDD` columns directly:
+
+Sentinel-2 index features in that artifact are calculated after IQR cleaning
+and null filling of their physical source bands. This keeps indices sharing a
+source band consistent and prevents independently interpolated index ratios.
+The zonal-statistics pipeline also retains observation-only index state, so
+valid-pixel counts exclude values that depend on an imputed source band.
 
 ```python
 config = ClassificationPipelineConfig(
     project_dir="src/crop_classifier_run",
     target_column="class",
     id_column="parcel_id",
-    time_column="period_start",
-    reshape_time_series=True,
-    prediction_cutoff="2024-09-30",
-    feature_columns=["ndvi", "evi", "rainfall"],
+    feature_columns=[
+        "NDVI_median__20240101",
+        "NDVI_median__20240201",
+        "VV_mean__20240101",
+    ],
     spatial_split=True,
     spatial_split_method="by_group",
 )

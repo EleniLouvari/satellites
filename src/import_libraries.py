@@ -1,3 +1,6 @@
+"""Import all required libraries for the pipeline."""
+
+
 import sys
 import os
 import pathlib
@@ -9,6 +12,7 @@ import base64
 import gc
 import psutil
 import requests
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from operator import eq
 from cftime import DatetimeGregorian
@@ -194,29 +198,8 @@ from skimpy import skim
 import cdsapi
 
 from osgeo import gdal, osr
-
-# import ee
-# import geemap
-# import utm
-# import wxee
-
-import pystac
-# import pystac_client
-# import planetary_computer
-# from urllib.parse import urlencode
-# from pystac_client import Client
-# from pystac.extensions.eo import EOExtension as eo
-# from planetary_computer import sign
-# from odc.stac import load
-# import odc.geo
-
 import psycopg2
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 from psycopg2.extras import RealDictCursor
 
-# from clusteval import clusteval
-# from df2onehot import df2onehot
 from sklearn.manifold import TSNE
-
-# TODO
-# for fast reading xlsx files: pip install python-calamine, df = pd.read_excel(f_path, engine='calamine')

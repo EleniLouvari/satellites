@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 from typing import Any
-import warnings
 
 import pandas as pd
 
 from .core.persistence import print_formatted_txt, time_decorator
-from .core.config import ClassificationPipelineConfig
 from .steps import CheckStep, EvaluateStep, PredictStep, PrepareStep, TrainStep
 
 # Compose the individual step mixins here so callers can run the workflow through one object.
@@ -29,20 +27,3 @@ class GeospatialClassificationPipeline(CheckStep, PrepareStep, TrainStep, Evalua
             "evaluate": self.run_evaluate(),
             "predict": self.run_predict(),
         }
-
-
-class AutonomousClassificationPipeline(GeospatialClassificationPipeline):
-    """Backward-compatible alias for `GeospatialClassificationPipeline`.
-
-    Notes:
-        Deprecated. Prefer `GeospatialClassificationPipeline` in new code.
-    """
-
-    def __init__(self, config: ClassificationPipelineConfig):
-        """Initialize deprecated alias and emit a deprecation warning."""
-        warnings.warn(
-            "AutonomousClassificationPipeline is deprecated; use GeospatialClassificationPipeline instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        super().__init__(config)

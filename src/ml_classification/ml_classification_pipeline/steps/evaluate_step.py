@@ -6,6 +6,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from common_libraries.io_library import read_data
 from sklearn.metrics import classification_report, confusion_matrix, precision_recall_fscore_support, roc_auc_score
 
 # Evaluation operates only on held-out data to keep reported model comparisons unbiased.
@@ -16,18 +17,8 @@ from ..core.metrics import (
     score_predictions,
     select_top_models_for_interpretability,
 )
-from ..core.persistence import (
-    load_joblib,
-    load_json,
-    print_formatted_txt,
-    save_frame_csv,
-    save_json,
-    time_decorator,
-)
-from ..core.selection import (
-    evaluate_voting_candidate,
-    sort_metrics_without_voting,
-)
+from ..core.persistence import load_joblib, load_json, print_formatted_txt, save_frame_csv, save_json, time_decorator
+from ..core.selection import apply_class_probability_multipliers, evaluate_voting_candidate, sort_metrics_without_voting
 from ..reporting import write_evaluate_report, write_index_report
 from ..core import PipelineStepBase
 from ..visuals import (
@@ -44,8 +35,8 @@ from ..visuals import (
 class EvaluateStep(PipelineStepBase):
     """Evaluate trained models on train/test sets and choose prediction strategy."""
 
-    @staticmethod
     def _to_geo_classifier_result_row(
+        self,
         y_true: pd.Series,
         y_pred: np.ndarray,
         probabilities: np.ndarray | None,
@@ -61,10 +52,13 @@ class EvaluateStep(PipelineStepBase):
                 tn, fp, fn, tp = conf_matrix.ravel()
             else:
                 tn = fp = fn = tp = 0
+            # Compute confusion-derived metrics safely (avoid division-by-zero).
             precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
             recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
             f1 = (2 * tp) / (2 * tp + fp + fn) if (2 * tp + fp + fn) > 0 else 0.0
+            # Overall accuracy across examples.
             accuracy = float(np.mean(np.asarray(y_true) == np.asarray(y_pred)))
+            # Compute binary AUC when probabilities available; handle invalid cases.
             auc = np.nan
             if probabilities is not None and probabilities.shape[1] >= 2:
                 try:
@@ -85,16 +79,14 @@ class EvaluateStep(PipelineStepBase):
             }
 
         precision_arr, recall_arr, f1_arr, _ = precision_recall_fscore_support(
-            y_true,
-            y_pred,
-            average=None,
-            labels=labels,
-            zero_division=0,
+            y_true, y_pred, average=None, labels=labels, zero_division=0
         )
+        # Per-class precision/recall/f1 and overall accuracy for multiclass problems.
         accuracy = float(np.mean(np.asarray(y_true) == np.asarray(y_pred)))
         roc_auc_str = "Undefined"
         if probabilities is not None:
             try:
+                # Compute per-class ROC AUC with one-vs-rest approach when possible.
                 auc_per_class = roc_auc_score(y_true, probabilities, labels=labels, multi_class="ovr", average=None)
                 roc_auc_str = ", ".join([f"class {idx} ({100 * score:.2f})" for idx, score in enumerate(auc_per_class)])
             except ValueError:
@@ -114,107 +106,171 @@ class EvaluateStep(PipelineStepBase):
             "roc_auc_class": roc_auc_str,
         }
 
+    def _load_evaluation_inputs(self):
+        # Load modeling context and prepared train/test datasets used for holdout evaluation.
+        context = load_modeling_context(self.config)
+        train_df = load_joblib(self.config.prepare_dir / "train_dataset.joblib")
+        test_df = load_joblib(self.config.prepare_dir / "test_dataset.joblib")
+        features = context["active_features"]
+        # Return inputs packaged as a dict for downstream evaluation routines.
+        return {
+            "context": context,
+            "model_specs": load_json(self.config.train_dir / "model_specs.json"),
+            "cv_metrics": read_data(str(self.config.train_dir / "training_summary.csv"), watch_curly_brackets=False),
+            "X_train": train_df[features].copy(),
+            "y_train": train_df[self.config.target_column].astype(str).copy(),
+            "X_test": test_df[features].copy(),
+            "y_test": test_df[self.config.target_column].astype(str).copy(),
+        }
+
+    def _model_artifact_path(self, model_name):
+        # Prefer model artefact inside model-specific folder, fallback to top-level train dir.
+        path = self.config.train_model_dir(model_name) / "best_model.joblib"
+        return path if path.exists() else self.config.train_dir / f"{model_name}_best_model.joblib"
+
+    def _save_model_evaluation_plot(self, model_name, y_test, predictions, probabilities, labels):
+        # If no probabilities, only save confusion matrix for the model.
+        if probabilities is None:
+            save_confusion_matrix_plot(
+                y_test, predictions, labels,
+                self.config.evaluate_dir / "confusion_matrices" / f"{model_name}_confusion_matrix.png",
+                f"Confusion Matrix: {model_name}",
+            )
+            return
+        # When probabilities exist, save combined ROC/confusion panels for binary or multiclass.
+        panel_path = self.config.evaluate_dir / "panels" / f"{model_name}_roc_confusion.png"
+        if len(labels) == 2:
+            # Binary-specific evaluation visuals use the positive-class probability column.
+            save_binary_evaluation_panel(y_test, predictions, probabilities[:, 1], labels, panel_path, model_name)
+            save_binary_curve_plots(
+                y_test, probabilities[:, 1], self.config.evaluate_dir / "curves", model_name,
+                pos_label=labels[1], include_roc=False,
+            )
+        else:
+            # Multiclass panel visualizes per-class metrics and curves.
+            save_multiclass_evaluation_panel(y_test, predictions, probabilities, labels, panel_path, model_name)
+
+    def _evaluate_base_models(self, inputs):
+        # Evaluate each trained model on train/test splits, collecting metrics and artifacts.
+        context = inputs["context"]
+        labels = context["labels"]
+        encoder = context["label_encoder"]
+        # Caches hold probability arrays for train/test/oof (if available) to support voting.
+        caches = {"train": {}, "test": {}, "oof": {}}
+        metric_rows = {"train": [], "test": []}
+        geo_rows = {"train": [], "test": []}
+        estimators = {}
+        for model_name in inputs["model_specs"]:
+            # Load the persisted best estimator for this candidate model.
+            estimator = load_joblib(self._model_artifact_path(model_name))
+            estimators[model_name] = estimator
+            # Load out-of-fold probabilities if saved during training (used for class optimization).
+            oof_path = self.config.train_model_dir(model_name) / "oof_probabilities.joblib"
+            if oof_path.exists():
+                caches["oof"][model_name] = load_joblib(oof_path)
+            split_values = {}
+            for split_name in ("train", "test"):
+                X = inputs[f"X_{split_name}"]
+                y = inputs[f"y_{split_name}"]
+                # Predict encoded labels and convert back to original string labels.
+                encoded = estimator.predict(X)
+                predictions = encoder.inverse_transform(np.asarray(encoded, dtype=int))
+                # Obtain class probabilities when supported by estimator.
+                probabilities = estimator.predict_proba(X) if hasattr(estimator, "predict_proba") else None
+                split_values[split_name] = (predictions, probabilities)
+                # Score predictions and record legacy geo-classifier-style rows.
+                metric_rows[split_name].append(score_predictions(y, predictions, probabilities, labels, model_name))
+                geo_rows[split_name].append(self._to_geo_classifier_result_row(y, predictions, probabilities, labels, model_name))
+                if probabilities is not None:
+                    caches[split_name][model_name] = probabilities
+            # Save a per-model classification report and evaluation plots for the test split.
+            test_predictions, test_probabilities = split_values["test"]
+            report = pd.DataFrame(classification_report(inputs["y_test"], test_predictions, output_dict=True)).T.reset_index()
+            report.rename(columns={"index": "label"}, inplace=True)
+            save_frame_csv(report, self.config.evaluate_dir / "reports" / f"{model_name}_classification_report.csv")
+            self._save_model_evaluation_plot(
+                model_name, inputs["y_test"], test_predictions, test_probabilities, labels
+            )
+        return metric_rows, geo_rows, caches, estimators
+
+    def _save_interpretability(self, cv_metrics_df, test_metrics_df, fitted_estimators, X_train):
+        # Select top models for interpretability analysis and optionally produce SHAP/importance outputs.
+        available = cv_metrics_df["model"].tolist()
+        top_n = min(self.config.interpretability_top_models, len(available))
+        if self.config.interpretability_top_models > top_n:
+            print_formatted_txt(
+                f"interpretability_top_models is larger than the available selected models. "
+                f"Using {top_n} instead of {self.config.interpretability_top_models}.", "WARNING"
+            )
+        # Define which model families support feature importance extraction.
+        tree_models = {
+            "random_forest", "extra_trees", "gradient_boosting", "decision_tree",
+            "hist_gradient_boosting", "xgboost", "lightgbm",
+        }
+        rows = []
+        for model_name in select_top_models_for_interpretability(cv_metrics_df, top_n):
+            estimator = fitted_estimators.get(model_name)
+            if estimator is None:
+                # Skip interpretability if estimator not available (should be rare).
+                continue
+            row = {
+                "model": model_name,
+                "cv_ranking_metric": float(cv_metrics_df.loc[cv_metrics_df["model"] == model_name, "cv_ranking_metric"].iloc[0]),
+                "test_metric": float(test_metrics_df.loc[test_metrics_df["model"] == model_name, self.config.scoring_primary].iloc[0]),
+                "feature_importance_created": False, "shap_created": False, "notes": "",
+            }
+            # For tree-based models, extract and persist feature importance data + plot.
+            if model_name in tree_models:
+                importance = extract_feature_importance_frame(estimator)
+                if importance is not None and not importance.empty:
+                    importance_top_n = min(self.config.feature_importance_top_n, len(importance))
+                    if self.config.feature_importance_top_n > importance_top_n:
+                        print_formatted_txt(
+                            f"feature_importance_top_n for {model_name} is larger than the available features. "
+                            f"Using {importance_top_n} instead of {self.config.feature_importance_top_n}.", "WARNING"
+                        )
+                    base_path = self.config.evaluate_dir / "interpretability" / f"{model_name}_feature_importance"
+                    save_frame_csv(importance, base_path.with_suffix(".csv"))
+                    save_feature_importance_plot(importance, base_path.with_suffix(".png"), model_name, top_n=importance_top_n)
+                    row["feature_importance_created"] = True
+                else:
+                    row["notes"] = "Feature importance was not available for the fitted estimator."
+            else:
+                row["notes"] = "Feature importance is only generated for tree-based top models."
+            # Optionally attempt SHAP summaries; exceptions are caught and logged.
+            if self.config.interpretability_include_shap:
+                sample = X_train.sample(n=min(self.config.shap_sample_size, len(X_train)), random_state=self.config.random_state)
+                try:
+                    save_shap_summary_plot(
+                        estimator, sample,
+                        self.config.evaluate_dir / "interpretability" / f"{model_name}_shap_summary.png",
+                        model_name, max_display=min(self.config.feature_importance_top_n, max(len(sample.columns), 1)),
+                    )
+                    row["shap_created"] = True
+                except Exception as exc:
+                    message = f"SHAP skipped for {model_name}: {exc}"
+                    print_formatted_txt(message, "WARNING")
+                    row["notes"] = f"{row['notes']} {message}".strip()
+            rows.append(row)
+        if rows:
+            save_frame_csv(pd.DataFrame(rows), self.config.evaluate_dir / "interpretability" / "interpretability_summary.csv")
+
     @time_decorator
     def run_evaluate(self) -> dict[str, Any]:
         """Evaluate fitted models, generate reports, and select final strategy."""
         # Load prepared data and model artifacts for holdout evaluation.
         print_formatted_txt("Evaluating models...", "SUBSECTION")
-        test_df = load_joblib(self.config.prepare_dir / "test_dataset.joblib")
-        context = load_modeling_context(self.config)
-        model_specs = load_json(self.config.train_dir / "model_specs.json")
-        cv_metrics_df = pd.read_csv(self.config.train_dir / "training_summary.csv")
+        inputs = self._load_evaluation_inputs()
+        context = inputs["context"]
+        cv_metrics_df = inputs["cv_metrics"]
         labels = context["labels"]
-        active_features = context["active_features"]
-        train_df = load_joblib(self.config.prepare_dir / "train_dataset.joblib")
-        label_encoder = context["label_encoder"]
-        X_train = train_df[active_features].copy()
-        y_train = train_df[self.config.target_column].astype(str).copy()
-        X_test = test_df[active_features].copy()
-        y_test = test_df[self.config.target_column].astype(str).copy()
-
-        train_rows: list[dict[str, Any]] = []
-        test_rows: list[dict[str, Any]] = []
-        geo_train_rows: list[dict[str, Any]] = []
-        geo_test_rows: list[dict[str, Any]] = []
-        probability_cache_train: dict[str, np.ndarray] = {}
-        probability_cache_test: dict[str, np.ndarray] = {}
-        fitted_estimators: dict[str, Any] = {}
-        binary_problem = len(labels) == 2
-
-        for model_name in model_specs:
-            model_artifact_path = self.config.train_model_dir(model_name) / "best_model.joblib"
-            if not model_artifact_path.exists():
-                model_artifact_path = self.config.train_dir / f"{model_name}_best_model.joblib"
-            estimator = load_joblib(model_artifact_path)
-            fitted_estimators[model_name] = estimator
-            train_predictions_encoded = estimator.predict(X_train)
-            test_predictions_encoded = estimator.predict(X_test)
-            train_predictions = label_encoder.inverse_transform(np.asarray(train_predictions_encoded, dtype=int))
-            test_predictions = label_encoder.inverse_transform(np.asarray(test_predictions_encoded, dtype=int))
-            train_probabilities = estimator.predict_proba(X_train) if hasattr(estimator, "predict_proba") else None
-            test_probabilities = estimator.predict_proba(X_test) if hasattr(estimator, "predict_proba") else None
-            train_rows.append(score_predictions(y_train, train_predictions, train_probabilities, labels, model_name))
-            test_rows.append(score_predictions(y_test, test_predictions, test_probabilities, labels, model_name))
-            geo_train_rows.append(
-                self._to_geo_classifier_result_row(
-                    y_true=y_train,
-                    y_pred=train_predictions,
-                    probabilities=train_probabilities,
-                    labels=labels,
-                    model_name=model_name,
-                )
-            )
-            geo_test_rows.append(
-                self._to_geo_classifier_result_row(
-                    y_true=y_test,
-                    y_pred=test_predictions,
-                    probabilities=test_probabilities,
-                    labels=labels,
-                    model_name=model_name,
-                )
-            )
-
-            report_df = pd.DataFrame(classification_report(y_test, test_predictions, output_dict=True)).T.reset_index()
-            report_df.rename(columns={"index": "label"}, inplace=True)
-            save_frame_csv(report_df, self.config.evaluate_dir / "reports" / f"{model_name}_classification_report.csv")
-
-            if test_probabilities is not None:
-                probability_cache_train[model_name] = train_probabilities
-                probability_cache_test[model_name] = test_probabilities
-                if binary_problem:
-                    save_binary_evaluation_panel(
-                        y_test,
-                        test_predictions,
-                        test_probabilities[:, 1],
-                        labels,
-                        self.config.evaluate_dir / "panels" / f"{model_name}_roc_confusion.png",
-                        model_name,
-                    )
-                    save_binary_curve_plots(
-                        y_test,
-                        test_probabilities[:, 1],
-                        self.config.evaluate_dir / "curves",
-                        model_name,
-                        pos_label=labels[1],
-                        include_roc=False,
-                    )
-                else:
-                    save_multiclass_evaluation_panel(
-                        y_test,
-                        test_predictions,
-                        test_probabilities,
-                        labels,
-                        self.config.evaluate_dir / "panels" / f"{model_name}_roc_confusion.png",
-                        model_name,
-                    )
-            else:
-                save_confusion_matrix_plot(
-                    y_test,
-                    test_predictions,
-                    labels,
-                    self.config.evaluate_dir / "confusion_matrices" / f"{model_name}_confusion_matrix.png",
-                    f"Confusion Matrix: {model_name}",
-                )
+        # Unpack training/test arrays and run base model evaluations to collect metrics and plots.
+        X_train, y_train, y_test = inputs["X_train"], inputs["y_train"], inputs["y_test"]
+        metric_rows, geo_rows, caches, fitted_estimators = self._evaluate_base_models(inputs)
+        train_rows, test_rows = metric_rows["train"], metric_rows["test"]
+        geo_train_rows, geo_test_rows = geo_rows["train"], geo_rows["test"]
+        probability_cache_train, probability_cache_test = caches["train"], caches["test"]
+        oof_probability_cache = caches["oof"]
 
         train_metrics_df = pd.DataFrame(train_rows).sort_values(self.config.scoring_primary, ascending=True)
         test_metrics_df = pd.DataFrame(test_rows).sort_values(self.config.scoring_primary, ascending=True)
@@ -223,113 +279,10 @@ class EvaluateStep(PipelineStepBase):
         save_frame_csv(train_metrics_df, self.config.evaluate_dir / "model_metrics_train.csv")
         save_frame_csv(test_metrics_df, self.config.evaluate_dir / "model_metrics_test.csv")
         save_model_comparison_plot(
-            test_metrics_df,
-            self.config.evaluate_dir / "plots" / "model_comparison.png",
-            self.config.scoring_primary,
+            test_metrics_df, self.config.evaluate_dir / "plots" / "model_comparison.png", self.config.scoring_primary
         )
 
-        interpretability_rows: list[dict[str, Any]] = []
-        available_interpretability_models = cv_metrics_df["model"].tolist()
-        effective_interpretability_top_models = min(
-            self.config.interpretability_top_models,
-            len(available_interpretability_models),
-        )
-        if self.config.interpretability_top_models > effective_interpretability_top_models:
-            print_formatted_txt(
-                (
-                    "interpretability_top_models is larger than the available selected models. "
-                    f"Using {effective_interpretability_top_models} instead of "
-                    f"{self.config.interpretability_top_models}."
-                ),
-                "WARNING",
-            )
-        interpretability_models = select_top_models_for_interpretability(
-            cv_metrics_df,
-            effective_interpretability_top_models,
-        )
-        tree_like_models = {
-            "random_forest",
-            "extra_trees",
-            "gradient_boosting",
-            "decision_tree",
-            "hist_gradient_boosting",
-            "xgboost",
-            "lightgbm",
-        }
-        for model_name in interpretability_models:
-            estimator = fitted_estimators.get(model_name)
-            if estimator is None:
-                continue
-            row = {
-                "model": model_name,
-                "cv_ranking_metric": float(
-                    cv_metrics_df.loc[
-                        cv_metrics_df["model"] == model_name,
-                        "cv_ranking_metric",
-                    ].iloc[0]
-                ),
-                "test_metric": float(
-                    test_metrics_df.loc[test_metrics_df["model"] == model_name, self.config.scoring_primary].iloc[0]
-                ),
-                "feature_importance_created": False,
-                "shap_created": False,
-                "notes": "",
-            }
-            if model_name in tree_like_models:
-                importance_df = extract_feature_importance_frame(estimator)
-                if importance_df is not None and not importance_df.empty:
-                    effective_feature_importance_top_n = min(
-                        self.config.feature_importance_top_n,
-                        len(importance_df),
-                    )
-                    if self.config.feature_importance_top_n > effective_feature_importance_top_n:
-                        print_formatted_txt(
-                            (
-                                f"feature_importance_top_n for {model_name} is larger than the available "
-                                f"features. Using {effective_feature_importance_top_n} instead of "
-                                f"{self.config.feature_importance_top_n}."
-                            ),
-                            "WARNING",
-                        )
-                    importance_csv_path = self.config.evaluate_dir / "interpretability" / f"{model_name}_feature_importance.csv"
-                    importance_plot_path = self.config.evaluate_dir / "interpretability" / f"{model_name}_feature_importance.png"
-                    save_frame_csv(importance_df, importance_csv_path)
-                    save_feature_importance_plot(
-                        importance_df,
-                        importance_plot_path,
-                        model_name,
-                        top_n=effective_feature_importance_top_n,
-                    )
-                    row["feature_importance_created"] = True
-                else:
-                    row["notes"] = "Feature importance was not available for the fitted estimator."
-            else:
-                row["notes"] = "Feature importance is only generated for tree-based top models."
-
-            if self.config.interpretability_include_shap:
-                sample_size = min(self.config.shap_sample_size, len(X_train))
-                X_sample = X_train.sample(n=sample_size, random_state=self.config.random_state)
-                try:
-                    save_shap_summary_plot(
-                        estimator,
-                        X_sample,
-                        self.config.evaluate_dir / "interpretability" / f"{model_name}_shap_summary.png",
-                        model_name,
-                        max_display=min(self.config.feature_importance_top_n, max(len(X_sample.columns), 1)),
-                    )
-                    row["shap_created"] = True
-                except Exception as exc:
-                    message = f"SHAP skipped for {model_name}: {exc}"
-                    print_formatted_txt(message, "WARNING")
-                    row["notes"] = f"{row['notes']} {message}".strip()
-            interpretability_rows.append(row)
-
-        if interpretability_rows:
-            interpretability_df = pd.DataFrame(interpretability_rows)
-            save_frame_csv(
-                interpretability_df,
-                self.config.evaluate_dir / "interpretability" / "interpretability_summary.csv",
-            )
+        self._save_interpretability(cv_metrics_df, test_metrics_df, fitted_estimators, X_train)
 
         selection = evaluate_voting_candidate(
             config=self.config,
@@ -341,13 +294,10 @@ class EvaluateStep(PipelineStepBase):
             y_train=y_train,
             y_test=y_test,
             labels=labels,
+            oof_probability_cache=oof_probability_cache,
         )
 
-        prob_models = (
-            list(selection["selected_models"])
-            if selection["selection_type"] == "soft_voting"
-            else []
-        )
+        prob_models = list(selection["selected_models"]) if selection["selection_type"] == "soft_voting" else []
         if len(prob_models) >= 2:
             averaged_probs_train = np.zeros_like(probability_cache_train[prob_models[0]], dtype=np.float64)
             averaged_probs_test = np.zeros_like(probability_cache_test[prob_models[0]], dtype=np.float64)
@@ -356,6 +306,10 @@ class EvaluateStep(PipelineStepBase):
                 averaged_probs_test += probability_cache_test[model_name]
             averaged_probs_train /= len(prob_models)
             averaged_probs_test /= len(prob_models)
+            averaged_probs_train = apply_class_probability_multipliers(averaged_probs_train, labels,
+                                                                       selection.get("class_probability_multipliers"))
+            averaged_probs_test = apply_class_probability_multipliers(averaged_probs_test, labels,
+                                                                      selection.get("class_probability_multipliers"))
 
             voting_predictions_train = np.asarray(labels)[np.argmax(averaged_probs_train, axis=1)]
             voting_predictions_test = np.asarray(labels)[np.argmax(averaged_probs_test, axis=1)]
@@ -401,7 +355,7 @@ class EvaluateStep(PipelineStepBase):
         }
         interpretability_summary_path = self.config.evaluate_dir / "interpretability" / "interpretability_summary.csv"
         if interpretability_summary_path.exists():
-            interpretability_summary_df = pd.read_csv(interpretability_summary_path)
+            interpretability_summary_df = read_data(str(interpretability_summary_path), watch_curly_brackets=False)
             csv_contracts["interpretability_summary.csv"] = interpretability_summary_df.columns.tolist()
         save_json(selection_with_schema, self.config.evaluate_dir / "selection_summary.json")
         self._save_schema_manifest(
@@ -411,12 +365,12 @@ class EvaluateStep(PipelineStepBase):
             csv_contracts=csv_contracts,
         )
         train_report_df = (
-            pd.read_csv(self.config.evaluate_dir / "model_metrics_train_with_voting.csv")
+            read_data(str(self.config.evaluate_dir / "model_metrics_train_with_voting.csv"), watch_curly_brackets=False)
             if (self.config.evaluate_dir / "model_metrics_train_with_voting.csv").exists()
             else train_metrics_df
         )
         test_report_df = (
-            pd.read_csv(self.config.evaluate_dir / "model_metrics_test_with_voting.csv")
+            read_data(str(self.config.evaluate_dir / "model_metrics_test_with_voting.csv"), watch_curly_brackets=False)
             if (self.config.evaluate_dir / "model_metrics_test_with_voting.csv").exists()
             else test_metrics_df
         )
@@ -429,8 +383,5 @@ class EvaluateStep(PipelineStepBase):
             geo_test_metrics_df=geo_test_report_df,
         )
         write_index_report(self.config)
-        print_formatted_txt(
-            f"Selected strategy: {selection['selection_type']} using {selection['selected_models']}",
-            "RESULTS",
-        )
+        print_formatted_txt(f"Selected strategy: {selection['selection_type']} using {selection['selected_models']}", "RESULTS")
         return selection_with_schema

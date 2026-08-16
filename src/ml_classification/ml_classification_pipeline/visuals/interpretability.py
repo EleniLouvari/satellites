@@ -1,5 +1,10 @@
-"""Interpretability plotting utilities including feature importance and SHAP summaries."""
+"""Interpretability plotting utilities including feature importance and SHAP summaries.
 
+SHAP support is optional: functions attempt a lazy import and provide clear
+errors when the environment does not include the `shap` package. The helpers
+write image files and clean up matplotlib state to avoid interfering with
+other plotting in the same process.
+"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -14,12 +19,7 @@ from ..core.persistence import ensure_dir
 # Interpretability routines degrade gracefully when optional SHAP support is unavailable.
 
 
-def save_feature_importance_plot(
-    importance_df: pd.DataFrame,
-    output_path: str | Path,
-    model_name: str,
-    top_n: int = 15,
-) -> None:
+def save_feature_importance_plot(importance_df: pd.DataFrame, output_path: str | Path, model_name: str, top_n: int = 15) -> None:
     """Save a horizontal bar chart of top feature importances."""
     # Rank by absolute importance so positive/negative signs do not hide impact.
     if importance_df.empty:
@@ -34,14 +34,12 @@ def save_feature_importance_plot(
 
 
 def save_shap_summary_plot(
-    estimator,
-    X_sample: pd.DataFrame,
-    output_path: str | Path,
-    model_name: str,
-    max_display: int = 15,
+    estimator, X_sample: pd.DataFrame, output_path: str | Path, model_name: str, max_display: int = 15
 ) -> None:
     """Compute and save a SHAP summary visualization for an estimator."""
-    # Import SHAP lazily so the dependency remains optional.
+    # Import SHAP lazily so the dependency remains optional. Raising a
+    # RuntimeError here surfaces the missing dependency clearly to callers
+    # that expect interpretability outputs.
     try:
         import shap
     except Exception as exc:
@@ -72,9 +70,7 @@ def save_shap_summary_plot(
 
     with warnings.catch_warnings():
         warnings.filterwarnings(
-            "ignore",
-            message=r"The NumPy global RNG was seeded by calling `np\.random\.seed`.*",
-            category=FutureWarning,
+            "ignore", message=r"The NumPy global RNG was seeded by calling `np\.random\.seed`.*", category=FutureWarning
         )
         background = transformed[: min(100, len(transformed))]
         eval_data = transformed[: min(200, len(transformed))]
@@ -130,7 +126,9 @@ def _render_shap_summary_figure(shap, shap_values, eval_data, feature_names, out
     if isinstance(shap_values, list):
         if len(shap_values) == 2:
             plt.figure(figsize=(12, 7))
-            shap.summary_plot(np.asarray(shap_values[1]), eval_data, feature_names=feature_names, max_display=max_display, show=False)
+            shap.summary_plot(
+                np.asarray(shap_values[1]), eval_data, feature_names=feature_names, max_display=max_display, show=False
+            )
             plt.title(f"SHAP Summary Plot for {model_name}")
             _save_figure(plt.gcf(), output_path)
             return
@@ -167,11 +165,7 @@ def _save_multiclass_shap_grid(shap, shap_values_3d, eval_data, feature_names, o
         ax = axes[class_idx]
         shap_fig = plt.figure(figsize=(7, 5))
         shap.summary_plot(
-            shap_values_3d[:, :, class_idx],
-            eval_data,
-            feature_names=feature_names,
-            max_display=max_display,
-            show=False,
+            shap_values_3d[:, :, class_idx], eval_data, feature_names=feature_names, max_display=max_display, show=False
         )
         shap_fig.canvas.draw()
         img = _canvas_to_rgb_array(shap_fig.canvas)

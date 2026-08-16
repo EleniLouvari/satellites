@@ -12,13 +12,15 @@ from ..core.persistence import append_log, ensure_dir
 
 # Escape externally supplied text before interpolating it into generated HTML.
 
-def write_html_report(
-    output_path: str | Path,
-    title: str,
-    intro: str,
-    sections: list[dict[str, Any]],
-) -> None:
-    """Render a complete HTML report page from structured section data."""
+
+def write_html_report(output_path: str | Path, title: str, intro: str, sections: list[dict[str, Any]]) -> None:
+    """Render a complete HTML report page from structured section data.
+
+    The function accepts a small, structured representation of report
+    sections (key/value blocks, tables, images, embeds, links) and writes a
+    standalone HTML file. All external text is escaped to avoid accidental
+    HTML injection when reports include user-provided values.
+    """
     # Build the page head and body incrementally for predictable output ordering.
     output_path = Path(output_path)
     ensure_dir(output_path.parent)
@@ -62,6 +64,7 @@ def write_html_report(
     append_log(f"Generated HTML report: {output_path}", level="INFO")
     if section.get("open_html_report", False):
         import webbrowser
+
         webbrowser.open(output_path.as_uri())
 
 
@@ -72,19 +75,16 @@ def _render_key_values(values: dict[str, Any]) -> str:
     key_lengths = [len(str(key)) for key in values]
     key_width_ch = max(key_lengths, default=12) + 1
     for key, value in values.items():
-        rows.append("<tr>" f"<th>{escape(str(key))}</th>" f"<td>{escape(_stringify(value))}</td>" "</tr>")
+        rows.append(f"<tr><th>{escape(str(key))}</th><td>{escape(_stringify(value))}</td></tr>")
     return (
         "<div class='table-scroll'>"
-        f"<table class='kv-table' style='width: max-content; max-width: none;'><colgroup><col style='width: {key_width_ch}ch;'></colgroup>"
-        + "".join(rows)
-        + "</table></div>"
+        "<table class='kv-table' style='width: max-content; max-width: none;'>"
+        f"<colgroup><col style='width: {key_width_ch}ch;'></colgroup>" + "".join(rows) + "</table></div>"
     )
 
 
 def _render_table(
-    table: pd.DataFrame,
-    highlight_rows_where: dict[str, Any] | None = None,
-    compact_first_column: bool = False,
+    table: pd.DataFrame, highlight_rows_where: dict[str, Any] | None = None, compact_first_column: bool = False
 ) -> str:
     """Render a dataframe as an HTML table with optional row highlighting."""
     # Limit table preview size to keep reports responsive.
@@ -195,9 +195,11 @@ body { background: #f4f1ea; color: #1f2933; font-family: 'Segoe UI', Tahoma, san
 .page { max-width: 1440px; margin: 0 auto; padding: 32px 20px 64px; }
 h1, h2 { color: #12343b; }
 .intro { font-size: 1.05rem; max-width: 900px; }
-.card { background: #ffffff; border-radius: 18px; padding: 22px 24px; margin: 20px 0; box-shadow: 0 8px 24px rgba(18, 52, 59, 0.08); }
+.card { background: #ffffff; border-radius: 18px; padding: 22px 24px; margin: 20px 0;
+box-shadow: 0 8px 24px rgba(18, 52, 59, 0.08); }
 .kv-table, .data-table { width: 100%; border-collapse: collapse; margin-top: 12px; }
-.kv-table th, .kv-table td, .data-table th, .data-table td { border-bottom: 1px solid #e5e7eb; padding: 12px 16px; text-align: left; vertical-align: top; }
+.kv-table th, .kv-table td, .data-table th, .data-table td { border-bottom: 1px solid #e5e7eb;
+padding: 12px 16px; text-align: left; vertical-align: top; }
 .kv-table th { color: #486581; white-space: nowrap; width: 1%; }
 .kv-table td { white-space: nowrap; }
 .table-scroll { width: 100%; overflow-x: auto; overflow-y: visible; margin-top: 12px; padding-bottom: 6px; }
@@ -205,7 +207,8 @@ h1, h2 { color: #12343b; }
 .table-scroll table { min-width: max-content; margin-top: 0; }
 .data-table { table-layout: fixed; }
 .compact-first-col { width: max-content; max-width: none; table-layout: auto; }
-.data-table thead th { background: #f8fafc; position: sticky; top: 0; white-space: normal; min-width: 130px; line-height: 1.35; border-right: 1px solid #e5e7eb; }
+.data-table thead th { background: #f8fafc; position: sticky; top: 0; white-space: normal;
+min-width: 130px; line-height: 1.35; border-right: 1px solid #e5e7eb; }
 .data-table thead th:last-child { border-right: none; }
 .data-table tbody td { overflow-wrap: anywhere; }
 .compact-first-col thead th:first-child, .compact-first-col tbody td:first-child { white-space: nowrap; }

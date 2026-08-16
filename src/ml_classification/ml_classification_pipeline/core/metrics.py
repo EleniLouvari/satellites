@@ -6,14 +6,8 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import (
-    accuracy_score,
-    balanced_accuracy_score,
-    f1_score,
-    precision_score,
-    recall_score,
-    roc_auc_score,
-)
+from common_libraries.io_library import read_data
+from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score, precision_score, recall_score, roc_auc_score
 
 # Metric helpers in this module return serializable values suitable for reports and artifacts.
 from sklearn.preprocessing import LabelEncoder
@@ -40,15 +34,11 @@ def validate_input(df: pd.DataFrame, config: ClassificationPipelineConfig) -> No
         raise ValueError("Classification requires at least two target classes.")
     if (class_counts < config.cv_folds).any():
         too_small = class_counts[class_counts < config.cv_folds].to_dict()
-        raise ValueError(
-            f"Each class needs at least {config.cv_folds} rows for stratified CV. Found: {too_small}"
-        )
+        raise ValueError(f"Each class needs at least {config.cv_folds} rows for stratified CV. Found: {too_small}")
 
 
 def optimize_dataframe(
-    df: pd.DataFrame,
-    config: ClassificationPipelineConfig,
-    feature_columns: list[str] | None = None,
+    df: pd.DataFrame, config: ClassificationPipelineConfig, feature_columns: list[str] | None = None
 ) -> pd.DataFrame:
     """Cast feature columns to optimized numeric/category dtypes for efficiency."""
     # Work on a copy to keep caller-provided data unchanged.
@@ -62,10 +52,7 @@ def optimize_dataframe(
 
 
 def build_feature_profile(
-    df: pd.DataFrame,
-    active_features: list[str],
-    config: ClassificationPipelineConfig,
-    feature_columns: list[str] | None = None,
+    df: pd.DataFrame, active_features: list[str], config: ClassificationPipelineConfig, feature_columns: list[str] | None = None
 ) -> pd.DataFrame:
     """Build a dataframe that summarizes feature dtypes, null rates, and activity."""
     # Collect one diagnostics row per requested feature column.
@@ -88,7 +75,7 @@ def load_modeling_context(config: ClassificationPipelineConfig) -> dict[str, Any
     # Recreate feature groups and label encoder from saved preparation artifacts.
     check_summary = load_json(config.check_dir / "check_summary.json")
     prepare_summary = load_json(config.prepare_dir / "prepare_summary.json")
-    label_mapping = pd.read_csv(config.prepare_dir / "label_mapping.csv")
+    label_mapping = read_data(str(config.prepare_dir / "label_mapping.csv"), watch_curly_brackets=False)
     active_features = prepare_summary["active_features"]
     numeric_features = [column for column in check_summary["numeric_features"] if column in active_features]
     categorical_features = [column for column in check_summary["categorical_features"] if column in active_features]
@@ -106,10 +93,7 @@ def load_modeling_context(config: ClassificationPipelineConfig) -> dict[str, Any
     }
 
 
-def select_top_models_for_interpretability(
-    metrics_df: pd.DataFrame,
-    top_n: int,
-) -> list[str]:
+def select_top_models_for_interpretability(metrics_df: pd.DataFrame, top_n: int) -> list[str]:
     """Return top-ranked base model names for interpretability plotting."""
     # Exclude soft-voting aggregate rows from base-model interpretability selection.
     if top_n <= 0 or metrics_df.empty:
@@ -122,7 +106,9 @@ def select_top_models_for_interpretability(
     else:
         ranked_df = base_df.sort_values("test_metric" if "test_metric" in base_df.columns else "f1_macro", ascending=False)
     if "cv_ranking_metric" not in base_df.columns and "test_metric" not in base_df.columns:
-        metric_columns = [column for column in ("f1_macro", "balanced_accuracy", "f1_weighted", "accuracy") if column in base_df.columns]
+        metric_columns = [
+            column for column in ("f1_macro", "balanced_accuracy", "f1_weighted", "accuracy") if column in base_df.columns
+        ]
         if metric_columns:
             ranked_df = base_df.sort_values(metric_columns[0], ascending=False)
     return ranked_df["model"].head(top_n).tolist()
@@ -168,19 +154,13 @@ def extract_feature_importance_frame(estimator: Any) -> pd.DataFrame | None:
     if usable_length == 0:
         return None
 
-    importance_df = pd.DataFrame(
-        {"feature": cleaned_feature_names[:usable_length], "importance": importances[:usable_length]}
-    )
+    importance_df = pd.DataFrame({"feature": cleaned_feature_names[:usable_length], "importance": importances[:usable_length]})
     importance_df["importance_abs"] = importance_df["importance"].abs()
     return importance_df.sort_values("importance_abs", ascending=False).reset_index(drop=True)
 
 
 def score_predictions(
-    y_true: pd.Series,
-    y_pred: np.ndarray,
-    probabilities: np.ndarray | None,
-    labels: list[str],
-    model_name: str,
+    y_true: pd.Series, y_pred: np.ndarray, probabilities: np.ndarray | None, labels: list[str], model_name: str
 ) -> dict[str, Any]:
     """Compute common classification metrics from labels and optional probabilities."""
     # Aggregate core point-estimate metrics used by training and evaluation reports.

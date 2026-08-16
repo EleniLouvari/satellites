@@ -2,7 +2,7 @@
 
 import common_libraries.io_library as io_l
 from global_variables import LOG_SEPARATOR_DURATION
-from import_libraries import *  # NOSONAR
+from import_libraries import *  # NOSONAR # NOSONAR
 import threading
 
 # THREAD-SCOPED file handler that captures ONLY the current thread

@@ -1,0 +1,452 @@
+"""Sentinel-1 and Sentinel-2 temporal zonal statistics for parcels.
+
+This module composes the full extraction pipeline: deterministic spatial
+batching, openEO cube construction and download, raster cleaning and
+imputation, per-parcel zonal reductions and ML-ready feature reduction.
+The `SatelliteZonalStats` class is the main orchestration entry point; its
+`run()` method is cache-aware and safe to resume after interruptions.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import logging
+import os
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from pathlib import Path
+
+import geopandas as gpd
+import pandas as pd
+
+from common_libraries.io_library import write_data
+
+from .configuration import ZonalStatsConfiguration
+from .feature_reduction import reduce_annual_median_features
+from .openeo_pipeline import OpenEOCubePipeline
+from .parcel_batches import ParcelBatchPlanner
+from .parcel_statistics import ParcelStatisticsCalculator
+from .raster_cleaning import RasterCleaner
+
+
+class SatelliteZonalStats(
+    ZonalStatsConfiguration, ParcelBatchPlanner, OpenEOCubePipeline, RasterCleaner, ParcelStatisticsCalculator
+):
+    """Calculate temporal Sentinel-1 and Sentinel-2 parcel features.
+
+    Parameters
+    ----------
+    parcels:
+        Parcel polygons. A unique ``parcel_id`` column is retained when present;
+        otherwise the GeoDataFrame index is converted into parcel IDs.
+    start_date, end_date:
+        Inclusive ISO-style dates accepted by :func:`pandas.Timestamp`.
+    output_dir:
+        Directory for cached monthly NetCDF cubes and the final ML-ready GeoParquet.
+    working_epsg:
+        Projected CRS used for spatial batching, parcel metrics and final
+        interpolation. The openEO raster remains in its native projected CRS.
+    parcel_id_field:
+        Name of the column containing unique parcel identifiers. If the column
+        is absent, stable string identifiers are created from the input index.
+    sentinel2_bands:
+        Sentinel-2 L2A reflectance bands to include in the output. When omitted,
+        :attr:`DEFAULT_SENTINEL2_BANDS` is used. Extra bands required by indices
+        are loaded automatically without being added as standalone outputs.
+        Pass an empty list to disable standalone Sentinel-2 bands.
+    calculate_sentinel2_indices:
+        If ``True``, calculate requested spectral indices locally after their
+        physical source bands complete outlier removal and null filling.
+    sentinel2_indices:
+        List of index names. Supported values are NDVI, NDWI, MNDWI, NDMI,
+        NBR, GNDVI, EVI, SAVI, MSAVI, NDRE, PSRI and CI. Required when
+        ``calculate_sentinel2_indices`` is ``True``.
+    sentinel1_bands:
+        Optional Sentinel-1 GRD polarizations to add to the monthly cube.
+        Supported values are ``VV`` and ``VH``. Backscatter is calculated as
+        linear-power sigma0 over the ellipsoid. At least one Sentinel-1 band,
+        Sentinel-2 band, or Sentinel-2 index must be selected overall.
+    spatial_statistics:
+        Optional parcel statistics calculated locally from the monthly cube.
+        ``mean`` is always included; supported additions are median, sd, min,
+        max, count and selected percentiles.
+    remove_outliers:
+        If ``True``, calculate IQR bounds independently for each variable and
+        monthly cube slice, then replace outlying pixels with ``NaN`` before
+        parcel aggregation.
+    iqr_quantiles:
+        Lower and upper quantiles used to calculate the IQR. The standard
+        values are ``(0.25, 0.75)``.
+    iqr_multiplier:
+        Non-negative multiplier applied below Q1 and above Q3. The standard
+        Tukey value is ``1.5``.
+    fill_nulls:
+        If ``True``, fill post-IQR pixel nulls using temporal neighbors,
+        3x3 and 5x5 spatial means, and finally the configured spatial interpolator
+        across each variable/time raster before applying parcel masks.
+    iqr_min_valid_pixels:
+        Minimum valid raster pixels required before applying the IQR filter.
+    temporal_fill_mode:
+        Temporal source direction used when filling a missing pixel. Use
+        ``'past_only'`` to carry the latest earlier value forward. Use
+        ``'bidirectional'`` to average the closest earlier and later values;
+        if only one direction is available, that value is used.
+    minimum_parcel_pixels:
+        Minimum eligible pixels for the emitted parcel-quality flag. Smaller
+        parcels are retained rather than discarded.
+    minimum_observed_fraction_for_fill:
+        Minimum observed share required before a raster-variable-period may be
+        imputed or used as a temporal filling source.
+    spatial_fill_window_sizes:
+        Ordered spatial-mean windows applied after temporal filling. Defaults to
+        ``(3, 5)``; append 7 and 9 only when wider smoothing is acceptable.
+    keep_cleaned_checkpoint:
+        Retain the intermediate physical-band checkpoint after the final
+        bands-and-indices checkpoint commits. Defaults to ``False``.
+    temporal_period:
+        Temporal bin width. Use ``'15D'`` for 15 days or ``'1M'``, ``'2M'``
+        and ``'3M'`` for one-, two- and three-month bins.
+    temporal_reducer:
+        Reducer applied to acquisitions in each temporal bin. Supported values
+        are ``'mean'``, ``'median'``, ``'min'``, ``'max'`` and ``'sum'``.
+    interpolation_method:
+        Final pixel-level interpolation applied per variable and temporal period.
+        Choose ``'nearest'``, ``'idw'`` or ``'kriging'``.
+    interpolation_max_distance_in_meters:
+        Required maximum search distance in metres when using IDW.
+    interpolation_variogram_lags, interpolation_variogram_max_distance_in_meters:
+        Kriging variogram configuration; maximum distance is expressed in metres.
+    batch_workers:
+        Maximum number of openEO jobs run concurrently and worker processes used
+        for local batch statistics. A value of 1 keeps sequential behaviour.
+    openeo_username, openeo_password:
+        Optional CDSE credentials used with the OIDC resource-owner-password
+        flow. Both values must be supplied together. When omitted, the normal
+        cached/interactive OIDC authentication flow is used.
+    """
+
+    SENTINEL2_COLLECTION = "SENTINEL2_L2A"
+    SUPPORTED_SENTINEL2_BANDS = ("B01", "B02", "B03", "B04", "B05", "B06", "B07", "B08", "B8A", "B09", "B11", "B12")
+    DEFAULT_SENTINEL2_BANDS = ("B02", "B03", "B04", "B05", "B08")
+    SENTINEL2_SCENE_CLASSIFICATION_BAND = "SCL"
+    SENTINEL2_REFLECTANCE_SCALE_FACTOR = 0.0001
+    SENTINEL2_MAX_SCENE_CLOUD_COVER = 70
+    SENTINEL2_INVALID_SCL_CLASSES = (0, 1, 3, 8, 9, 10, 11)
+    SENTINEL2_BUFFERED_SCL_CLASSES = (3, 8, 9, 10, 11)
+
+    SENTINEL1_COLLECTION = "SENTINEL1_GRD"
+    SUPPORTED_SENTINEL1_BANDS = ("VV", "VH")
+    SENTINEL1_BACKSCATTER_COEFFICIENT = "sigma0-ellipsoid"
+    SENTINEL1_ELEVATION_MODEL = "COPERNICUS_30"
+
+    TARGET_RESOLUTION_METRES = 10
+    MAX_FEATURES_PER_JOB = 5_000
+    GRID_SIZE_METRES = 50_000
+    PARCEL_ID_FIELD = "parcel_id"
+    OPENEO_URL = "https://openeo.dataspace.copernicus.eu"
+    OPENEO_OIDC_PASSWORD_CLIENT_ID = "cdse-public"
+    LOG_FILE_NAME = "satellite_zonal_stats.log"
+    OPENEO_LOG_FILE_NAME = "satellite_openeo.log"
+    FILLING_LOG_FILE_NAME = "satellite_raster_filling.log"
+    PARCEL_LOG_FILE_NAME = "satellite_parcel_statistics.log"
+    PARCEL_OUTPUT_FILE_NAME = "satellite_parcel_time_stats.geoparquet"
+    REDUCED_PARCEL_OUTPUT_FILE_NAME = "satellite_parcel_annual_stats.geoparquet"
+
+    # Band definitions use Sentinel-2 collection band names. NDWI follows the
+    # McFeeters green/NIR convention; NDMI represents the NIR/SWIR moisture index.
+    SUPPORTED_SENTINEL2_INDICES = {
+        "NDVI": ("B08", "B04"),
+        "NDWI": ("B03", "B08"),
+        "MNDWI": ("B03", "B11"),
+        "NDMI": ("B08", "B11"),
+        "NBR": ("B08", "B12"),
+        "GNDVI": ("B08", "B03"),
+        "EVI": ("B08", "B04", "B02"),
+        "SAVI": ("B08", "B04"),
+        "MSAVI": ("B08", "B04"),
+        "NDRE": ("B08", "B05"),
+        "PSRI": ("B04", "B02", "B06"),
+        "CI": ("B08", "B05"),
+    }
+    SUPPORTED_SPATIAL_STATISTICS = ("mean", "median", "sd", "min", "max", "count", "p10", "p25", "p75", "p90")
+    QUANTILE_PROBABILITIES = {"p10": 0.10, "p25": 0.25, "p75": 0.75, "p90": 0.90}
+    SPATIAL_STATISTIC_ALIASES = {"average": "mean", "std": "sd", "stdev": "sd", "standard_deviation": "sd"}
+
+    # =========================================================================
+    # Initialization, validation, and runtime configuration
+    # =========================================================================
+
+    def __init__(
+        self,
+        parcels: gpd.GeoDataFrame,
+        start_date: str | pd.Timestamp,
+        end_date: str | pd.Timestamp,
+        output_dir: str | Path,
+        working_epsg: int,
+        parcel_id_field: str = "parcel_id",
+        sentinel2_bands: list[str] | None = None,
+        calculate_sentinel2_indices: bool = False,
+        sentinel2_indices: list[str] | None = None,
+        sentinel1_bands: list[str] | None = None,
+        spatial_statistics: list[str] | None = None,
+        remove_outliers: bool = False,
+        iqr_quantiles: tuple[float, float] = (0.25, 0.75),
+        iqr_multiplier: float = 1.5,
+        fill_nulls: bool = False,
+        temporal_period: str = "1M",  # Valid values: '1M', '3M', '6M', '1Y', '15D', etc.
+        temporal_reducer: str = "median",
+        interpolation_method: str = "nearest",
+        interpolation_max_distance_in_meters: float | None = None,
+        interpolation_variogram_lags: int = 15,
+        interpolation_variogram_max_distance_in_meters: float | None = None,
+        batch_workers: int = 1,
+        iqr_min_valid_pixels: int = 20,
+        temporal_fill_mode: str = "past_only",
+        minimum_parcel_pixels: int = 3,
+        minimum_observed_fraction_for_fill: float = 0.20,
+        spatial_fill_window_sizes: tuple[int, ...] | list[int] = (3, 5),
+        keep_cleaned_checkpoint: bool = False,
+        openeo_username: str | None = None,
+        openeo_password: str | None = None,
+    ) -> None:
+        """Validate inputs and prepare a reusable extraction instance."""
+
+        self.start_date, self.end_date = self._validate_dates(start_date, end_date)
+        self.temporal_period, self.temporal_reducer = self._validate_temporal_aggregation(temporal_period, temporal_reducer)
+        (
+            self.interpolation_method,
+            self.interpolation_max_distance_in_meters,
+            self.interpolation_variogram_lags,
+            self.interpolation_variogram_max_distance_in_meters,
+        ) = self._validate_interpolation_options(
+            interpolation_method,
+            interpolation_max_distance_in_meters,
+            interpolation_variogram_lags,
+            interpolation_variogram_max_distance_in_meters,
+        )
+        self.output_dir = Path(output_dir)
+        self.working_epsg = self._validate_working_epsg(working_epsg)
+        self.openeo_username, self.openeo_password = self._validate_openeo_credentials(openeo_username, openeo_password)
+        if not isinstance(parcel_id_field, str):
+            raise TypeError("parcel_id_field must be a string.")
+        parcel_id_field = parcel_id_field.strip()
+        if not parcel_id_field or parcel_id_field == "geometry":
+            raise ValueError("parcel_id_field must be a non-empty, non-geometry column name.")
+        self.PARCEL_ID_FIELD = parcel_id_field
+        self.batch_workers = self._validate_batch_workers(batch_workers)
+        self.spatial_fill_window_sizes = self._validate_spatial_fill_windows(spatial_fill_window_sizes)
+        if not isinstance(keep_cleaned_checkpoint, bool):
+            raise TypeError("keep_cleaned_checkpoint must be a bool.")
+        self.keep_cleaned_checkpoint = keep_cleaned_checkpoint
+        self.sentinel2_bands = self._validate_sentinel2_bands(sentinel2_bands)
+        if not isinstance(calculate_sentinel2_indices, bool):
+            raise TypeError("calculate_sentinel2_indices must be a bool.")
+        self.calculate_sentinel2_indices = calculate_sentinel2_indices
+        self.sentinel2_indices = self._validate_sentinel2_indices(sentinel2_indices)
+        self.sentinel1_bands = self._validate_sentinel1_bands(sentinel1_bands)
+        self._validate_sensor_selection()
+        self.spatial_statistics = self._validate_spatial_statistics(spatial_statistics)
+        (
+            self.remove_outliers,
+            self.iqr_quantiles,
+            self.iqr_multiplier,
+            self.fill_nulls,
+            self.iqr_min_valid_pixels,
+            self.temporal_fill_mode,
+            self.minimum_parcel_pixels,
+            self.minimum_observed_fraction_for_fill,
+        ) = self._validate_cleaning_options(
+            remove_outliers=remove_outliers,
+            iqr_quantiles=iqr_quantiles,
+            iqr_multiplier=iqr_multiplier,
+            fill_nulls=fill_nulls,
+            iqr_min_valid_pixels=iqr_min_valid_pixels,
+            temporal_fill_mode=temporal_fill_mode,
+            minimum_parcel_pixels=minimum_parcel_pixels,
+            minimum_observed_fraction_for_fill=minimum_observed_fraction_for_fill,
+        )
+        # Start file logging only after non-spatial configuration is valid.
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.logger = self._create_logger("orchestrator", self.LOG_FILE_NAME)
+        self.openeo_logger = self._create_logger("openeo", self.OPENEO_LOG_FILE_NAME)
+        self.filling_logger = self._create_logger("filling", self.FILLING_LOG_FILE_NAME)
+        self.parcel_logger = self._create_logger("parcels", self.PARCEL_LOG_FILE_NAME)
+        self.parcels = self._prepare_parcels(parcels)
+        self.logger.info(
+            "Log files: orchestration=%s, openEO=%s, raster filling=%s, parcel statistics=%s.",
+            self.output_dir / self.LOG_FILE_NAME,
+            self.output_dir / self.OPENEO_LOG_FILE_NAME,
+            self.output_dir / self.FILLING_LOG_FILE_NAME,
+            self.output_dir / self.PARCEL_LOG_FILE_NAME,
+        )
+        self.logger.info(
+            f"Configured Sentinel-2 bands={list(self.sentinel2_bands)}, "
+            f"Sentinel-2 indices={list(self.sentinel2_indices)}, "
+            f"Sentinel-1 bands={list(self.sentinel1_bands)}, "
+            f"parcel statistics={list(self.spatial_statistics)}, "
+            f"remove_outliers={self.remove_outliers}, "
+            f"iqr_quantiles={self.iqr_quantiles}, "
+            f"iqr_multiplier={self.iqr_multiplier}, and "
+            f"fill_nulls={self.fill_nulls}, "
+            f"temporal_period={self.temporal_period}, and "
+            f"temporal_reducer={self.temporal_reducer}, and "
+            f"batch_workers={self.batch_workers}."
+        )
+
+    def __getstate__(self) -> dict:
+        """Exclude non-picklable logging handlers from worker payloads."""
+
+        state = self.__dict__.copy()
+        for attribute in ("logger", "openeo_logger", "filling_logger", "parcel_logger"):
+            state.pop(attribute, None)
+        return state
+
+    def __setstate__(self, state: dict) -> None:
+        """Restore scope-specific console and file logging inside a worker."""
+
+        self.__dict__.update(state)
+        self.logger = self._create_worker_console_logger("orchestrator")
+        self.openeo_logger = self._create_worker_console_logger("openeo")
+        self.filling_logger = self._create_worker_logger("filling", self.FILLING_LOG_FILE_NAME)
+        self.parcel_logger = self._create_worker_logger("parcels", self.PARCEL_LOG_FILE_NAME)
+
+    def _configure_logger_handlers(self, logger: logging.Logger, log_path: Path) -> logging.Logger:
+        """Attach consistently formatted console and UTF-8 file handlers."""
+
+        if not logger.handlers:
+            formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+            for handler in (logging.StreamHandler(), logging.FileHandler(log_path, encoding="utf-8")):
+                handler.setFormatter(formatter)
+                logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+        logger.propagate = False
+        return logger
+
+    def _create_logger(self, scope: str, file_name: str) -> logging.Logger:
+        """Create one main-process logger for a pipeline scope."""
+
+        logger = logging.getLogger(f"{__name__}.{id(self)}.{scope}")
+        return self._configure_logger_handlers(logger, self.output_dir / file_name)
+
+    def _create_worker_logger(self, scope: str, file_name: str) -> logging.Logger:
+        """Create a per-process scope logger safe for parallel batch execution."""
+
+        output_key = hashlib.sha1(str(self.output_dir.resolve()).encode("utf-8")).hexdigest()[:10]
+        process_id = os.getpid()
+        logger = logging.getLogger(f"{__name__}.worker.{process_id}.{output_key}.{scope}")
+        base_path = Path(file_name)
+        worker_name = f"{base_path.stem}.worker-{process_id}{base_path.suffix}"
+        return self._configure_logger_handlers(logger, self.output_dir / worker_name)
+
+    def _create_worker_console_logger(self, scope: str) -> logging.Logger:
+        """Create a console-only worker logger for scopes unused by local jobs."""
+
+        output_key = hashlib.sha1(str(self.output_dir.resolve()).encode("utf-8")).hexdigest()[:10]
+        logger = logging.getLogger(f"{__name__}.worker.{os.getpid()}.{output_key}.{scope}")
+        if not logger.handlers:
+            handler = logging.StreamHandler()
+            handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s"))
+            logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+        logger.propagate = False
+        return logger
+
+    # =========================================================================
+    # Local batch execution and result orchestration
+    # =========================================================================
+
+    def _process_zonal_stats_batch(self, netcdf_path, batch, batch_number):
+        """Calculate one cached batch in a worker process."""
+        result, report = self._calculate_local_statistics(netcdf_path, batch, batch_number)
+        result["batch_number"] = batch_number
+        return batch_number, result, report
+
+    def _run_batch_statistics(self, batches):
+        """Calculate local statistics for downloaded batches in parallel."""
+        results, reports = {}, {}
+        if self.batch_workers == 1 or len(batches) == 1:
+            for number, batch, path in batches:
+                returned, result, report = self._process_zonal_stats_batch(path, batch, number)
+                results[returned], reports[returned] = result, report
+        else:
+            self.filling_logger.info(
+                "Parallel raster filling uses %s.worker-<pid>%s files in %s.",
+                Path(self.FILLING_LOG_FILE_NAME).stem,
+                Path(self.FILLING_LOG_FILE_NAME).suffix,
+                self.output_dir,
+            )
+            self.parcel_logger.info(
+                "Parallel parcel statistics use %s.worker-<pid>%s files in %s.",
+                Path(self.PARCEL_LOG_FILE_NAME).stem,
+                Path(self.PARCEL_LOG_FILE_NAME).suffix,
+                self.output_dir,
+            )
+            workers = min(self.batch_workers, len(batches))
+            with ProcessPoolExecutor(max_workers=workers) as executor:
+                futures = {
+                    executor.submit(self._process_zonal_stats_batch, path, batch, number): number
+                    for number, batch, path in batches
+                }
+                for future in as_completed(futures):
+                    expected = futures[future]
+                    number, result, report = future.result()
+                    if number != expected:
+                        raise RuntimeError(f"Worker returned batch {number}; expected {expected}.")
+                    results[number], reports[number] = result, report
+        numbers = sorted(results)
+        return [results[n] for n in numbers], [reports[n] for n in numbers]
+
+    # =========================================================================
+    # Public pipeline entry point and persistence
+    # =========================================================================
+
+    def run(self) -> gpd.GeoDataFrame:
+        """Run extraction, local cleaning, zonal statistics and persistence."""
+        # High-level orchestration:
+        # 1) create/download cached monthly NetCDF cubes per batch
+        # 2) compute local parcel statistics in parallel
+        # 3) concatenate, derive additional features and persist outputs
+        cube_dir = self.output_dir / "monthly_cubes" / self._run_signature()
+        cube_dir.mkdir(parents=True, exist_ok=True)
+        self.logger.info(f"Monthly cube cache: {cube_dir}.")
+        # Run openEO jobs for each uncached parcel batch, downloading the monthly NetCDF cubes.
+        batches = self._run_openeo_jobs(cube_dir)
+        # Run local statistics for each batch in parallel, returning a list of DataFrames and cleaning reports.
+        completed_results, cleaning_reports = self._run_batch_statistics(batches)
+        # Concatenate the batch results into a single DataFrame, sort by parcel and period, and add derived statistics.
+        final = pd.concat(completed_results, ignore_index=True)
+        final = final.sort_values([self.PARCEL_ID_FIELD, "period_start"]).reset_index(drop=True)
+        final = self._add_derived_stats(final)
+        # Pivot all temporal features and attach parcel attributes and geometry once.
+        final = self._reshape_time_series_for_ml(final)
+        # Persist the final statistics and cleaning report in the output directory.
+        parquet_output = self.output_dir / self.PARCEL_OUTPUT_FILE_NAME
+        write_data(final, str(parquet_output))
+        # Create a compact sibling dataset for ML. The period count is inferred
+        # from this run, while all configured Sentinel-2 sources must share it.
+        reduction_sources = (*self.sentinel2_bands, *self.sentinel2_indices, *self.sentinel1_bands)
+        reduced = reduce_annual_median_features(
+            final,
+            temporal_sources=reduction_sources,
+            expected_periods=None,
+        )
+        reduced_output = self.output_dir / self.REDUCED_PARCEL_OUTPUT_FILE_NAME
+        temporary_reduced_output = reduced_output.with_name(f".{reduced_output.stem}.tmp{reduced_output.suffix}")
+        try:
+            write_data(reduced, str(temporary_reduced_output))
+            temporary_reduced_output.replace(reduced_output)
+        finally:
+            if temporary_reduced_output.exists():
+                temporary_reduced_output.unlink()
+        self.cleaning_report = pd.concat(cleaning_reports, ignore_index=True)
+        cleaning_output = self.output_dir / "satellite_pixel_cleaning_report.csv"
+        write_data(self.cleaning_report, str(cleaning_output), plain_csv=True)
+        self.logger.info(
+            "Created %s (%s columns), %s (%s columns), and %s (%s rows).",
+            parquet_output,
+            len(final.columns),
+            reduced_output,
+            len(reduced.columns),
+            cleaning_output,
+            len(final),
+        )
+        return final

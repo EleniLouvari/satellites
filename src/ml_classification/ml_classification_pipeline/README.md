@@ -54,6 +54,10 @@ config = ClassificationPipelineConfig(
     spatial_split_grid_size=10,
     label_balancing_method="none",  # options: none, random_oversample, smote
     smote_k_neighbors=5,
+    optimize_class_probabilities=False,  # learn class multipliers from out-of-fold probabilities
+    probability_multiplier_grid=(0.8, 1.0, 1.2, 1.5, 2.0),
+    probability_optimization_iterations=2,
+    probability_optimization_max_accuracy_drop=0.02,
     interpretability_top_models=3,
     interpretability_include_shap=False,
 )
@@ -71,20 +75,17 @@ replaced with nulls. Spatial interpolation, when configured, runs afterward and
 can fill those nulls. IQR bounds and replacement counts are written to the
 check summary.
 
-Parcel time-series usage:
+ML-ready satellite GeoParquet usage:
 
 ```python
-non_features = {"class", "parcel_id", "period_start", "period_end", "geometry", "batch_number"}
-features = [column for column in observations.columns if column not in non_features]
+non_features = {"class", "parcel_id", "geometry", "batch_number"}
+features = [column for column in parcels.columns if column not in non_features]
 
 config = ClassificationPipelineConfig(
     project_dir="src/my_crop_classifier",
     target_column="class",
     id_column="parcel_id",
-    time_column="period_start",
-    reshape_time_series=True,
-    prediction_cutoff="2024-09-30",
-    # Optional spatial filling of the generated period features.
+    # Optional spatial filling of dated period features.
     spatial_interpolation_method="nearest",
     feature_columns=features,
     spatial_split=True,
@@ -94,10 +95,10 @@ config = ClassificationPipelineConfig(
 )
 ```
 
-This mode pivots parcel-period observations to one row per parcel, rejects
-identifier/time leakage, holds out complete spatial grid cells, selects the
-voting members from spatial cross-validation, and reserves the test split for
-final reporting only.
+The zonal-statistics pipeline performs the time-series pivot before writing the
+GeoParquet. The ML pipeline validates the one-row-per-parcel grain, holds out
+complete spatial grid cells, selects the voting members from spatial
+cross-validation, and reserves the test split for final reporting only.
 
 Artifacts are saved inside:
 

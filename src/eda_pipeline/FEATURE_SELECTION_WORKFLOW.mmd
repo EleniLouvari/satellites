@@ -1,0 +1,42 @@
+flowchart TD
+    inputData[/Candidate columns/]
+    hardGate{"Pass hard exclusions?"}
+    qualityGate{"Pass quality checks?"}
+    association[Evaluate target association]
+    evidenceGate{"Association evidence?"}
+    priorityCandidate[Priority candidate]
+    reviewCandidate[Review candidate]
+    excludedFeature([Exclude])
+    redundancyGate{"Redundant?"}
+    shortlistGate{"Inside shortlist limit?"}
+    initialFeature[Initial use]
+    trainValidation[Train-only validation]
+    validationGate{"Stable validation benefit?"}
+    finalFeatureSet([Final feature set])
+    rejectedFeature([Do not use])
+
+    inputData --> hardGate
+    hardGate -->|"No"| excludedFeature
+    hardGate -->|"Yes"| qualityGate
+    qualityGate -->|"No"| excludedFeature
+    qualityGate -->|"Yes"| association
+    association --> evidenceGate
+    evidenceGate -->|"Strong"| priorityCandidate
+    evidenceGate -->|"Uncertain"| reviewCandidate
+    evidenceGate -->|"Limited"| excludedFeature
+    priorityCandidate --> redundancyGate
+    redundancyGate -->|"Yes"| reviewCandidate
+    redundancyGate -->|"No"| shortlistGate
+    shortlistGate -->|"Yes"| initialFeature
+    shortlistGate -->|"No"| reviewCandidate
+    initialFeature --> trainValidation
+    reviewCandidate --> trainValidation
+    trainValidation --> validationGate
+    validationGate -->|"Yes"| finalFeatureSet
+    validationGate -->|"No"| rejectedFeature
+
+    style initialFeature fill:#C2E5FF,stroke:#3DADFF
+    style reviewCandidate fill:#FFECBD,stroke:#FFC943
+    style excludedFeature fill:#FFCDC2,stroke:#FF7556
+    style finalFeatureSet fill:#CDF4D3,stroke:#66D575
+    style rejectedFeature fill:#D9D9D9,stroke:#B3B3B3

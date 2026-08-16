@@ -23,6 +23,8 @@ from typing import Any
 import joblib
 import pandas as pd
 
+from common_libraries.io_library import write_data
+
 
 ACTIVE_LOG_PATH: ContextVar[Path | None] = ContextVar("ACTIVE_LOG_PATH", default=None)
 
@@ -37,7 +39,8 @@ class TeeStream:
 
     def write(self, data):
         """Write incoming text to every configured destination stream."""
-        # Strip ANSI color codes for non-primary streams like log files.
+        # Strip ANSI color codes for non-primary streams like log files so
+        # log files remain readable while console retains styling.
         for idx, stream in enumerate(self.streams):
             text = _strip_ansi(data) if idx > 0 else data
             stream.write(text)
@@ -117,6 +120,7 @@ def calculate_time_duration(begin_time: float, end_time: float) -> str:
 
 def time_decorator(func):
     """Wrap a function with runtime logging, timing, and error capture."""
+
     # Preserve function metadata while adding execution instrumentation.
     @wraps(func)
     def wrapper(*args, **kwargs):
@@ -229,7 +233,7 @@ def save_frame_csv(df: pd.DataFrame, path: str | Path) -> None:
     # Persist tabular artifacts in a portable plain-text format.
     path = Path(path)
     ensure_dir(path.parent)
-    df.to_csv(path, index=False)
+    write_data(df, str(path), plain_csv=True)
     append_log(f"Saved CSV: {path} with shape={df.shape}", level="INFO")
 
 
@@ -239,13 +243,7 @@ def reset_project_outputs(config) -> None:
     existed_before = config.project_dir.exists()
     append_log(f"Resetting project outputs under: {config.project_dir}", level="INFO", log_path=config.log_path)
     clear_directory(config.project_dir)
-    for step_dir in (
-        config.check_dir,
-        config.prepare_dir,
-        config.train_dir,
-        config.evaluate_dir,
-        config.predict_dir,
-    ):
+    for step_dir in (config.check_dir, config.prepare_dir, config.train_dir, config.evaluate_dir, config.predict_dir):
         delete_dir(step_dir)
     if config.fail_on_cleanup_error and existed_before:
         leftovers = [path for path in config.project_dir.glob("*")]

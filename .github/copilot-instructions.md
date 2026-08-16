@@ -1,0 +1,176 @@
+# Copilot Instructions for Satellites Geospatial ML Classification
+
+This repository combines **satellite image processing** (Sentinel-1/2 via openEO) with **machine learning classification** for
+agricultural parcels.
+
+## Project Architecture
+
+### Three Core Pipelines
+
+1. **Satellite Zonal Statistics** (`src/openeo_parcel_stats_pipeline/`)
+   - Extracts Sentinel-1/2 observations from Copernicus Data Space via openEO
+   - Computes temporal statistics for parcel geometries
+   - Outputs: one ML-ready row per parcel, dated feature columns (e.g., `NDVI_median__20240701`)
+   - Two implementations: `SatelliteZonalStats` (batch-grouped), `JobManagerSatelliteZonalStats` (tile-based)
+   - Processing: IQR cleaning → null filling (temporal, 3x3, 5x5) → index calculation → zonal masking → persistence as GeoParquet
+
+2. **ML Classification Pipeline** (`src/ml_classification/ml_classification_pipeline/`)
+   - Five-step restartable workflow: Check → Prepare → Train → Evaluate → Predict
+   - Each step writes outputs to numbered folders (`01_check/` through `05_predict/`) and HTML reports
+   - Input: one row per entity (DataFrame or GeoDataFrame); output: class predictions with probabilities
+   - Handles spatial splitting, class balancing, soft-voting ensembles, probability optimization
+   - Supports hyperparameter tuning with configurable model candidates
+
+3. **EDA Pipeline** (`src/eda_pipeline/`)
+   - Exploratory data analysis reports; mostly used in notebooks
+
+### Key Integration Point
+
+Zonal stats pipeline output → ML classification pipeline input. Features must be:
+- One row per entity (parcel)
+- Numeric or categorical columns
+- Can include geometry for spatial splitting
+- Target column can have missing values (rows without labels are classified only)
+
+## Developer Workflows
+
+### Running Code Quality Checks
+```bash
+# Windows: run_code_checks.bat
+# Includes: ruff (lint/fix), pydocstyle, bandit (security), pytest with coverage
+# Output: reports/ folder with junit.xml, pydocstyle.txt, bandit.txt
+# Coverage HTML: htmlcov/index.html
+```
+
+### Notebook Environment Setup
+```python
+# Notebooks assume src/ is on PYTHONPATH and import:
+from import_libraries import *  # NOSONAR # All common packages + visualization
+from global_variables import *  # SEED_NUMBER=42, null value lists, color palettes
+```
+
+### Pipeline Usage Pattern (See `4_kozani_ml_classification.ipynb`)
+```python
+from ml_classification.ml_classification_pipeline import (
+    GeospatialClassificationPipeline, ClassificationPipelineConfig
+)
+
+config = ClassificationPipelineConfig(
+    project_dir="output_path",
+    target_column="label",
+    feature_columns=[...],  # Exclude geometry, target, id
+    id_column="parcel_id",
+    spatial_split=True,  # For GeoDataFrames
+    selection_type="soft_voting",
+    selected_models=("random_forest", "extra_trees", ...),
+    random_state=SEED_NUMBER,
+)
+
+pipeline = GeospatialClassificationPipeline(config)
+pipeline.run_check(df)  # Reset project_dir, validate inputs
+pipeline.run_prepare()  # Build train/test/CV folds
+pipeline.run_train()    # Tune models
+pipeline.run_evaluate() # Test set evaluation, choose strategy
+pipeline.run_predict()  # Refit + predict all rows
+```
+
+## Project-Specific Patterns
+
+### Feature Handling
+- **Dated features** from zonal stats: name pattern `METRIC_statistic__YYYYMMDD` (e.g., `NDVI_median__20240701`)
+- **Index preservation**: Sentinel-2 indices (NDVI, SAVI, NDWI, etc.) calculated from cleaned bands, not independently
+- **Valid-pixel counts** exclude indices that depend on imputed bands
+- Common filter: `[x for x in df.columns if any(kw in x for kw in ["_median", "_sd", "_range"]) and x not in meta_cols]`
+
+### Class Distribution Handling
+- Rare labels (< 100 samples): often recoded to 9999 or excluded
+- Balancing options: `none`, `random_oversample`, `smote`
+- CV method: stratified by default; `spatial_split=True` holds out complete grid cells
+- Ranking: `cv_ranking_method="score_minus_std"` rewards stability across folds
+
+### Artifact Persistence
+- Each pipeline step reads/writes from disk (joblib, JSON, CSV)
+- Config controls reset behavior: `reset_project_dir_on_run_check=True` (default) clears prior outputs
+- Schema metadata: JSON artifacts include `_schema` block with artifact name + version
+- Full predictions in `05_predict/final_predictions.joblib`; CSV preview in `05_predict/final_predictions_preview.csv`
+
+### Random Seed Control
+- Set globally in `global_variables.py` (`SEED_NUMBER = 42`)
+- TensorFlow, NumPy, random, hash all seeded; CUDA disabled
+- OMP/threading limited to 4 intra-op threads for reproducibility
+- `ml_classification_sensitivity/` reruns full pipeline over multiple seeds
+
+### Spatial Splitting (GeoDataFrame Projects)
+- `spatial_split=True` + `spatial_split_method="by_group"`: hold out complete grid cells
+- `spatial_split_method="by_row"`: sample rows while retaining class coverage
+- Grid size: `spatial_split_grid_size=10` (10×10 grid)
+- Prevents data leakage and enables honest spatial evaluation
+
+### HTML Report Navigation
+- Top-level: `report_index.html` (project_dir root)
+- Step reports: `01_check/report.html` through `05_predict/report.html`
+- Includes summary tables, plots, metrics, and feature importance
+- `open_html_report=True` auto-opens browser (useful in dev)
+
+## Common Libraries
+
+All reusable utilities live in `src/common_libraries/`:
+- `io_library.py`: read/write GeoParquet, CSV, NetCDF
+- `geom_library.py`: geometry repair, CRS transforms
+- `raster_library.py`: IQR cleaning, spatial interpolation (nearest, IDW, kriging)
+- `logging_library.py`: formatted console/file logging
+- `generic_library.py`: dataframe utilities, null value mapping
+
+## Testing & Validation
+
+- Unit tests: `src/unit_tests/` (pytest)
+- Test markers: `@pytest.mark.slow`, `@pytest.mark.e2e` (integration tests)
+- Config: `pytest.ini` (testpaths, python_files, python_classes patterns)
+- Coverage: stored as `coverage.xml` and `htmlcov/`
+- Linting: `.pylintrc` for docstring/style rules
+
+## Cross-Component Data Flow
+
+```
+Parcels (GeoParquet)
+  ↓
+openEO Sentinel retrieval (cloud-masked, 10m resampled)
+  ↓
+Raster cleaning (IQR, null filling)
+  ↓
+Index calculation (NDVI, SAVI, NDWI, etc.)
+  ↓
+Zonal statistics (parcel-masked aggregations)
+  ↓
+Dated pivot + derived metrics
+  ↓
+ML-ready GeoParquet (one row per parcel)
+  ↓
+ML Classification Pipeline (5-step training/inference)
+  ↓
+Predictions + probabilities + review flags (confidence < threshold)
+```
+
+## Key Files to Know
+
+- **Entry config**: `src/global_variables.py` (seed, null lists, plot themes)
+- **Pipeline core**: `src/ml_classification/ml_classification_pipeline/pipeline.py`
+- **Step implementations**: `src/ml_classification/ml_classification_pipeline/steps/`
+- **Zonal stats entry**: `src/openeo_parcel_stats_pipeline/zonal_stats.py`
+- **Common utilities**: `src/common_libraries/`
+
+
+## General Notes
+- New code should be accompanied by unit tests in `src/unit_tests/`.
+- All code should adhere to the linting and formatting rules defined in `.pylintrc` and `pyproject.toml`.
+- All code must be documented with docstrings and comments where necessary.
+- When new functionality is added, update the relevant documentation and README files to reflect the changes.
+- When new functions are created first check the existent code to avoid duplication. If a similar function exists,
+  consider refactoring or extending it instead of creating a new one.
+- Ensure that the new code is covered by unit tests and that the tests are comprehensive, covering edge cases and potential
+  failure points.
+- When adding new dependencies, ensure they are necessary and do not bloat the project. Update `requirements.txt` accordingly.
+- The new code should be compatible with the existing codebase and follow the same coding conventions and patterns, i.e.,
+  naming conventions, code structure, and documentation style (130 characters max per line).
+- When new functionality is added, ensure that it follows the ruff and radon rules. New code should be tested for cyclomatic
+  complexity and maintainability index, and refactored if necessary to meet the project's standards.

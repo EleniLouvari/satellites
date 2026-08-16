@@ -1,14 +1,14 @@
 from import_libraries import *
+from functools import wraps
 import global_variables as gb_l
 import common_libraries.geom_library as geom_l
 import common_libraries.generic_library as cm_l
 import common_libraries.io_library as io_l
 
 def nearest_odd(number):
-    if number % 2 == 1:
-        return max(number, 3)  # The number is already odd
-    else:
-        return max(number + 1, 3)  # The number is even, so add 1 to make it odd
+    # Ensure the returned value is odd and at least 3
+    odd = number if number % 2 == 1 else number + 1
+    return max(odd, 3)
 
 
 def calculate_time_duration(begin_time, end_time):
@@ -20,6 +20,7 @@ def calculate_time_duration(begin_time, end_time):
 
 
 def time_decorator(func):
+    @wraps(func)
     def wrapper(*args, **kwargs):
         begin_time = time.time()
         begin_datetime = datetime.fromtimestamp(begin_time)
@@ -62,7 +63,7 @@ def save_ml_model(model, file_path):
         with open(file_path, "wb") as file_obj:
             dill.dump(model, file_obj)
 
-    except Exception as e:
+    except Exception:
         print(f"Error saving model: {model_name}")
 
 
@@ -76,7 +77,7 @@ def read_ml_model(file_path):
         with open(file_path, "rb") as file_obj:
             return dill.load(file_obj)
 
-    except Exception as e:
+    except Exception:
         print(f"Error opening model: {model_name}")
 
 
@@ -373,7 +374,8 @@ def plot_stat_numeric(df, column_name, exclude_zeros=True, figsize=(18, 3), save
     plt.ylabel("Frequency")
     plt.legend()
     plt.tight_layout()
-    if save_folder == "" and not save_folder is None:
+    # Show when save_folder is falsy (None or empty string)
+    if not save_folder:
         plt.show()
     else:
         plt.savefig(os.path.join(save_folder, f"{column_name}_barplot.png"))
@@ -389,7 +391,8 @@ def plot_stat_object(df, column_name, show_common=10, palette="pastel", figsize=
     plt.title(f"Distribution of {column_name}")
     annotate_bars(ax)
     plt.tight_layout()
-    if save_folder == "" and not save_folder is None:
+    # Show when save_folder is falsy (None or empty string)
+    if not save_folder:
         plt.show()
     else:
         plt.savefig(os.path.join(save_folder, f"{column_name}_barplot.png"))
@@ -861,7 +864,7 @@ def convert_gdb_to_gpkg(gdb_file, output_file):
         gdf = io_l.read_data(file_path=gdb_file, layer=layer)
         if not gdf.empty:
             gdf = convert_columns_to_string(gdf)
-            gdf.to_file(output_file, layer=layer, driver="GPKG")
+            io_l.write_data(gdf, output_file, layer=layer)
     print("Process completed successfully.")
 
 

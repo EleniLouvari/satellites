@@ -22,33 +22,17 @@ class SpatialTrainTestSplitter:
     grid_size: int = 10
 
     def split(
-        self,
-        labeled_df: pd.DataFrame,
-        target_column: str,
-        test_size: float,
-        method: str = "by_group",
+        self, labeled_df: pd.DataFrame, target_column: str, test_size: float, method: str = "by_group"
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
         """Apply the configured row-wise or spatial-group holdout strategy."""
-        split_methods = {
-            "by_group": self.split_by_group,
-            "by_row": self.split_by_row,
-        }
+        split_methods = {"by_group": self.split_by_group, "by_row": self.split_by_row}
         try:
             split_method = split_methods[method]
         except KeyError as exc:
             raise ValueError("Spatial split method must be either 'by_group' or 'by_row'.") from exc
-        return split_method(
-            labeled_df=labeled_df,
-            target_column=target_column,
-            test_size=test_size,
-        )
+        return split_method(labeled_df=labeled_df, target_column=target_column, test_size=test_size)
 
-    def split_by_group(
-        self,
-        labeled_df: pd.DataFrame,
-        target_column: str,
-        test_size: float,
-    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    def split_by_group(self, labeled_df: pd.DataFrame, target_column: str, test_size: float) -> tuple[pd.DataFrame, pd.DataFrame]:
         """Hold out complete spatial grid cells while approximately stratifying labels."""
         # Validate basic split constraints.
         if not 0.0 < float(test_size) < 1.0:
@@ -90,7 +74,9 @@ class SpatialTrainTestSplitter:
             test_labels = set(target.iloc[test_idx])
             # Missing classes dominate the score because distribution similarity alone cannot expose them.
             missing_label_penalty = len(all_labels - train_labels) + len(all_labels - test_labels)
-            test_distribution = target.iloc[test_idx].value_counts(normalize=True).reindex(overall_distribution.index, fill_value=0.0)
+            test_distribution = (
+                target.iloc[test_idx].value_counts(normalize=True).reindex(overall_distribution.index, fill_value=0.0)
+            )
             # Balance label-distribution drift against deviation from the configured test fraction.
             class_distribution_error = float((test_distribution - overall_distribution).abs().mean())
             size_error = abs((len(test_idx) / len(labeled_df)) - float(test_size))
@@ -120,13 +106,7 @@ class SpatialTrainTestSplitter:
             raise RuntimeError(f"Spatial holdout leaked {len(overlap)} grid cells across train and test.")
         return train_df, test_df
 
-
-    def split_by_row(
-        self,
-        labeled_df: pd.DataFrame,
-        target_column: str,
-        test_size: float,
-    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    def split_by_row(self, labeled_df: pd.DataFrame, target_column: str, test_size: float) -> tuple[pd.DataFrame, pd.DataFrame]:
         """Split labeled data into spatially uniform train/test sets per class."""
         # Validate basic split constraints.
         if not 0.0 < float(test_size) < 1.0:
@@ -177,7 +157,6 @@ class SpatialTrainTestSplitter:
         test_df = labeled_df.loc[test_indices_arr].copy().reset_index(drop=True)
         return train_df, test_df
 
-
     def build_spatial_groups(self, df: pd.DataFrame) -> pd.Series:
         """Create spatial grid-cell group labels for grouped cross-validation."""
         # Validate geometry input required for spatial grouping.
@@ -196,12 +175,7 @@ class SpatialTrainTestSplitter:
             groups = groups.fillna("cell_unassigned")
         return groups.astype(str)
 
-    def _uniform_spatial_sample_indices(
-        self,
-        class_df: pd.DataFrame,
-        total_samples: int,
-        rng: np.random.Generator,
-    ) -> np.ndarray:
+    def _uniform_spatial_sample_indices(self, class_df: pd.DataFrame, total_samples: int, rng: np.random.Generator) -> np.ndarray:
         """Sample class indices proportionally across intersecting spatial grid cells."""
         # Normalize to point representation for robust point-in-cell checks.
         rep_points_gdf = self._to_representative_points(class_df)
@@ -237,8 +211,7 @@ class SpatialTrainTestSplitter:
 
         return sampled_arr
 
-    @staticmethod
-    def _to_representative_points(class_df: pd.DataFrame) -> gpd.GeoDataFrame:
+    def _to_representative_points(self, class_df: pd.DataFrame) -> gpd.GeoDataFrame:
         """Convert geometries to representative points while keeping valid rows only."""
         # Create a GeoDataFrame and drop invalid geometries.
         # Preserve CRS metadata because grid geometry must use the same coordinate system as the input.
@@ -286,11 +259,7 @@ class SpatialTrainTestSplitter:
             raise ValueError("Spatial grid creation failed: no intersecting cells found.")
         return grid_gdf
 
-    def _assign_points_to_grid(
-        self,
-        points_gdf: gpd.GeoDataFrame,
-        grid_gdf: gpd.GeoDataFrame,
-    ) -> pd.Series:
+    def _assign_points_to_grid(self, points_gdf: gpd.GeoDataFrame, grid_gdf: gpd.GeoDataFrame) -> pd.Series:
         """Assign each point to a grid cell via geometric intersection checks."""
         # Initialize assignments and iterate cells until all points are mapped.
         assignments = pd.Series(data=None, index=points_gdf.index, dtype="object")
@@ -324,8 +293,8 @@ class SpatialTrainTestSplitter:
 
         return assignments
 
-    @staticmethod
     def _adjust_sample_size(
+        self,
         sampled_indices: np.ndarray,
         pool_indices: np.ndarray,
         total_samples: int,
