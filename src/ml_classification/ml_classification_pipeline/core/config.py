@@ -12,59 +12,134 @@ import warnings
 class ClassificationPipelineConfig:
     """Store validated configuration values used by all pipeline steps."""
 
+    # ================================================================================
+    # Core Pipeline & Dataset Configuration
+    # Required inputs: project directory, target variable, and input features
+    # ================================================================================
     project_dir: str | Path
     target_column: str
     feature_columns: list[str]
-    selected_models: tuple[str, ...] | None = None
+    id_column: str = "row_id"
+
+    # ================================================================================
+    # Pipeline Control & Restart Behavior
+    # Controls how the pipeline handles previous runs and error recovery
+    # ================================================================================
     reset_project_dir_on_run_check: bool = True
     fail_on_cleanup_error: bool = False
-    id_column: str = "row_id"
+    force_retrain_models: bool = False
+
+    # ================================================================================
+    # Data Validation & Quality Control
+    # IQR-based outlier detection and spatial/temporal imputation
+    # ================================================================================
     apply_iqr: bool = False
     iqr_lower_quantile: float = 0.25
     iqr_upper_quantile: float = 0.75
     iqr_multiplier: float = 1.5
+    enforce_unique_ids: bool = True
     spatial_interpolation_method: str | None = None
     spatial_interpolation_max_distance_in_meters: float | None = None
     spatial_interpolation_variogram_lags: int = 15
     spatial_interpolation_variogram_max_distance_in_meters: float | None = None
-    enforce_unique_ids: bool = True
+
+    # ================================================================================
+    # Data Splitting & Cross-Validation
+    # Holdout test split and fold configuration for train/validation/test
+    # ================================================================================
     test_size: float = 0.2
     cv_folds: int = 5
     random_state: int = 42
+
+    # ================================================================================
+    # Spatial Splitting (for GeoDataFrame projects)
+    # Hold out complete geographic regions/tiles for honest spatial evaluation
+    # ================================================================================
+    spatial_split: bool = False
+    spatial_split_method: str = "by_row"
+    spatial_split_grid_size: int = 10
+
+    # ================================================================================
+    # Model Selection & Hyperparameter Search
+    # Which models to train and how to search their hyperparameter spaces
+    # ================================================================================
+    selected_models: tuple[str, ...] | None = None
+    max_search_candidates: int = 40
     n_jobs: int = -1
+
+    # ================================================================================
+    # Model Training & Scoring Configuration
+    # Cross-validation scoring and ranking criteria for model comparison
+    # ================================================================================
     scoring_primary: str = "f1_macro"
     scoring_secondary: tuple[str, ...] = ("balanced_accuracy", "f1_weighted", "accuracy")
-    selection_type: str = "soft_voting"
     cv_ranking_method: str = "score_minus_std"
-    rare_category_min_frequency: int | float = 10
-    max_search_candidates: int = 40
-    top_voting_models: int | None = None
-    interpretability_top_models: int = 3
-    interpretability_include_shap: bool = False
-    shap_sample_size: int = 500
-    feature_importance_top_n: int = 15
-    max_distribution_features: int = 9
-    max_map_geometries: int = 20000
-    float_dtype: str = "float32"
-    spatial_split: bool = False
-    spatial_split_method: str = "by_group"
-    spatial_split_grid_size: int = 10
+
+    # ================================================================================
+    # Class Imbalance Handling
+    # Strategies for balancing underrepresented classes during training
+    # ================================================================================
     label_balancing_method: str = "none"
     smote_k_neighbors: int = 5
+    rare_category_min_frequency: int | float = 10
+
+    # ================================================================================
+    # LSTM-Specific Configuration
+    # Temporal sequence parsing and class balancing for Keras LSTM model
+    # ================================================================================
+    lstm_temporal_statistics: tuple[str, ...] | None = ("median",)
+    lstm_require_complete_timesteps: bool = True
+    lstm_temporal_frequency: str | None = "monthly"
+    lstm_min_timesteps: int = 6
+    lstm_class_balancing_method: str = "balanced_class_weight"
+
+    # ================================================================================
+    # Ensemble & Voting Configuration
+    # Soft voting strategy for combining multiple model predictions
+    # ================================================================================
+    selection_type: str = "soft_voting"
+    top_voting_models: int | None = None
+
+    # ================================================================================
+    # Class Probability Optimization
+    # Post-hoc tuning of class probability multipliers to maximize accuracy
+    # ================================================================================
     optimize_class_probabilities: bool = False
     probability_multiplier_grid: tuple[float, ...] = (0.8, 1.0, 1.2, 1.5, 2.0)
     probability_optimization_iterations: int = 2
     probability_optimization_max_accuracy_drop: float = 0.02
+
+    # ================================================================================
+    # Prediction Output Configuration
+    # Column names and thresholds for final predictions and confidence flags
+    # ================================================================================
     prediction_column: str | None = None
     prediction_filled_column: str | None = None
     probability_prefix: str = "probability"
     prediction_confidence_threshold: float = 0.60
     prediction_confidence_column: str = "prediction_confidence"
     prediction_review_column: str = "prediction_needs_review"
+
+    # ================================================================================
+    # Interpretability & Feature Importance
+    # Model explanation via feature importance and SHAP values
+    # ================================================================================
+    interpretability_top_models: int = 3
+    interpretability_include_shap: bool = False
+    shap_sample_size: int = 500
+    feature_importance_top_n: int = 15
+
+    # ================================================================================
+    # Output & Reporting Configuration
+    # Data types, report generation, and directory structure management
+    # ================================================================================
+    float_dtype: str = "float32"
+    max_distribution_features: int = 9
+    max_map_geometries: int = 20000
     output_schema_version: str = "1.0.0"
     log_filename: str = "pipeline.log"
     step_names: tuple[str, ...] = field(default=("01_check", "02_prepare", "03_train", "04_evaluate", "05_predict"))
-    open_html_report: bool = False
+    open_html_report: bool = True
 
     def __post_init__(self) -> None:
         """Normalize and validate configuration right after dataclass initialization."""
@@ -88,7 +163,12 @@ class ClassificationPipelineConfig:
         self.selection_type = self.selection_type.strip().lower()
         self.cv_ranking_method = self.cv_ranking_method.strip().lower()
         self.label_balancing_method = self.label_balancing_method.strip().lower()
+        self.lstm_class_balancing_method = self.lstm_class_balancing_method.strip().lower()
         self.spatial_split_method = self.spatial_split_method.strip().lower()
+        if self.lstm_temporal_frequency is not None:
+            self.lstm_temporal_frequency = self.lstm_temporal_frequency.strip().lower()
+        if self.lstm_temporal_statistics is not None:
+            self.lstm_temporal_statistics = tuple(str(value).strip().lower() for value in self.lstm_temporal_statistics)
         self.probability_multiplier_grid = tuple(float(value) for value in self.probability_multiplier_grid)
         if self.spatial_interpolation_method is not None:
             # Normalize user-provided method names to lowercase for later comparisons.
@@ -101,10 +181,21 @@ class ClassificationPipelineConfig:
             raise ValueError("selection_type must be either 'soft_voting' or 'single_model'.")
         if self.cv_ranking_method not in {"mean_score", "score_minus_std"}:
             raise ValueError("cv_ranking_method must be either 'mean_score' or 'score_minus_std'.")
+
         if self.label_balancing_method not in {"none", "random_oversample", "smote"}:
             raise ValueError("label_balancing_method must be one of: 'none', 'random_oversample', or 'smote'.")
         if self.spatial_split_method not in {"by_group", "by_row"}:
             raise ValueError("spatial_split_method must be either 'by_group' or 'by_row'.")
+        if self.lstm_temporal_frequency not in {None, "monthly"}:
+            raise ValueError("lstm_temporal_frequency must be None or 'monthly'.")
+        if self.lstm_class_balancing_method not in {"none", "balanced_class_weight"}:
+            raise ValueError(
+                "lstm_class_balancing_method must be either 'none' or 'balanced_class_weight'."
+            )
+        if self.lstm_temporal_statistics is not None and not self.lstm_temporal_statistics:
+            raise ValueError("lstm_temporal_statistics cannot be empty when provided.")
+        if not isinstance(self.lstm_require_complete_timesteps, bool):
+            raise TypeError("lstm_require_complete_timesteps must be a bool.")
         if not self.feature_columns:
             raise ValueError("feature_columns must contain at least one feature name.")
         if len(set(self.feature_columns)) != len(self.feature_columns):
@@ -139,6 +230,8 @@ class ClassificationPipelineConfig:
         # decision_tree
         # knn
         # neural_network
+        # tensorflow_neural_network
+        # keras_lstm
         # bagging
         # bayesian
 
@@ -147,6 +240,8 @@ class ClassificationPipelineConfig:
         # hist_gradient_boosting (only when there are no categorical features)
         # xgboost (only if xgboost is installed)
         # lightgbm (only if lightgbm is installed)
+        # tensorflow_neural_network (only if tensorflow and scikeras are installed)
+        # keras_lstm (only if tensorflow and scikeras are installed)
         if self.selected_models is None:
             return
         if not self.selected_models:
@@ -172,6 +267,7 @@ class ClassificationPipelineConfig:
             (int(self.max_distribution_features) >= 1, "max_distribution_features must be >= 1."),
             (int(self.max_map_geometries) >= 1, "max_map_geometries must be >= 1."),
             (int(self.spatial_split_grid_size) >= 2, "spatial_split_grid_size must be >= 2."),
+            (int(self.lstm_min_timesteps) >= 2, "lstm_min_timesteps must be >= 2."),
             (int(self.smote_k_neighbors) >= 1, "smote_k_neighbors must be >= 1."),
             (
                 all(value > 0 for value in self.probability_multiplier_grid),

@@ -10,7 +10,17 @@ Pipeline steps:
 4. `run_evaluate()`
 5. `run_predict()`
 
-Each step also writes an HTML report:
+## New: Incremental Training & Filtered Evaluation
+
+**Want to add new models without retraining everything?** Or evaluate only a subset of trained models?
+
+See [INCREMENTAL_WORKFLOW.md](INCREMENTAL_WORKFLOW.md) for:
+- **Incremental Training**: Skip already-trained models when re-running with new model candidates
+- **Filtered Evaluation**: Evaluate only selected models without full retraining
+- **Forced Retraining**: Option to retrain specific models when needed
+- Complete workflow examples and API reference
+
+## Reports
 
 - `01_check/report.html`
 - `02_prepare/report.html`

@@ -155,6 +155,8 @@ def write_evaluate_report(
     selection: dict[str, Any],
     geo_train_metrics_df: pd.DataFrame | None = None,
     geo_test_metrics_df: pd.DataFrame | None = None,
+    ranking_method_metrics_df: pd.DataFrame | None = None,
+    ranking_train_metrics_df: pd.DataFrame | None = None,
 ) -> None:
     """Write the step-4 evaluation report including strategy selection details."""
     # Gather generated visuals and interpretability outputs for report sections.
@@ -225,6 +227,70 @@ def write_evaluate_report(
         {"title": "Classification Reports", "links": links},
         {"title": "Evaluation Visuals", "images": images},
     ]
+
+    # Append rank_average and rank_median as extra rows in the test-set model results table.
+    # Rank-based methods are agnostic to probability calibration differences between model families,
+    # so they serve as a natural complement to soft_voting in the same comparison table.
+    if ranking_method_metrics_df is not None and not ranking_method_metrics_df.empty:
+        rank_rows = ranking_method_metrics_df[
+            ranking_method_metrics_df["method"].isin({"rank_average", "rank_median"})
+        ].copy()
+        if not rank_rows.empty:
+            rank_rows = rank_rows.rename(columns={"method": "model"})
+            rank_rows = rank_rows.drop(columns=["n_models_used", "is_preferred"], errors="ignore")
+            for col in test_metrics_df.columns:
+                if col not in rank_rows.columns:
+                    rank_rows[col] = float("nan")
+            rank_rows = rank_rows[test_metrics_df.columns]
+            augmented_test_df = pd.concat([test_metrics_df, rank_rows], ignore_index=True)
+            for idx, section in enumerate(sections):
+                if section.get("title") == "Model Results on Test Set (Average)":
+                    sections[idx] = {
+                        "title": "Model Results on Test Set (Average)",
+                        "text": (
+                            "rank_average and rank_median rows show the performance of rank-based ensemble aggregation. "
+                            "These methods are robust to probability calibration differences across model families."
+                        ),
+                        "table": augmented_test_df,
+                        "highlight_rows_where": {"column": "model", "values": highlighted_models + ["rank_average", "rank_median"]},
+                    }
+                    break
+
+    # Append rank rows to the train-set average table for comparison with the test-set results.
+    if ranking_train_metrics_df is not None and not ranking_train_metrics_df.empty:
+        rank_rows_train = ranking_train_metrics_df[
+            ranking_train_metrics_df["method"].isin({"rank_average", "rank_median"})
+        ].copy()
+        if not rank_rows_train.empty:
+            rank_rows_train = rank_rows_train.rename(columns={"method": "model"})
+            rank_rows_train = rank_rows_train.drop(columns=["n_models_used", "is_preferred"], errors="ignore")
+            for col in train_metrics_df.columns:
+                if col not in rank_rows_train.columns:
+                    rank_rows_train[col] = float("nan")
+            rank_rows_train = rank_rows_train[train_metrics_df.columns]
+            augmented_train_df = pd.concat([train_metrics_df, rank_rows_train], ignore_index=True)
+            for idx, section in enumerate(sections):
+                if section.get("title") == "Model Results on Train Set (Average)":
+                    sections[idx] = {
+                        "title": "Model Results on Train Set (Average)",
+                        "text": (
+                            "rank_average and rank_median rows show rank-based ensemble aggregation on the training set. "
+                            "Compare with the test-set table to assess overfitting."
+                        ),
+                        "table": augmented_train_df,
+                        "highlight_rows_where": {"column": "model", "values": highlighted_models + ["rank_average", "rank_median"]},
+                    }
+                    break
+
+    ranking_parcels_path = config.evaluate_dir / "ranking" / "parcel_best_class_by_ranking.csv"
+    ranking_metrics_path = config.evaluate_dir / "ranking" / "ranking_method_metrics.csv"
+    ranking_links = []
+    if ranking_metrics_path.exists():
+        ranking_links.append({"label": "Ranking Method Metrics CSV", "path": ranking_metrics_path})
+    if ranking_parcels_path.exists():
+        ranking_links.append({"label": "Parcel Best Class by Ranking CSV", "path": ranking_parcels_path})
+    if ranking_links:
+        sections.insert(len(sections) - 1, {"title": "Ranking Artifacts", "links": ranking_links})
     if interpretability_df is not None or interpretability_images or interpretability_links:
         sections.append(
             {

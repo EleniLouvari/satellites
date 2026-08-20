@@ -7,7 +7,15 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from common_libraries.io_library import read_data
-from sklearn.metrics import classification_report, confusion_matrix, precision_recall_fscore_support, roc_auc_score
+from sklearn.metrics import (
+    accuracy_score,
+    balanced_accuracy_score,
+    classification_report,
+    confusion_matrix,
+    f1_score,
+    precision_recall_fscore_support,
+    roc_auc_score,
+)
 
 # Evaluation operates only on held-out data to keep reported model comparisons unbiased.
 
@@ -34,6 +42,129 @@ from ..visuals import (
 
 class EvaluateStep(PipelineStepBase):
     """Evaluate trained models on train/test sets and choose prediction strategy."""
+
+    @staticmethod
+    def _rank_positions_desc(matrix: np.ndarray) -> np.ndarray:
+        """Return 1-based rank positions per row (higher values receive better/lower rank)."""
+        # Convert per-row descending order into dense positions without ties handling complexity.
+        order = np.argsort(-matrix, axis=1)
+        ranks = np.empty_like(order, dtype=np.float64)
+        row_idx = np.arange(matrix.shape[0])[:, None]
+        ranks[row_idx, order] = np.arange(1, matrix.shape[1] + 1, dtype=np.float64)
+        return ranks
+
+    def _build_parcel_ranking_outputs(
+        self,
+        probability_cache: dict[str, np.ndarray],
+        selection: dict[str, Any],
+        labels: list[str],
+        y_true: pd.Series,
+        id_col: pd.Series,
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """Create per-parcel best-class outputs and ranking-method summary metrics."""
+        # Use selected voting models where possible; fallback to any available probability-producing models.
+        selected_models = [
+            model_name
+            for model_name in selection.get("selected_models", [])
+            if model_name in probability_cache
+        ]
+        if not selected_models:
+            selected_models = sorted(probability_cache.keys())
+
+        if not selected_models:
+            return pd.DataFrame(), pd.DataFrame()
+
+        probability_matrices = [np.asarray(probability_cache[model_name], dtype=np.float64) for model_name in selected_models]
+        # Keep only probability matrices aligned with expected class count.
+        probability_matrices = [matrix for matrix in probability_matrices if matrix.ndim == 2 and matrix.shape[1] == len(labels)]
+        if not probability_matrices:
+            return pd.DataFrame(), pd.DataFrame()
+
+        stacked = np.stack(probability_matrices, axis=0)  # [n_models, n_rows, n_classes]
+        avg_prob = np.nanmean(stacked, axis=0)
+        median_prob = np.nanmedian(stacked, axis=0)
+        # Normalize rows to sum to 1 so both matrices are valid inputs for roc_auc_score.
+        # avg_prob rows already sum to ~1 (mean of unit-sum vectors), but median rows may not.
+        _row_sum_avg = avg_prob.sum(axis=1, keepdims=True)
+        avg_prob_norm = avg_prob / np.where(_row_sum_avg > 0, _row_sum_avg, 1)
+        _row_sum_med = median_prob.sum(axis=1, keepdims=True)
+        median_prob_norm = median_prob / np.where(_row_sum_med > 0, _row_sum_med, 1)
+        avg_rank = np.nanmean(np.stack([self._rank_positions_desc(matrix) for matrix in probability_matrices], axis=0), axis=0)
+        median_rank = np.nanmedian(
+            np.stack([self._rank_positions_desc(matrix) for matrix in probability_matrices], axis=0), axis=0
+        )
+
+        labels_arr = np.asarray(labels)
+        best_idx_prob_avg = np.nanargmax(avg_prob, axis=1)
+        best_idx_prob_median = np.nanargmax(median_prob, axis=1)
+        best_idx_rank_avg = np.nanargmin(avg_rank, axis=1)
+        best_idx_rank_median = np.nanargmin(median_rank, axis=1)
+
+        parcel_df = pd.DataFrame(
+            {
+                self.config.id_column: id_col.astype(str).values,
+                "true_label": y_true.astype(str).values,
+                "best_class_by_rank_avg": labels_arr[best_idx_rank_avg],
+                "best_class_by_rank_median": labels_arr[best_idx_rank_median],
+                "best_class_by_prob_avg": labels_arr[best_idx_prob_avg],
+                "best_class_by_prob_median": labels_arr[best_idx_prob_median],
+                "best_rank_avg_value": np.nanmin(avg_rank, axis=1),
+                "best_rank_median_value": np.nanmin(median_rank, axis=1),
+                "best_prob_avg_value": np.nanmax(avg_prob, axis=1),
+                "best_prob_median_value": np.nanmax(median_prob, axis=1),
+            }
+        )
+
+        method_predictions = {
+            "probability_average": parcel_df["best_class_by_prob_avg"].values,
+            "probability_median": parcel_df["best_class_by_prob_median"].values,
+            "rank_average": parcel_df["best_class_by_rank_avg"].values,
+            "rank_median": parcel_df["best_class_by_rank_median"].values,
+        }
+        summary_rows: list[dict[str, Any]] = []
+        y_true_arr = y_true.astype(str).values
+        # Map each method to the probability matrix used for its aggregation,
+        # so roc_auc_weighted can be computed from the same probabilities that drove the decision.
+        method_probs = {
+            "probability_average": avg_prob_norm,
+            "probability_median": median_prob_norm,
+            "rank_average": None,
+            "rank_median": None,
+        }
+        for method_name, y_pred in method_predictions.items():
+            precision_arr, recall_arr, _, support = precision_recall_fscore_support(
+                y_true_arr, y_pred, average=None, zero_division=0, labels=labels
+            )
+            precision_w = float(np.average(precision_arr, weights=support))
+            recall_w = float(np.average(recall_arr, weights=support))
+            roc_auc_w = np.nan
+            probs_matrix = method_probs.get(method_name)
+            if probs_matrix is not None:
+                try:
+                    if len(labels) == 2:
+                        roc_auc_w = float(roc_auc_score(y_true_arr, probs_matrix[:, 1]))
+                    else:
+                        roc_auc_w = float(
+                            roc_auc_score(y_true_arr, probs_matrix, labels=labels, multi_class="ovr", average="weighted")
+                        )
+                except ValueError:
+                    roc_auc_w = np.nan
+            summary_rows.append(
+                {
+                    "method": method_name,
+                    "accuracy": float(accuracy_score(y_true_arr, y_pred)),
+                    "balanced_accuracy": float(balanced_accuracy_score(y_true_arr, y_pred)),
+                    "f1_macro": float(f1_score(y_true_arr, y_pred, average="macro", zero_division=0)),
+                    "f1_weighted": float(f1_score(y_true_arr, y_pred, average="weighted", zero_division=0)),
+                    "precision_weighted": precision_w,
+                    "recall_weighted": recall_w,
+                    "roc_auc_weighted": roc_auc_w,
+                    "n_models_used": len(selected_models),
+                }
+            )
+
+        summary_df = pd.DataFrame(summary_rows).sort_values(by=self.config.scoring_primary, ascending=False)
+        return parcel_df, summary_df
 
     def _to_geo_classifier_result_row(
         self,
@@ -121,6 +252,8 @@ class EvaluateStep(PipelineStepBase):
             "y_train": train_df[self.config.target_column].astype(str).copy(),
             "X_test": test_df[features].copy(),
             "y_test": test_df[self.config.target_column].astype(str).copy(),
+            "id_test": test_df[self.config.id_column].copy(),
+            "id_train": train_df[self.config.id_column].copy(),
         }
 
     def _model_artifact_path(self, model_name):
@@ -160,7 +293,32 @@ class EvaluateStep(PipelineStepBase):
         metric_rows = {"train": [], "test": []}
         geo_rows = {"train": [], "test": []}
         estimators = {}
-        for model_name in inputs["model_specs"]:
+
+        # Filter models to only those in current selected_models if configured.
+        all_model_names = list(inputs["model_specs"].keys())
+        models_to_evaluate = all_model_names
+        skipped_models = []
+
+        if self.config.selected_models is not None:
+            # Only evaluate models that are both trained AND in current selected_models.
+            models_to_evaluate = [
+                model_name
+                for model_name in all_model_names
+                if model_name in self.config.selected_models
+            ]
+            skipped_models = [
+                model_name
+                for model_name in all_model_names
+                if model_name not in self.config.selected_models
+            ]
+            if skipped_models:
+                print_formatted_txt(
+                    f"Filtered evaluation: {len(models_to_evaluate)} models selected, "
+                    f"{len(skipped_models)} trained models skipped: {skipped_models}",
+                    "INFO",
+                )
+
+        for model_name in models_to_evaluate:
             # Load the persisted best estimator for this candidate model.
             estimator = load_joblib(self._model_artifact_path(model_name))
             estimators[model_name] = estimator
@@ -266,6 +424,7 @@ class EvaluateStep(PipelineStepBase):
         labels = context["labels"]
         # Unpack training/test arrays and run base model evaluations to collect metrics and plots.
         X_train, y_train, y_test = inputs["X_train"], inputs["y_train"], inputs["y_test"]
+        id_test = inputs["id_test"]
         metric_rows, geo_rows, caches, fitted_estimators = self._evaluate_base_models(inputs)
         train_rows, test_rows = metric_rows["train"], metric_rows["test"]
         geo_train_rows, geo_test_rows = geo_rows["train"], geo_rows["test"]
@@ -347,12 +506,45 @@ class EvaluateStep(PipelineStepBase):
             save_frame_csv(ordered_df, self.config.evaluate_dir / f"geo_classifier_style_{group}_metrics.csv")
 
         selection_with_schema = self._with_schema(selection, "selection_summary")
+
+        # Build and persist parcel-level class suggestions based on ranking methodologies.
+        parcel_ranking_df, ranking_method_summary_df = self._build_parcel_ranking_outputs(
+            probability_cache=probability_cache_test,
+            selection=selection,
+            labels=labels,
+            y_true=y_test,
+            id_col=id_test,
+        )
+        train_parcel_ranking_df, ranking_train_summary_df = self._build_parcel_ranking_outputs(
+            probability_cache=probability_cache_train,
+            selection=selection,
+            labels=labels,
+            y_true=inputs["y_train"],
+            id_col=inputs["id_train"],
+        )
+        if not parcel_ranking_df.empty:
+            ranking_dir = self.config.evaluate_dir / "ranking"
+            save_frame_csv(parcel_ranking_df, ranking_dir / "parcel_best_class_by_ranking.csv")
+        if not train_parcel_ranking_df.empty:
+            ranking_dir = self.config.evaluate_dir / "ranking"
+            save_frame_csv(train_parcel_ranking_df, ranking_dir / "parcel_best_class_by_ranking_train.csv")
+        if not ranking_method_summary_df.empty:
+            ranking_dir = self.config.evaluate_dir / "ranking"
+            save_frame_csv(ranking_method_summary_df, ranking_dir / "ranking_method_metrics.csv")
+        if not ranking_train_summary_df.empty:
+            ranking_dir = self.config.evaluate_dir / "ranking"
+            save_frame_csv(ranking_train_summary_df, ranking_dir / "ranking_method_metrics_train.csv")
+
         csv_contracts = {
             "model_metrics_train.csv": train_metrics_df.columns.tolist(),
             "model_metrics_test.csv": test_metrics_df.columns.tolist(),
             "geo_classifier_style_train_metrics.csv": geo_train_report_df.columns.tolist(),
             "geo_classifier_style_test_metrics.csv": geo_test_report_df.columns.tolist(),
         }
+        if not ranking_method_summary_df.empty:
+            csv_contracts["ranking_method_metrics.csv"] = ranking_method_summary_df.columns.tolist()
+        if not parcel_ranking_df.empty:
+            csv_contracts["parcel_best_class_by_ranking.csv"] = parcel_ranking_df.columns.tolist()
         interpretability_summary_path = self.config.evaluate_dir / "interpretability" / "interpretability_summary.csv"
         if interpretability_summary_path.exists():
             interpretability_summary_df = read_data(str(interpretability_summary_path), watch_curly_brackets=False)
@@ -381,6 +573,8 @@ class EvaluateStep(PipelineStepBase):
             selection,
             geo_train_metrics_df=geo_train_report_df,
             geo_test_metrics_df=geo_test_report_df,
+            ranking_method_metrics_df=ranking_method_summary_df if not ranking_method_summary_df.empty else None,
+            ranking_train_metrics_df=ranking_train_summary_df if not ranking_train_summary_df.empty else None,
         )
         write_index_report(self.config)
         print_formatted_txt(f"Selected strategy: {selection['selection_type']} using {selection['selected_models']}", "RESULTS")

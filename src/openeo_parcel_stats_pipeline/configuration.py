@@ -21,7 +21,7 @@ class ZonalStatsConfiguration:
     """Validate configuration consumed by the zonal-statistics components."""
 
     def _validate_openeo_credentials(self, username: str | None, password: str | None) -> tuple[str | None, str | None]:
-        """Validate an optional openEO username/password pair."""
+        """Validate openEO credentials: username and password pair."""
         if (username is None) != (password is None):
             raise ValueError("openeo_username and openeo_password must be supplied together.")
         if username is None:

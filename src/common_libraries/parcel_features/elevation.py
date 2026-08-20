@@ -38,8 +38,6 @@ def find_dem_tiles(dem_dir: Path, mosaic_path: Path) -> list[Path]:
         for path in dem_dir.glob("DEM*.tif")
         if path.is_file() and path.resolve() != mosaic_resolved
     )
-    if len(tiles) < 2:
-        raise ValueError(f"Expected at least two DEM*.tif source tiles in {dem_dir}; found {len(tiles)}.")
     return tiles
 
 
@@ -70,6 +68,12 @@ def _validate_dem_tiles(tile_paths: Iterable[Path]) -> None:
 
 def create_dem_mosaic(tile_paths: list[Path], mosaic_path: Path, overwrite: bool = False) -> Path:
     """Create a tiled, compressed DEM mosaic without loading it fully into memory."""
+    if len(tile_paths) == 0:
+        raise ValueError(f"No DEM tiles found to create a mosaic: {mosaic_path}")
+    if len(tile_paths) == 1:
+        print(f"Only one DEM tile found; using it as the mosaic: {tile_paths[0]}")
+        return tile_paths[0]
+
     if mosaic_path.exists() and not overwrite:
         print(f"Using existing DEM mosaic: {mosaic_path}")
         return mosaic_path
@@ -153,6 +157,11 @@ def append_parcel_elevation(
 
     parcels = read_data(str(parcels_path))
     original_crs = parcels.crs
+    print(f"Parcel dataset CRS: {original_crs}")
+    print(f"Parcel CRS type: {type(original_crs)}")
+    if original_crs is not None:
+        print(f"Parcel CRS to_epsg(): {original_crs.to_epsg()}")
+        print(f"Parcel CRS is_projected: {original_crs.is_projected}")
     validate_projected_metric_crs(original_crs, dataset_name="Parcel dataset")
     if parcels.geometry.isna().all():
         raise ValueError("Parcel dataset contains no usable geometries.")

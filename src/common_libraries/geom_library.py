@@ -491,10 +491,7 @@ def convert_value_in_df_units_from_ft(df, value_in_df_units):
 
 def get_ids_of_invalid_geoms(df, colid, geom_column="geometry"):
     df_buffer = df.copy()
-    if not df_buffer.crs.is_projected:
-        df_buffer = df_buffer.to_crs(3857)
-
-    df_buffer[geom_column] = df_buffer[geom_column].buffer(1)
+    df_buffer[geom_column] = df_buffer[geom_column].buffer(0.001)
     df_invalid = df_buffer[(df_buffer[geom_column].is_empty) |
                            (df_buffer[geom_column].isna()) |
                            (df_buffer[geom_column].isnull()) |

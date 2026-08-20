@@ -164,6 +164,29 @@ def _build_pipeline_with_optional_balancer(config: ClassificationPipelineConfig,
     return Pipeline(steps=base_steps)
 
 
+def _build_tensorflow_estimator(config: ClassificationPipelineConfig):
+    """Build the optional TensorFlow dense classifier wrapper lazily."""
+    # Import lazily so the base pipeline does not require TensorFlow at import time.
+    from .tensorflow_models import TensorFlowDenseClassifier
+
+    return TensorFlowDenseClassifier(random_state=config.random_state)
+
+
+def _build_tensorflow_lstm_estimator(config: ClassificationPipelineConfig):
+    """Build the optional TensorFlow LSTM classifier wrapper lazily."""
+    # Import lazily so base pipeline imports do not require TensorFlow.
+    from .tensorflow_lstm_models import KerasLSTMClassifier
+
+    return KerasLSTMClassifier(
+        temporal_statistics=config.lstm_temporal_statistics,
+        require_complete_timesteps=config.lstm_require_complete_timesteps,
+        temporal_frequency=config.lstm_temporal_frequency,
+        min_timesteps=config.lstm_min_timesteps,
+        class_balancing_method=config.lstm_class_balancing_method,
+        random_state=config.random_state,
+    )
+
+
 def build_model_candidates(
     config: ClassificationPipelineConfig,
     numeric_features: list[str],
@@ -330,6 +353,42 @@ def build_model_candidates(
         ),
     ]
 
+    if _safe_import("tensorflow") is not None and _safe_import("scikeras.wrappers") is not None:
+        candidates.append(
+            ModelCandidate(
+                name="tensorflow_neural_network",
+                builder=lambda: _build_pipeline_with_optional_balancer(
+                    config,
+                    _build_dense_linear_preprocessor(config, numeric_features, categorical_features),
+                    _build_tensorflow_estimator(config),
+                ),
+                param_distributions={
+                    "model__hidden_layer_sizes": [(64,), (128,), (128, 64)],
+                    "model__activation": ["relu", "selu", "gelu"],
+                    "model__dropout_rate": [0.0, 0.2, 0.4],
+                    "model__use_batch_normalization": [False, True],
+                    "model__learning_rate": [0.0001, 0.0005, 0.001],
+                    "model__batch_size": [32, 64],
+                    "model__l2_regularization": [0.0, 0.0001, 0.001],
+                },
+            )
+        )
+        candidates.append(
+            ModelCandidate(
+                name="keras_lstm",
+                builder=lambda: Pipeline(steps=[("model", _build_tensorflow_lstm_estimator(config))]),
+                param_distributions={
+                    "model__lstm_units_1": [32, 64],
+                    "model__lstm_units_2": [16, 32],
+                    "model__dense_units": [16, 32],
+                    "model__dropout_rate": [0.10, 0.25],
+                    "model__bidirectional": [False, True],
+                    "model__learning_rate": [0.0005, 0.001],
+                    "model__batch_size": [32, 64],
+                },
+            )
+        )
+
     if not categorical_features:
         candidates.append(
             ModelCandidate(
@@ -407,9 +466,19 @@ def build_model_candidates(
         )
     if config.selected_models:
         selected = set(config.selected_models)
+        available = {candidate.name for candidate in candidates}
+        missing_selected = sorted(selected.difference(available))
+        if missing_selected:
+            warnings.warn(
+                (
+                    "Some selected_models are unavailable in this environment and will be skipped: "
+                    f"{missing_selected}"
+                ),
+                stacklevel=2,
+            )
         candidates = [candidate for candidate in candidates if candidate.name in selected]
     if not candidates:
-        raise ValueError("No model candidates are active. Check config.selected_models.")
+        raise ValueError("No model candidates are active. Check config.selected_models and optional dependencies.")
     return candidates
 
 

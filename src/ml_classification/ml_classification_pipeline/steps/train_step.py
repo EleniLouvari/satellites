@@ -15,6 +15,7 @@ from ..core.metrics import load_modeling_context
 from ..core.persistence import (
     calculate_time_duration,
     load_joblib,
+    load_json,
     print_formatted_txt,
     save_frame_csv,
     save_joblib,
@@ -29,6 +30,89 @@ from ..visuals import save_cv_fold_comparison_plot, save_search_results_plot
 
 class TrainStep(PipelineStepBase):
     """Train configured model candidates and persist ranked training outputs."""
+
+    _TENSORFLOW_CANDIDATES = frozenset({"keras_lstm", "tensorflow_neural_network"})
+
+    def _effective_n_jobs(self, candidate: Any) -> int:
+        """Use sequential outer CV for TensorFlow estimators to avoid process/GPU contention."""
+        if candidate.name in self._TENSORFLOW_CANDIDATES:
+            return 1
+        return int(self.config.n_jobs)
+
+    def _model_artifact_paths(self, model_name: str) -> tuple[Any, Any]:
+        """Return expected per-model artifact paths used for incremental resume checks."""
+        model_dir = self.config.train_model_dir(model_name)
+        return model_dir / "best_model.joblib", model_dir / "cv_results.csv"
+
+    def _is_model_fully_trained(self, model_name: str) -> bool:
+        """Return True when all required artifacts for a trained model are present."""
+        best_model_path, cv_results_path = self._model_artifact_paths(model_name)
+        return best_model_path.exists() and cv_results_path.exists()
+
+    def _load_reused_training_metrics(
+        self, candidate: Any, supports_predict_proba: bool
+    ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+        """Load summary/fold metrics for a reused model from persisted CV results."""
+        _, cv_results_path = self._model_artifact_paths(candidate.name)
+        if not cv_results_path.exists():
+            return None, []
+        results_df = pd.read_csv(cv_results_path)
+        if results_df.empty:
+            return None, []
+        if "rank_test_score" in results_df.columns:
+            best_row = results_df.sort_values("rank_test_score").iloc[0]
+        else:
+            best_row = results_df.iloc[0]
+
+        split_columns = sorted(
+            [column for column in results_df.columns if column.startswith("split") and column.endswith("_test_score")],
+            key=lambda value: int(value.split("_")[0].replace("split", "")),
+        )
+        fold_scores = [float(best_row[column]) for column in split_columns]
+        if fold_scores:
+            score_mean = float(np.mean(fold_scores))
+            score_std = float(np.std(fold_scores, ddof=0))
+        else:
+            score_mean = float(best_row.get("mean_test_score", np.nan))
+            score_std = float(best_row.get("std_test_score", 0.0))
+
+        summary = {
+            "model": candidate.name,
+            "best_cv_score": score_mean,
+            "cv_score_std": score_std,
+            "cv_score_minus_std": score_mean - score_std,
+            "best_iteration": int(best_row.get("iter", 0)) if pd.notna(best_row.get("iter", 0)) else 0,
+            "supports_predict_proba": supports_predict_proba,
+        }
+        per_fold = [
+            {"model": candidate.name, "fold": fold_idx, "score": float(best_row[column])}
+            for fold_idx, column in enumerate(split_columns)
+        ]
+        return summary, per_fold
+
+    def _build_recovered_model_spec(
+        self,
+        candidate: Any,
+        numeric_features: list[str],
+        categorical_features: list[str],
+    ) -> dict[str, Any]:
+        """Reconstruct a minimal model spec for already-trained artifacts."""
+        model_dir = self.config.train_model_dir(candidate.name)
+        best_model_path, _ = self._model_artifact_paths(candidate.name)
+        supports_predict_proba = bool(getattr(candidate, "supports_predict_proba", False))
+        try:
+            estimator = load_joblib(best_model_path)
+            supports_predict_proba = hasattr(estimator, "predict_proba")
+        except Exception:
+            # Keep fallback from candidate metadata if model loading fails.
+            pass
+        return {
+            "best_params": {},
+            "supports_predict_proba": supports_predict_proba,
+            "numeric_features": numeric_features,
+            "categorical_features": categorical_features,
+            "artifact_dir": str(model_dir),
+        }
 
     def _prepare_search_parameters(self, candidate: Any, cv: list[tuple[np.ndarray, np.ndarray]]) -> tuple[dict, int]:
         """Return safe parameter distributions and the effective search size."""
@@ -81,10 +165,15 @@ class TrainStep(PipelineStepBase):
         y_train: np.ndarray,
     ) -> HalvingRandomSearchCV:
         """Fit a search, retrying sequentially when worker creation is denied."""
-        # Attempt parallel search; if OS denies worker creation, retry with single job.
-        search = self._build_search(
-            candidate, param_distributions, cv, effective_candidates, self.config.n_jobs
-        )
+        # TensorFlow estimators run sequentially at the outer CV/search level to avoid
+        # concurrent TensorFlow runtimes competing for RAM/GPU resources.
+        n_jobs = self._effective_n_jobs(candidate)
+        if n_jobs == 1 and int(self.config.n_jobs) != 1 and candidate.name in self._TENSORFLOW_CANDIDATES:
+            print_formatted_txt(
+                f"Using n_jobs=1 for {candidate.name} to avoid parallel TensorFlow worker contention.",
+                "INFO",
+            )
+        search = self._build_search(candidate, param_distributions, cv, effective_candidates, n_jobs)
         try:
             search.fit(X_train, y_train)
         except PermissionError:
@@ -106,9 +195,10 @@ class TrainStep(PipelineStepBase):
         # Only compute out-of-fold predicted probabilities if optimization needs them and estimator supports it.
         if not (self.config.optimize_class_probabilities and candidate.supports_predict_proba):
             return
+        n_jobs = self._effective_n_jobs(candidate)
         try:
             probabilities = cross_val_predict(
-                estimator, X_train, y_train, cv=cv, method="predict_proba", n_jobs=self.config.n_jobs
+                estimator, X_train, y_train, cv=cv, method="predict_proba", n_jobs=n_jobs
             )
         except PermissionError:
             # Retry without parallelism if process spawning is restricted.
@@ -133,6 +223,14 @@ class TrainStep(PipelineStepBase):
         search_plot_path = model_output_dir / "search_results.png"
         save_frame_csv(results_df, cv_results_path)
         save_joblib(search.best_estimator_, best_model_path)
+
+        # Persist the exact temporal input contract used by the winning LSTM.
+        if candidate.name == "keras_lstm":
+            model = getattr(search.best_estimator_, "named_steps", {}).get("model")
+            temporal_schema = getattr(model, "temporal_schema_", None)
+            if temporal_schema is not None:
+                save_json(temporal_schema, model_output_dir / "temporal_schema.json")
+
         # Optionally compute and save out-of-fold probabilities if required for later optimization.
         self._save_oof_probabilities(candidate, search.best_estimator_, X_train, y_train, cv, model_output_dir)
         save_search_results_plot(results_df, search_plot_path, self.config.scoring_primary)
@@ -211,8 +309,10 @@ class TrainStep(PipelineStepBase):
             level = "INFO" if succeeded else "WARNING"
             print_formatted_txt(f"Model {candidate.name} {status} in duration: {duration}", level)
 
-    def _finalize_training(self, training_rows, failed_rows, best_fold_rows, model_specs):
+    def _finalize_training(self, training_rows, failed_rows, best_fold_rows, model_specs, skipped_models=None):
         """Rank successful models and persist the complete training-stage contract."""
+        if skipped_models is None:
+            skipped_models = []
         # Consolidate failures into a DataFrame for reporting and persistence.
         failures = pd.DataFrame(failed_rows)
         if failures.empty:
@@ -286,7 +386,55 @@ class TrainStep(PipelineStepBase):
         best_fold_rows: list[dict[str, Any]] = []
         model_specs: dict[str, dict[str, Any]] = {}
 
+        # Load existing model_specs to implement incremental training behavior.
+        # This allows re-running with a different subset of models without retraining shared models.
+        existing_model_specs: dict[str, dict[str, Any]] = {}
+        existing_model_specs_path = self.config.train_dir / "model_specs.json"
+        skipped_models = []
+        if existing_model_specs_path.exists() and not self.config.force_retrain_models:
+            existing_model_specs = load_json(existing_model_specs_path)
+            print_formatted_txt("Incremental training enabled: checking for previously trained models", "INFO")
+
+        # Recover reusable model specs directly from model artifact folders when
+        # model_specs.json is missing or incomplete (common after interrupted runs).
+        recovered_models = []
+        if not self.config.force_retrain_models:
+            for candidate in candidates:
+                if candidate.name in existing_model_specs:
+                    continue
+                if not self._is_model_fully_trained(candidate.name):
+                    continue
+                existing_model_specs[candidate.name] = self._build_recovered_model_spec(
+                    candidate,
+                    numeric_features=numeric_features,
+                    categorical_features=categorical_features,
+                )
+                recovered_models.append(candidate.name)
+            if recovered_models:
+                print_formatted_txt(
+                    f"Recovered {len(recovered_models)} trained models from artifact folders: {recovered_models}",
+                    "INFO",
+                )
+
         for candidate in candidates:
+            # Check if this model was already trained and we're not forcing retraining.
+            if candidate.name in existing_model_specs and not self.config.force_retrain_models and self._is_model_fully_trained(candidate.name):
+                print_formatted_txt(
+                    f"Skipping already-trained model '{candidate.name}' (set force_retrain_models=True to retrain)",
+                    "INFO",
+                )
+                skipped_models.append(candidate.name)
+                reused_spec = existing_model_specs[candidate.name]
+                model_specs[candidate.name] = reused_spec
+                reused_summary, reused_fold_rows = self._load_reused_training_metrics(
+                    candidate,
+                    supports_predict_proba=bool(reused_spec.get("supports_predict_proba", candidate.supports_predict_proba)),
+                )
+                if reused_summary is not None:
+                    training_rows.append(reused_summary)
+                best_fold_rows.extend(reused_fold_rows)
+                continue
+
             summary, fold_rows, model_spec, failure = self._train_candidate(
                 candidate, X_train, y_train, cv, numeric_features, categorical_features
             )
@@ -297,4 +445,12 @@ class TrainStep(PipelineStepBase):
             best_fold_rows.extend(fold_rows)
             model_specs[candidate.name] = model_spec
 
-        return self._finalize_training(training_rows, failed_rows, best_fold_rows, model_specs)
+        # Log incremental training summary.
+        if skipped_models:
+            print_formatted_txt(
+                f"Incremental training: {len(skipped_models)} models reused, "
+                f"{len(training_rows)} newly trained",
+                "INFO",
+            )
+
+        return self._finalize_training(training_rows, failed_rows, best_fold_rows, model_specs, skipped_models)

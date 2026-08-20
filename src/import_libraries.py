@@ -52,6 +52,7 @@ from matplotlib.dates import YearLocator, DateFormatter, MonthLocator
 import mapclassify
 import math
 import statistics
+
 import sklearn
 from sklearn.cluster import KMeans, AgglomerativeClustering, DBSCAN
 from sklearn.model_selection import train_test_split, StratifiedKFold, GridSearchCV, RandomizedSearchCV, cross_val_predict
@@ -73,6 +74,7 @@ from sklearn.calibration import CalibratedClassifierCV
 from sklearn.decomposition import PCA
 from sklearn.cross_decomposition import PLSRegression
 from sklearn.impute import KNNImputer
+from sklearn.manifold import TSNE
 
 from lightgbm import LGBMRegressor, LGBMClassifier
 from xgboost import XGBRegressor, XGBClassifier
@@ -201,5 +203,3 @@ from osgeo import gdal, osr
 import psycopg2
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 from psycopg2.extras import RealDictCursor
-
-from sklearn.manifold import TSNE

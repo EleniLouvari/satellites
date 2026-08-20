@@ -33,15 +33,38 @@ def validate_projected_metric_crs(crs, *, dataset_name: str = "Dataset") -> CRS:
     """Validate and return a projected CRS whose horizontal units are metres."""
     if crs is None:
         raise ValueError(f"{dataset_name} has no CRS.")
-    parsed = CRS.from_user_input(crs)
+
+    try:
+        parsed = CRS.from_user_input(crs)
+    except Exception as e:
+        raise ValueError(
+            f"{dataset_name} CRS could not be parsed. Received: {crs!r}. Error: {e}"
+        ) from e
+
     if not parsed.is_projected:
         raise ValueError(
             f"{dataset_name} must use a projected CRS, not a geographic CRS such as EPSG:4326; "
             f"received {parsed.name}. Reproject and save the source dataset before creating features."
         )
+
+    # Collect all unit names from axes, filtering out None values
     units = {axis.unit_name.lower() for axis in parsed.axis_info if axis.unit_name}
-    if not units or not all(unit in {"metre", "meter"} for unit in units):
-        raise ValueError(f"{dataset_name} CRS must use metres; received units {sorted(units)} in {parsed.name}.")
+
+    if not units:
+        raise ValueError(
+            f"{dataset_name} CRS has no usable axis units. CRS name: {parsed.name}. "
+            f"Axes: {[axis.name for axis in parsed.axis_info]}"
+        )
+
+    # Check that all units are either 'metre' or 'meter' (American spelling)
+    valid_units = {"metre", "meter"}
+    invalid_units = units - valid_units
+    if invalid_units:
+        raise ValueError(
+            f"{dataset_name} CRS must use metres; received invalid units {sorted(invalid_units)} "
+            f"in {parsed.name}. Valid units: {sorted(valid_units)}"
+        )
+
     return parsed
 
 

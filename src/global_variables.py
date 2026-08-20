@@ -13,10 +13,12 @@ sns.set_theme(font_scale=0.8)
 
 SEED_NUMBER = 42
 
-os.environ['CUDA_VISIBLE_DEVICES'] = "-1"
-os.environ['TF_CUDNN_USE_AUTOTUNE'] = "0"
-os.environ['OMP_NUM_THREADS'] = "1"
-os.environ['PYTHONHASHSEED'] = str(SEED_NUMBER)
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+os.environ["TF_CUDNN_USE_AUTOTUNE"] = "0"
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["PYTHONHASHSEED"] = str(SEED_NUMBER)
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+tf.get_logger().setLevel("ERROR")
 
 gis_library_dir = os.environ.get("GIS_LIBRARY")
 global_work_dir = os.environ.get("GLOBAL_WORK_DIR")

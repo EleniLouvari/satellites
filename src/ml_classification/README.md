@@ -74,8 +74,11 @@ places for source data or code.
 ## Common configuration
 
 - `selected_models`: optional tuple of model names; `None` considers all
-  available models. Optional XGBoost and LightGBM candidates require their
-  respective libraries.
+  available models. Optional XGBoost, LightGBM, and TensorFlow candidates
+  require their respective libraries. The new TensorFlow option is exposed as
+  `tensorflow_neural_network` and uses a separate Keras-based dense-network
+  module so hidden layers, activations, dropout, and batch normalization can be
+  configured independently of sklearn's `MLPClassifier`.
 - `selection_type`: `"soft_voting"` (default) or `"single_model"`.
 - `cv_ranking_method`: `"score_minus_std"` (default, rewards stability) or
   `"mean_score"`.
