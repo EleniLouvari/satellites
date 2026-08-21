@@ -346,9 +346,7 @@ class EvaluateStep(PipelineStepBase):
             report = pd.DataFrame(classification_report(inputs["y_test"], test_predictions, output_dict=True)).T.reset_index()
             report.rename(columns={"index": "label"}, inplace=True)
             save_frame_csv(report, self.config.evaluate_dir / "reports" / f"{model_name}_classification_report.csv")
-            self._save_model_evaluation_plot(
-                model_name, inputs["y_test"], test_predictions, test_probabilities, labels
-            )
+            self._save_model_evaluation_plot(model_name, inputs["y_test"], test_predictions, test_probabilities, labels)
         return metric_rows, geo_rows, caches, estimators
 
     def _save_interpretability(self, cv_metrics_df, test_metrics_df, fitted_estimators, X_train):
@@ -374,7 +372,8 @@ class EvaluateStep(PipelineStepBase):
             row = {
                 "model": model_name,
                 "cv_ranking_metric": float(cv_metrics_df.loc[cv_metrics_df["model"] == model_name, "cv_ranking_metric"].iloc[0]),
-                "test_metric": float(test_metrics_df.loc[test_metrics_df["model"] == model_name, self.config.scoring_primary].iloc[0]),
+                "test_metric": float(test_metrics_df.loc[test_metrics_df["model"] == model_name,
+                                                         self.config.scoring_primary].iloc[0]),
                 "feature_importance_created": False, "shap_created": False, "notes": "",
             }
             # For tree-based models, extract and persist feature importance data + plot.
@@ -431,8 +430,8 @@ class EvaluateStep(PipelineStepBase):
         probability_cache_train, probability_cache_test = caches["train"], caches["test"]
         oof_probability_cache = caches["oof"]
 
-        train_metrics_df = pd.DataFrame(train_rows).sort_values(self.config.scoring_primary, ascending=True)
-        test_metrics_df = pd.DataFrame(test_rows).sort_values(self.config.scoring_primary, ascending=True)
+        train_metrics_df = pd.DataFrame(train_rows)
+        test_metrics_df = pd.DataFrame(test_rows)
         train_metrics_df = sort_metrics_without_voting(train_metrics_df, self.config)
         test_metrics_df = sort_metrics_without_voting(test_metrics_df, self.config)
         save_frame_csv(train_metrics_df, self.config.evaluate_dir / "model_metrics_train.csv")

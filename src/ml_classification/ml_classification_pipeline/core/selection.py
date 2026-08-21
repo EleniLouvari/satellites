@@ -276,8 +276,8 @@ def _sort_metrics(metrics_df: pd.DataFrame, config: ClassificationPipelineConfig
     """Apply consistent model metric sorting with optional voting-row placement."""
     # Keep soft-voting summary at the bottom when requested for report readability.
     if not keep_voting_last:
-        return metrics_df.sort_values(config.scoring_primary, ascending=True).reset_index(drop=True)
+        return metrics_df.sort_values(config.scoring_primary, ascending=False).reset_index(drop=True)
     voting_df = metrics_df[metrics_df["model"] == "soft_voting"].copy()
     base_df = metrics_df[metrics_df["model"] != "soft_voting"].copy()
-    base_df = base_df.sort_values(config.scoring_primary, ascending=True)
+    base_df = base_df.sort_values(config.scoring_primary, ascending=False)
     return pd.concat([base_df, voting_df], ignore_index=True)
