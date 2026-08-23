@@ -89,8 +89,17 @@ places for source data or code.
 - `interpretability_top_models`: number of leading base models included in the
   interpretability section. SHAP is opt-in with
   `interpretability_include_shap=True`.
-- `prediction_confidence_threshold`: rows below this probability are marked in
-  `prediction_needs_review` (default `0.60`).
+- `prediction_confidence_threshold`: legacy maximum-probability review threshold
+  used when rank confidence is disabled (default `0.60`).
+- `rank_confidence_enabled=True`: calculates parcel-level `HIGH`, `MEDIUM`, or
+  `LOW` ensemble confidence from within-model class ranks. LOW or invalid
+  confidence is marked in `prediction_needs_review`; thresholds and the minimum
+  model count are configurable. Step 4 freezes this definition in
+  `selection_summary.json`, and Step 5 uses that frozen definition.
+- `rank_confidence_class_aware_calibration_enabled=True`: replaces the
+  provisional global H/M/L rule with predicted-class-aware empirical accuracy
+  learned from OOF predictions. Defaults are HIGH at `>=0.85`, MEDIUM at
+  `>=0.65`, and at least 100 OOF parcels per pooled class/Top-1 estimate.
 - `open_html_report=True`: open generated HTML reports after writing them.
 
 Satellite zonal statistics already writes one ML-ready GeoParquet row per

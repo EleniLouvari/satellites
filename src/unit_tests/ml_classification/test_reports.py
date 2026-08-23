@@ -109,6 +109,44 @@ def test_write_evaluate_report_assembles_expected_sections_without_artifacts():
     assert test_average_section["table"].loc[0, "f1_macro"] == 80.0
 
 
+def test_write_evaluate_report_separates_oof_calibration_from_holdout_validation():
+    config = SimpleNamespace(
+        evaluate_dir=Path("missing-evaluation-output"),
+        train_dir=Path("missing-training-output"),
+        scoring_primary="f1_macro",
+        cv_ranking_method="score_minus_std",
+        top_voting_models=3,
+    )
+    metrics_df = pd.DataFrame([{"model": "base_model", "f1_macro": 0.80}])
+    confidence_df = pd.DataFrame(
+        [{"confidence_level": "HIGH", "parcels": 10, "accuracy": 0.90}]
+    )
+    selection = {
+        "selection_type": "single_model",
+        "selected_models": ["base_model"],
+        "rank_confidence": {"threshold_source": "oof_class_aware_empirical_calibration"},
+    }
+
+    with patch.object(reports_module, "write_html_report") as write_html_report:
+        reports_module.write_evaluate_report(
+            config,
+            metrics_df,
+            metrics_df,
+            selection,
+            confidence_metrics_df=confidence_df,
+            oof_confidence_metrics_df=confidence_df,
+        )
+
+    sections = write_html_report.call_args.kwargs["sections"]
+    titles = [section["title"] for section in sections]
+    oof_title = "OOF Calibration Performance (Descriptive)"
+    holdout_title = "Holdout Validation Performance: Rank-Based Prediction Confidence"
+    assert titles.index(oof_title) < titles.index(holdout_title)
+    assert "not an independent validation result" in next(
+        section["text"] for section in sections if section["title"] == oof_title
+    )
+
+
 def test_write_evaluate_report_styles_voting_members_and_other_models():
     config = SimpleNamespace(
         evaluate_dir=Path("missing-evaluation-output"),

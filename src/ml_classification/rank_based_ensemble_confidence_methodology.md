@@ -631,7 +631,10 @@ The resulting confidence labels then have an empirical interpretation rather tha
 
 # 13. Class-Specific Confidence
 
-A future refinement should evaluate whether confidence behavior differs materially by predicted crop class.
+OOF and independent holdout evaluation must determine whether confidence
+behavior differs materially by predicted crop class. When the same rank pattern
+has substantially different correctness rates across predicted classes, the
+deployed confidence definition must be class-aware.
 
 For example:
 
@@ -643,7 +646,9 @@ Barley:
 rank score > 0.80 and margin > 0.20 -> 84% observed accuracy
 ```
 
-If such differences are substantial, confidence thresholds should become class-specific.
+If such differences are substantial, a global rank rule is not a valid final
+confidence definition. Fit an empirical calibration from OOF predictions and
+freeze it before inspecting holdout confidence performance.
 
 Conceptually:
 
@@ -659,7 +664,22 @@ rank\_dispersion
 )
 \]
 
-The first implementation should preferably use global thresholds, followed by validation of whether class-specific thresholds are required.
+The current pipeline implementation uses a simple auditable calibration table:
+
+1. group OOF correctness by predicted class and Top-1 vote count;
+2. use an exact class/Top-1 bin without pooling when its support is sufficient;
+3. when an exact bin exists but is sparse, pool only same-class bins within the
+   configured maximum Top-1 vote-count distance;
+4. assign invalid LOW to unseen exact bins and to bounded pooled regions that
+   still lack minimum support, without expanding to more distant bins;
+5. map only supported empirical accuracy estimates to HIGH, MEDIUM, or LOW;
+6. freeze the table in `selection_summary.json`;
+7. apply the frozen table to the untouched holdout and final predictions.
+
+The initial configurable defaults are HIGH at empirical accuracy `>= 0.85`,
+MEDIUM at `>= 0.65`, minimum OOF support of 100, and maximum pooling distance
+of one Top-1 vote. These remain project choices and must be reported with the
+deployed model version.
 
 ---
 
@@ -1228,6 +1248,12 @@ Use out-of-sample validation data to:
 3. optimize HIGH / MEDIUM / LOW thresholds;
 4. check monotonicity of confidence groups;
 5. analyze performance per crop class.
+
+The pipeline implements this phase using predicted-class/Top-1 OOF empirical
+tables with bounded within-class adjacent-bin pooling. Unseen exact bins are
+invalid rather than extrapolated from distant agreement patterns. More complex
+calibration models should only replace this table if independent holdout
+evidence shows a clear benefit.
 
 ## Phase 3
 

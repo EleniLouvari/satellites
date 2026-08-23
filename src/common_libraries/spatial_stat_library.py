@@ -660,7 +660,7 @@ def qq_plot_with_distribution(values, attribute_column, exclude_zeros=True, plot
         print(f"The {attribute_column} follows a normal distribution.")
         is_normal = True
     elif p_value == 0:
-        print(f"Cannot define normal distribution.")
+        print("Cannot define normal distribution.")
         is_normal = False
 
     if plot:
@@ -765,7 +765,7 @@ def get_spatial_weights(gdf, search_distance_in_ft, standardization):
     if "polygon" in gdf.iloc[0]['geometry'].geom_type:
         print("Calculate spatial weights for polygons")
         if standardization.upper() == "B":
-            print(f"The standardization is 'B'. Consider using 'R' for polygons.")
+            print("The standardization is 'B'. Consider using 'R' for polygons.")
         spatial_weights_matrix = calculate_spatial_weights_for_polygons(gdf, standardization)
     else:
         print("Calculate spatial weights for points")

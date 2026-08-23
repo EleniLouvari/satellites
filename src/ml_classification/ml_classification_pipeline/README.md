@@ -81,6 +81,22 @@ config = ClassificationPipelineConfig(
     probability_multiplier_grid=(0.8, 1.0, 1.2, 1.5, 2.0),
     probability_optimization_iterations=2,
     probability_optimization_max_accuracy_drop=0.02,
+    rank_confidence_enabled=True,
+    rank_confidence_minimum_models=3,
+    # Provisional defaults; validate these against OOF and holdout results.
+    rank_confidence_high_min_top1=0.75,
+    rank_confidence_high_min_top2=0.80,
+    rank_confidence_high_min_score=0.80,
+    rank_confidence_high_min_margin=0.20,
+    rank_confidence_medium_min_top1=0.50,
+    rank_confidence_medium_min_top2=0.60,
+    rank_confidence_medium_min_score=0.60,
+    rank_confidence_medium_min_margin=0.10,
+    rank_confidence_class_aware_calibration_enabled=True,
+    rank_confidence_high_min_empirical_accuracy=0.85,
+    rank_confidence_medium_min_empirical_accuracy=0.65,
+    rank_confidence_minimum_oof_support=100,
+    rank_confidence_max_top1_pool_distance=1,
     interpretability_top_models=3,
     interpretability_include_shap=False,
 )
@@ -114,9 +130,37 @@ config = ClassificationPipelineConfig(
     spatial_split=True,
     selection_type="soft_voting",
     top_voting_models=3,
-    prediction_confidence_threshold=0.60,
+    prediction_confidence_threshold=0.60,  # Used only when rank confidence is disabled/unavailable.
 )
 ```
+
+When rank confidence is enabled, the pipeline retains every selected model's
+probabilities long enough to compare its within-model class ordering. It keeps
+Top-1/Top-2/Top-3 agreement, normalized Borda rank score, margin, and dispersion
+as parcel diagnostics. The numeric
+`prediction_max_probability` is retained as a diagnostic only; it is not
+treated as calibrated statistical confidence and does not control the review
+flag when rank confidence is available.
+
+By default, Step 4 uses OOF correctness to fit a class-aware empirical table
+indexed by predicted class and Top-1 vote count. Sufficient exact bins are used
+without pooling. Sparse observed bins may pool only with bins from the same
+predicted class within `rank_confidence_max_top1_pool_distance` (one vote by
+default), and only when the bounded region reaches
+`rank_confidence_minimum_oof_support`. Unseen exact bins and bounded regions
+without sufficient OOF support remain invalid and `LOW`. The defaults map
+empirical accuracy `>=0.85` to `HIGH`, `>=0.65` to `MEDIUM`, and lower accuracy
+to `LOW`.
+
+For soft voting, the predicted label remains probability-based. If the
+rank-aggregated winner disagrees with that label, the parcel receives `LOW`
+rank confidence and the disagreement is retained in the diagnostic columns.
+Calibration is never learned from final prediction rows or recalculated on the
+test set. Step 4 freezes the complete OOF-derived calibration and minimum-model
+rule in `selection_summary.json`; Step 5 applies that exact contract even if the
+live configuration later changes. The untouched holdout confidence artifacts
+verify the frozen OOF calibration. The older global rank thresholds remain a
+fallback when class-aware calibration is disabled or OOF data is unavailable.
 
 The zonal-statistics pipeline performs the time-series pivot before writing the
 GeoParquet. The ML pipeline validates the one-row-per-parcel grain, holds out

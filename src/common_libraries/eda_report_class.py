@@ -39,7 +39,7 @@ class EdaReport:
 
     def setup_paths(self):
         try:
-            cm_l.print_formatted_txt(f"Creating paths...", "SECTION")
+            cm_l.print_formatted_txt("Creating paths...", "SECTION")
 
             if isinstance(self.input_data, gpd.GeoDataFrame):
                 if self.report_folder is None:

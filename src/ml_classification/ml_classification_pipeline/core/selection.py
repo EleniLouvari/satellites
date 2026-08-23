@@ -233,13 +233,13 @@ def fit_and_predict_selected_strategy(
     model_specs: dict[str, dict[str, object]],
     numeric_features: list[str],
     categorical_features: list[str],
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, dict[str, np.ndarray]]:
     """Fit selected model strategy on labeled rows and predict full-dataset probabilities."""
     # Build, tune (via provided specs), and fit each selected estimator, then
     # average their probabilities to produce final frozen predictions.
     from .models import build_estimator_by_name
 
-    fitted_probabilities = []
+    fitted_probabilities: dict[str, np.ndarray] = {}
     for model_name in selection["selected_models"]:
         estimator = build_estimator_by_name(
             model_name,
@@ -251,13 +251,25 @@ def fit_and_predict_selected_strategy(
         # Apply the chosen hyperparameters discovered during CV.
         estimator.set_params(**model_specs[model_name]["best_params"])
         estimator.fit(X_fit, y_fit)
-        fitted_probabilities.append(estimator.predict_proba(X_all))
+        expected_classes = np.arange(len(selection["labels"]), dtype=int)
+        estimator_classes = getattr(estimator, "classes_", expected_classes)
+        if not np.array_equal(np.asarray(estimator_classes, dtype=int), expected_classes):
+            raise RuntimeError(
+                f"Model {model_name!r} probability columns are not aligned with the canonical class order."
+            )
+        probabilities = np.asarray(estimator.predict_proba(X_all), dtype=np.float64)
+        if probabilities.ndim != 2 or probabilities.shape[1] != len(selection["labels"]):
+            raise RuntimeError(
+                f"Model {model_name!r} returned {probabilities.shape} probabilities; expected "
+                f"(n_rows, {len(selection['labels'])})."
+            )
+        fitted_probabilities[model_name] = probabilities
 
-    averaged_probs = np.mean(fitted_probabilities, axis=0)
+    averaged_probs = np.mean(list(fitted_probabilities.values()), axis=0)
     averaged_probs = apply_class_probability_multipliers(averaged_probs, list(selection["labels"]), selection.get("class_probability_multipliers"))
     prediction_encoded = np.argmax(averaged_probs, axis=1)
     predictions = np.asarray(selection["labels"])[prediction_encoded]
-    return predictions, averaged_probs
+    return predictions, averaged_probs, fitted_probabilities
 
 
 def sort_metrics_with_voting_last(metrics_df: pd.DataFrame, config: ClassificationPipelineConfig) -> pd.DataFrame:

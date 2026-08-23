@@ -48,7 +48,11 @@ class TrainStep(PipelineStepBase):
         """Return True when all required artifacts for a trained model are present."""
         best_model_path, cv_results_path = self._model_artifact_paths(model_name)
         required_paths = [best_model_path, cv_results_path]
-        if getattr(self.config, "optimize_class_probabilities", False) and supports_predict_proba:
+        requires_oof = bool(
+            getattr(self.config, "optimize_class_probabilities", False)
+            or getattr(self.config, "rank_confidence_enabled", False)
+        )
+        if requires_oof and supports_predict_proba:
             required_paths.append(self.config.train_model_dir(model_name) / "oof_probabilities.joblib")
         return all(path.exists() for path in required_paths)
 
@@ -194,9 +198,14 @@ class TrainStep(PipelineStepBase):
         cv: list[tuple[np.ndarray, np.ndarray]],
         model_output_dir: Any,
     ) -> None:
-        """Persist OOF probabilities only when class optimization requires them."""
-        # Only compute out-of-fold predicted probabilities if optimization needs them and estimator supports it.
-        if not (self.config.optimize_class_probabilities and candidate.supports_predict_proba):
+        """Persist OOF probabilities when downstream optimization or validation requires them."""
+        # OOF probabilities support both class-multiplier learning and leakage-safe
+        # rank-confidence validation.
+        requires_oof = bool(
+            getattr(self.config, "optimize_class_probabilities", False)
+            or getattr(self.config, "rank_confidence_enabled", False)
+        )
+        if not (requires_oof and candidate.supports_predict_proba):
             return
         n_jobs = self._effective_n_jobs(candidate)
         try:
@@ -234,7 +243,7 @@ class TrainStep(PipelineStepBase):
             if temporal_schema is not None:
                 save_json(temporal_schema, model_output_dir / "temporal_schema.json")
 
-        # Optionally compute and save out-of-fold probabilities if required for later optimization.
+        # Optionally compute and save OOF probabilities for later optimization or confidence validation.
         self._save_oof_probabilities(candidate, search.best_estimator_, X_train, y_train, cv, model_output_dir)
         save_search_results_plot(results_df, search_plot_path, self.config.scoring_primary)
         print_formatted_txt(

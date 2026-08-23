@@ -102,7 +102,7 @@ class ClassificationPipelineConfig:
 
     # ================================================================================
     # Class Probability Optimization
-    # Post-hoc tuning of class probability multipliers to maximize accuracy
+    # Post-hoc tuning of class probability multipliers to maximize OOF macro F1
     # ================================================================================
     optimize_class_probabilities: bool = False
     probability_multiplier_grid: tuple[float, ...] = (0.8, 1.0, 1.2, 1.5, 2.0)
@@ -117,8 +117,36 @@ class ClassificationPipelineConfig:
     prediction_filled_column: str | None = None
     probability_prefix: str = "probability"
     prediction_confidence_threshold: float = 0.60
-    prediction_confidence_column: str = "prediction_confidence"
+    # This field stores the maximum final class probability for diagnostics;
+    # it is not the rank-based confidence level.
+    prediction_confidence_column: str = "prediction_max_probability"
+    prediction_confidence_level_column: str = "prediction_confidence_level"
     prediction_review_column: str = "prediction_needs_review"
+
+    # ================================================================================
+    # Rank-Based Ensemble Confidence
+    # Qualitative confidence derived from within-model class rankings
+    # ================================================================================
+    rank_confidence_enabled: bool = True
+    rank_confidence_minimum_models: int = 3
+    rank_confidence_high_min_top1: float = 0.75
+    rank_confidence_high_min_top2: float = 0.80
+    rank_confidence_high_min_score: float = 0.80
+    rank_confidence_high_min_margin: float = 0.20
+    rank_confidence_medium_min_top1: float = 0.50
+    rank_confidence_medium_min_top2: float = 0.60
+    rank_confidence_medium_min_score: float = 0.60
+    rank_confidence_medium_min_margin: float = 0.10
+    # Replace provisional global rank rules with OOF-predicted-class calibration when possible.
+    rank_confidence_class_aware_calibration_enabled: bool = True
+    # Assign HIGH when a supported OOF empirical accuracy reaches this boundary.
+    rank_confidence_high_min_empirical_accuracy: float = 0.85
+    # Assign MEDIUM below HIGH but at or above this empirical-accuracy boundary.
+    rank_confidence_medium_min_empirical_accuracy: float = 0.65
+    # Require this many within-class OOF rows after bounded neighboring Top-1 bin pooling.
+    rank_confidence_minimum_oof_support: int = 100
+    # Let sparse observed bins pool only with Top-1 counts this many votes away.
+    rank_confidence_max_top1_pool_distance: int = 1
 
     # ================================================================================
     # Interpretability & Feature Importance
@@ -136,7 +164,7 @@ class ClassificationPipelineConfig:
     float_dtype: str = "float32"
     max_distribution_features: int = 9
     max_map_geometries: int = 20000
-    output_schema_version: str = "1.0.0"
+    output_schema_version: str = "1.2.0"
     log_filename: str = "pipeline.log"
     step_names: tuple[str, ...] = field(default=("01_check", "02_prepare", "03_train", "04_evaluate", "05_predict"))
     open_html_report: bool = True
@@ -204,6 +232,10 @@ class ClassificationPipelineConfig:
             raise TypeError("apply_iqr must be a bool.")
         if not isinstance(self.optimize_class_probabilities, bool):
             raise TypeError("optimize_class_probabilities must be a bool.")
+        if not isinstance(self.rank_confidence_enabled, bool):
+            raise TypeError("rank_confidence_enabled must be a bool.")
+        if not isinstance(self.rank_confidence_class_aware_calibration_enabled, bool):
+            raise TypeError("rank_confidence_class_aware_calibration_enabled must be a bool.")
         if not self.probability_multiplier_grid:
             raise ValueError("probability_multiplier_grid must contain at least one value.")
         if self.spatial_interpolation_method not in {None, "nearest", "idw", "kriging"}:
@@ -301,10 +333,49 @@ class ClassificationPipelineConfig:
                 0.0 <= float(self.prediction_confidence_threshold) <= 1.0,
                 "prediction_confidence_threshold must be between 0 and 1.",
             ),
+            (int(self.rank_confidence_minimum_models) >= 1, "rank_confidence_minimum_models must be >= 1."),
+            (
+                int(self.rank_confidence_minimum_oof_support) >= 1,
+                "rank_confidence_minimum_oof_support must be >= 1.",
+            ),
+            (
+                int(self.rank_confidence_max_top1_pool_distance) >= 0,
+                "rank_confidence_max_top1_pool_distance must be >= 0.",
+            ),
         )
         for condition, message in numeric_validations:
             if not condition:
                 raise ValueError(message)
+
+        confidence_threshold_fields = (
+            "rank_confidence_high_min_top1",
+            "rank_confidence_high_min_top2",
+            "rank_confidence_high_min_score",
+            "rank_confidence_high_min_margin",
+            "rank_confidence_medium_min_top1",
+            "rank_confidence_medium_min_top2",
+            "rank_confidence_medium_min_score",
+            "rank_confidence_medium_min_margin",
+        )
+        for field_name in confidence_threshold_fields:
+            value = float(getattr(self, field_name))
+            if not 0.0 <= value <= 1.0:
+                raise ValueError(f"{field_name} must be between 0 and 1.")
+        threshold_pairs = (
+            (self.rank_confidence_high_min_top1, self.rank_confidence_medium_min_top1, "top1"),
+            (self.rank_confidence_high_min_top2, self.rank_confidence_medium_min_top2, "top2"),
+            (self.rank_confidence_high_min_score, self.rank_confidence_medium_min_score, "score"),
+            (self.rank_confidence_high_min_margin, self.rank_confidence_medium_min_margin, "margin"),
+        )
+        for high_value, medium_value, label in threshold_pairs:
+            if float(high_value) < float(medium_value):
+                raise ValueError(f"HIGH rank-confidence {label} threshold must be >= the MEDIUM threshold.")
+        empirical_high = float(self.rank_confidence_high_min_empirical_accuracy)
+        empirical_medium = float(self.rank_confidence_medium_min_empirical_accuracy)
+        if not 0.0 <= empirical_medium <= empirical_high <= 1.0:
+            raise ValueError(
+                "Empirical rank-confidence thresholds must satisfy 0 <= MEDIUM <= HIGH <= 1."
+            )
 
     def _apply_safe_caps(self) -> None:
         """Apply safe caps to dependent limits and emit warnings when clipped."""
@@ -333,6 +404,18 @@ class ClassificationPipelineConfig:
             field_name="feature_importance_top_n",
             maximum_label="feature_columns",
         )
+        confidence_model_limit = self.top_voting_models or selected_model_count
+        if (
+            self.rank_confidence_enabled
+            and self.selection_type == "soft_voting"
+            and confidence_model_limit is not None
+            and confidence_model_limit < self.rank_confidence_minimum_models
+        ):
+            warnings.warn(
+                "The configured soft-voting strategy can use fewer models than "
+                "rank_confidence_minimum_models; affected predictions will receive LOW confidence.",
+                stacklevel=2,
+            )
 
     def _set_default_output_columns(self) -> None:
         """Set default output column names when explicit values are not provided."""

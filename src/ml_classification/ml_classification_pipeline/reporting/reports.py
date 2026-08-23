@@ -258,6 +258,16 @@ def _model_selection_strategy(config, selection: dict[str, Any], cv_table: pd.Da
     for key in ("class_probability_multipliers", "probability_optimization", "labels"):
         if key in selection:
             details[key] = selection[key]
+    if "rank_confidence" in selection:
+        rank_confidence = dict(selection["rank_confidence"])
+        calibration = rank_confidence.pop("calibration", None)
+        if calibration is not None:
+            rank_confidence["calibration_summary"] = {
+                key: value
+                for key, value in calibration.items()
+                if key != "table"
+            }
+        details["rank_confidence"] = rank_confidence
     return details
 
 
@@ -611,6 +621,9 @@ def write_evaluate_report(
     geo_test_metrics_df: pd.DataFrame | None = None,
     ranking_method_metrics_df: pd.DataFrame | None = None,
     ranking_train_metrics_df: pd.DataFrame | None = None,
+    confidence_metrics_df: pd.DataFrame | None = None,
+    oof_confidence_metrics_df: pd.DataFrame | None = None,
+    confidence_by_class_df: pd.DataFrame | None = None,
 ) -> None:
     """Write the step-4 evaluation report including strategy selection details."""
 
@@ -669,6 +682,45 @@ def write_evaluate_report(
         test_average_section,
         classification_links,
     )
+    if oof_confidence_metrics_df is not None and not oof_confidence_metrics_df.empty:
+        sections.append(
+            {
+                "title": "OOF Calibration Performance (Descriptive)",
+                "text": (
+                    "These out-of-fold rows fitted the class-aware confidence table, so this section "
+                    "describes calibration behavior but is not an independent validation result."
+                ),
+                "table": oof_confidence_metrics_df,
+            }
+        )
+    if confidence_metrics_df is not None and not confidence_metrics_df.empty:
+        confidence_source = selection.get("rank_confidence", {}).get("threshold_source")
+        confidence_text = (
+            "HIGH, MEDIUM, and LOW are assigned from predicted-class-aware empirical correctness tables "
+            "fitted on out-of-fold predictions. The untouched holdout results below verify that frozen "
+            "calibration; the levels are empirical categories, not statistical confidence intervals."
+            if confidence_source == "oof_class_aware_empirical_calibration"
+            else (
+                "HIGH, MEDIUM, and LOW describe cross-model rank consensus and winner separation; "
+                "they are not calibrated statistical probabilities. Thresholds are provisional until "
+                "validated empirically."
+            )
+        )
+        sections.append(
+            {
+                "title": "Holdout Validation Performance: Rank-Based Prediction Confidence",
+                "text": confidence_text,
+                "table": confidence_metrics_df,
+                "links": _report_links(config.evaluate_dir / "confidence"),
+            }
+        )
+    if confidence_by_class_df is not None and not confidence_by_class_df.empty:
+        sections.append(
+            {
+                "title": "Holdout Rank Confidence by Predicted Class",
+                "table": confidence_by_class_df,
+            }
+        )
     sections.extend(
         _build_supplementary_sections(
             _build_ranking_links(config.evaluate_dir),
@@ -690,6 +742,26 @@ def write_predict_report(config, final_df: pd.DataFrame, selection: dict[str, An
     """Write the step-5 prediction report with final fill outputs."""
     # Prepare preview columns and optional probability columns for display.
     preview_columns = [config.id_column, config.target_column, config.prediction_column, config.prediction_filled_column]
+    confidence_columns = [
+        config.prediction_confidence_column,
+        config.prediction_confidence_level_column,
+        "rank_aggregate_score",
+        "rank_margin",
+        "rank_top1_agreement",
+        "rank_top2_agreement",
+        "rank_std",
+        "rank_runner_up_class",
+        "rank_prediction",
+        "rank_winner_tied",
+        "rank_agrees_with_prediction",
+        "rank_confidence_reason",
+        "rank_confidence_empirical_accuracy",
+        "rank_confidence_calibration_support",
+        "rank_confidence_calibration_valid",
+        "rank_confidence_calibration_source",
+        config.prediction_review_column,
+    ]
+    preview_columns.extend(column for column in confidence_columns if column in final_df.columns)
     probability_columns = [column for column in final_df.columns if column.startswith(f"{config.probability_prefix}_")]
     images = [{"title": "Filled Target Distribution", "path": config.predict_dir / "plots" / "filled_target_distribution.png"}]
     predicted_map_path = config.predict_dir / "plots" / "predicted_labels_map.png"
@@ -707,6 +779,14 @@ def write_predict_report(config, final_df: pd.DataFrame, selection: dict[str, An
                     "selected_models": selection["selected_models"],
                     "rows_total": len(final_df),
                     "rows_unknown_original": int(final_df[config.target_column].isna().sum()),
+                    "confidence_method": (
+                        "within-model ranks" if config.prediction_confidence_level_column in final_df else "maximum probability"
+                    ),
+                    "confidence_level_counts": (
+                        final_df[config.prediction_confidence_level_column].value_counts().to_dict()
+                        if config.prediction_confidence_level_column in final_df
+                        else {}
+                    ),
                 },
             },
             {"title": "Prediction Preview", "table": final_df[preview_columns + probability_columns].head(50)},
