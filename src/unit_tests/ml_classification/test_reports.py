@@ -7,8 +7,10 @@ import pandas as pd
 from ml_classification.ml_classification_pipeline.reporting import reports as reports_module
 from ml_classification.ml_classification_pipeline.reporting.reports import (
     _build_average_metrics_section,
+    _prepare_cv_results_table,
     _prepare_analytical_metrics,
 )
+from ml_classification.ml_classification_pipeline.reporting.html import _render_table
 
 
 def test_build_average_metrics_section_orders_and_labels_special_models():
@@ -73,7 +75,13 @@ def test_prepare_analytical_metrics_matches_average_order_and_keeps_voting_last(
 
 
 def test_write_evaluate_report_assembles_expected_sections_without_artifacts():
-    config = SimpleNamespace(evaluate_dir=Path("missing-evaluation-output"), scoring_primary="f1_macro")
+    config = SimpleNamespace(
+        evaluate_dir=Path("missing-evaluation-output"),
+        train_dir=Path("missing-training-output"),
+        scoring_primary="f1_macro",
+        cv_ranking_method="score_minus_std",
+        top_voting_models=3,
+    )
     metrics_df = pd.DataFrame([{"model": "base_model", "f1_macro": 0.80}])
     selection = {"selection_type": "single_model", "selected_models": ["base_model"]}
 
@@ -82,7 +90,7 @@ def test_write_evaluate_report_assembles_expected_sections_without_artifacts():
 
     sections = write_html_report.call_args.kwargs["sections"]
     assert [section["title"] for section in sections] == [
-        "Selected Strategy",
+        "Model Selection Strategy",
         "Metric Definitions",
         "Model Results on Train Set (Analytical per Class)",
         "Model Results on Test Set (Analytical per Class)",
@@ -99,3 +107,226 @@ def test_write_evaluate_report_assembles_expected_sections_without_artifacts():
     )
     assert train_average_section["table"].loc[0, "f1_macro"] == 80.0
     assert test_average_section["table"].loc[0, "f1_macro"] == 80.0
+
+
+def test_write_evaluate_report_styles_voting_members_and_other_models():
+    config = SimpleNamespace(
+        evaluate_dir=Path("missing-evaluation-output"),
+        train_dir=Path("missing-training-output"),
+        scoring_primary="f1_macro",
+        cv_ranking_method="score_minus_std",
+        top_voting_models=2,
+    )
+    metrics_df = pd.DataFrame(
+        [
+            {"model": "selected_a", "f1_macro": 0.90},
+            {"model": "not_selected", "f1_macro": 0.80},
+            {"model": "selected_b", "f1_macro": 0.85},
+            {"model": "soft_voting", "f1_macro": 0.92},
+        ]
+    )
+    analytical_df = pd.DataFrame(
+        [
+            {"model": "selected_a", "f1_macro": 0.90},
+            {"model": "not_selected", "f1_macro": 0.80},
+            {"model": "selected_b", "f1_macro": 0.85},
+            {"model": "Voting", "f1_macro": 0.92},
+        ]
+    )
+    selection = {
+        "selection_type": "soft_voting",
+        "selected_models": ["selected_a", "selected_b"],
+    }
+
+    with patch.object(reports_module, "write_html_report") as write_html_report:
+        reports_module.write_evaluate_report(
+            config,
+            metrics_df,
+            metrics_df,
+            selection,
+            geo_train_metrics_df=analytical_df,
+            geo_test_metrics_df=analytical_df,
+        )
+
+    sections = write_html_report.call_args.kwargs["sections"]
+    average_section = next(section for section in sections if section["title"].endswith("Train Set (Average)"))
+    analytical_section = next(section for section in sections if section["title"].endswith("Train Set (Analytical per Class)"))
+    expected_styles = [
+        {"column": "model", "values": ["selected_a", "selected_b"], "style": "success"},
+        {"column": "model", "values": ["not_selected"], "style": "muted"},
+    ]
+    assert average_section["row_styles_where"] == expected_styles
+    assert analytical_section["row_styles_where"] == expected_styles
+    assert "Green rows" in average_section["text"]
+    assert "Green rows" in analytical_section["text"]
+
+
+def test_prepare_cv_results_table_sorts_and_marks_selected_models():
+    training_summary_df = pd.DataFrame(
+        [
+            {
+                "model": "second",
+                "best_cv_score": 0.82,
+                "cv_score_std": 0.04,
+                "cv_ranking_metric": 0.78,
+                "cv_ranking_method": "score_minus_std",
+                "supports_predict_proba": True,
+            },
+            {
+                "model": "best",
+                "best_cv_score": 0.84,
+                "cv_score_std": 0.02,
+                "cv_ranking_metric": 0.82,
+                "cv_ranking_method": "score_minus_std",
+                "supports_predict_proba": True,
+            },
+            {
+                "model": "third",
+                "best_cv_score": 0.80,
+                "cv_score_std": 0.05,
+                "cv_ranking_metric": 0.75,
+                "cv_ranking_method": "score_minus_std",
+                "supports_predict_proba": True,
+            },
+        ]
+    )
+
+    result = _prepare_cv_results_table(training_summary_df, ["best", "second"])
+
+    assert result["cv_rank"].tolist() == [1, 2, 3]
+    assert result["model"].tolist() == ["best", "second", "third"]
+    assert result["mean_cv_score"].tolist() == [84.0, 82.0, 80.0]
+    assert result["cv_selection_score"].tolist() == [82.0, 78.0, 75.0]
+    assert result["selected_for_strategy"].tolist() == ["Yes", "Yes", "No"]
+
+
+def test_write_train_report_explains_strategy_and_ranks_cv_results():
+    config = SimpleNamespace(
+        train_dir=Path("training-output"),
+        scoring_primary="f1_macro",
+        cv_ranking_method="score_minus_std",
+        selection_type="soft_voting",
+        top_voting_models=2,
+        train_model_dir=lambda model_name: Path("training-output") / "models" / model_name,
+    )
+    training_summary_df = pd.DataFrame(
+        [
+            {
+                "model": "second",
+                "best_cv_score": 0.82,
+                "cv_score_std": 0.04,
+                "cv_ranking_metric": 0.78,
+                "cv_ranking_method": "score_minus_std",
+                "supports_predict_proba": True,
+            },
+            {
+                "model": "best",
+                "best_cv_score": 0.84,
+                "cv_score_std": 0.02,
+                "cv_ranking_metric": 0.82,
+                "cv_ranking_method": "score_minus_std",
+                "supports_predict_proba": True,
+            },
+            {
+                "model": "third",
+                "best_cv_score": 0.80,
+                "cv_score_std": 0.05,
+                "cv_ranking_metric": 0.75,
+                "cv_ranking_method": "score_minus_std",
+                "supports_predict_proba": True,
+            },
+        ]
+    )
+    model_specs = {model_name: {"best_params": {}} for model_name in ("best", "second", "third")}
+
+    with patch.object(reports_module, "write_html_report") as write_html_report:
+        reports_module.write_train_report(config, training_summary_df, model_specs, pd.DataFrame())
+
+    sections = write_html_report.call_args.kwargs["sections"]
+    assert sections[0]["title"] == "Model Selection Strategy"
+    assert sections[0]["kv"]["best_cv_model"] == "best"
+    assert sections[0]["kv"]["configured_strategy_models"] == ["best", "second"]
+    assert sections[1]["title"] == "Cross-Validation Model Ranking"
+    assert sections[1]["table"]["model"].tolist() == ["best", "second", "third"]
+    assert sections[1]["row_styles_where"][0]["values"] == ["best", "second"]
+
+
+def test_write_evaluate_report_includes_frozen_cv_selection_table():
+    config = SimpleNamespace(
+        evaluate_dir=Path("evaluation-output"),
+        train_dir=Path("training-output"),
+        scoring_primary="f1_macro",
+        cv_ranking_method="score_minus_std",
+        top_voting_models=2,
+    )
+    metrics_df = pd.DataFrame([{"model": "best", "f1_macro": 0.80}])
+    cv_summary_df = pd.DataFrame(
+        [
+            {
+                "model": "second",
+                "best_cv_score": 0.82,
+                "cv_score_std": 0.04,
+                "cv_ranking_metric": 0.78,
+                "cv_ranking_method": "score_minus_std",
+                "supports_predict_proba": True,
+            },
+            {
+                "model": "best",
+                "best_cv_score": 0.84,
+                "cv_score_std": 0.02,
+                "cv_ranking_metric": 0.82,
+                "cv_ranking_method": "score_minus_std",
+                "supports_predict_proba": True,
+            },
+            {
+                "model": "third",
+                "best_cv_score": 0.80,
+                "cv_score_std": 0.05,
+                "cv_ranking_metric": 0.75,
+                "cv_ranking_method": "score_minus_std",
+                "supports_predict_proba": True,
+            },
+        ]
+    )
+    selection = {
+        "selection_type": "soft_voting",
+        "selection_source": "cross_validation",
+        "selected_models": ["best", "second"],
+        "selected_score": 0.80,
+    }
+
+    def read_optional_csv(path):
+        return cv_summary_df if Path(path).name == "training_summary.csv" else None
+
+    with (
+        patch.object(reports_module, "_read_optional_csv", side_effect=read_optional_csv),
+        patch.object(reports_module, "write_html_report") as write_html_report,
+    ):
+        reports_module.write_evaluate_report(config, metrics_df, metrics_df, selection)
+
+    sections = write_html_report.call_args.kwargs["sections"]
+    strategy_section = sections[0]
+    cv_section = sections[1]
+    assert strategy_section["title"] == "Model Selection Strategy"
+    assert strategy_section["kv"]["cv_ranking_formula"] == "mean CV f1_macro - CV standard deviation"
+    assert cv_section["title"] == "Voting Model Selection from Cross-Validation"
+    assert cv_section["table"]["model"].tolist() == ["best", "second", "third"]
+    assert cv_section["table"]["selected_for_strategy"].tolist() == ["Yes", "Yes", "No"]
+    assert cv_section["row_styles_where"][0]["values"] == ["best", "second"]
+
+
+def test_render_table_applies_semantic_row_styles_with_highlight_precedence():
+    table = pd.DataFrame({"model": ["selected", "other", "Voting"], "score": [0.9, 0.8, 0.95]})
+
+    rendered = _render_table(
+        table,
+        highlight_rows_where={"column": "model", "values": ["Voting"]},
+        row_styles_where=[
+            {"column": "model", "values": ["selected", "Voting"], "style": "success"},
+            {"column": "model", "values": ["other"], "style": "muted"},
+        ],
+    )
+
+    assert rendered.count("class='row-success'") == 1
+    assert rendered.count("class='row-muted'") == 1
+    assert rendered.count("class='row-highlight'") == 1

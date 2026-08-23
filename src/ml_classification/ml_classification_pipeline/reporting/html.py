@@ -49,6 +49,10 @@ def write_html_report(output_path: str | Path, title: str, intro: str, sections:
                 _render_table(
                     section["table"],
                     highlight_rows_where=section.get("highlight_rows_where"),
+                    row_styles_where=section.get("row_styles_where"),
+                    column_styles=section.get("column_styles"),
+                    numeric_cell_styles=section.get("numeric_cell_styles"),
+                    cell_styles_where=section.get("cell_styles_where"),
                     compact_first_column=section.get("compact_first_column", True),
                 )
             )
@@ -84,9 +88,15 @@ def _render_key_values(values: dict[str, Any]) -> str:
 
 
 def _render_table(
-    table: pd.DataFrame, highlight_rows_where: dict[str, Any] | None = None, compact_first_column: bool = False
+    table: pd.DataFrame,
+    highlight_rows_where: dict[str, Any] | None = None,
+    compact_first_column: bool = False,
+    row_styles_where: list[dict[str, Any]] | None = None,
+    column_styles: dict[str, str] | None = None,
+    numeric_cell_styles: dict[str, dict[str, str]] | None = None,
+    cell_styles_where: list[dict[str, Any]] | None = None,
 ) -> str:
-    """Render a dataframe as an HTML table with optional row highlighting."""
+    """Render a dataframe as an HTML table with optional semantic row/cell styling."""
     # Limit table preview size to keep reports responsive.
     if table.empty:
         return "<p class='muted'>No rows to display.</p>"
@@ -95,6 +105,8 @@ def _render_table(
         preview = preview.head(50)
     highlight_column = highlight_rows_where.get("column") if highlight_rows_where else None
     highlight_values = set(highlight_rows_where.get("values", [])) if highlight_rows_where else set()
+    allowed_row_styles = {"success", "muted"}
+    allowed_cell_styles = {"danger", "success", "warning"}
     column_widths = []
     for idx, column in enumerate(preview.columns):
         values = [len(str(column))] + [len(_stringify(value)) for value in preview.iloc[:, idx]]
@@ -112,10 +124,45 @@ def _render_table(
     parts.append("</tr></thead><tbody>")
     for _, row in preview.iterrows():
         is_highlighted = highlight_column in preview.columns and row[highlight_column] in highlight_values
-        row_style = " style='background-color: #fff3c4; font-weight: 600;'" if is_highlighted else ""
-        parts.append(f"<tr{row_style}>")
+        row_class = "row-highlight" if is_highlighted else ""
+        if not row_class:
+            for style_rule in row_styles_where or []:
+                style_column = style_rule.get("column")
+                style_values = set(style_rule.get("values", []))
+                style_name = style_rule.get("style")
+                if (
+                    style_name in allowed_row_styles
+                    and style_column in preview.columns
+                    and row[style_column] in style_values
+                ):
+                    row_class = f"row-{style_name}"
+                    break
+        class_attr = f" class='{row_class}'" if row_class else ""
+        parts.append(f"<tr{class_attr}>")
         for column in preview.columns:
-            parts.append(f"<td>{escape(_stringify(row[column]))}</td>")
+            cell_style = (column_styles or {}).get(str(column))
+            numeric_styles = (numeric_cell_styles or {}).get(str(column), {})
+            if numeric_styles and pd.notna(row[column]):
+                numeric_value = float(row[column])
+                sign = "positive" if numeric_value > 0 else "negative" if numeric_value < 0 else "zero"
+                numeric_style = numeric_styles.get(sign)
+                if numeric_style in allowed_cell_styles:
+                    cell_style = numeric_style
+            for style_rule in cell_styles_where or []:
+                style_column = style_rule.get("column")
+                style_values = set(style_rule.get("values", []))
+                target_columns = set(style_rule.get("target_columns", []))
+                style_name = style_rule.get("style")
+                if (
+                    style_name in allowed_cell_styles
+                    and style_column in preview.columns
+                    and row[style_column] in style_values
+                    and str(column) in target_columns
+                ):
+                    cell_style = style_name
+                    break
+            cell_class = f" class='cell-{cell_style}'" if cell_style in allowed_cell_styles else ""
+            parts.append(f"<td{cell_class}>{escape(_stringify(row[column]))}</td>")
         parts.append("</tr>")
     parts.append("</tbody></table></div>")
     return "".join(parts)
@@ -211,6 +258,12 @@ padding: 12px 16px; text-align: left; vertical-align: top; }
 min-width: 130px; line-height: 1.35; border-right: 1px solid #e5e7eb; }
 .data-table thead th:last-child { border-right: none; }
 .data-table tbody td { overflow-wrap: anywhere; }
+.data-table tbody tr.row-highlight { background-color: #fff3c4; font-weight: 600; }
+.data-table tbody tr.row-success { background-color: #dcfce7; font-weight: 600; }
+.data-table tbody tr.row-muted { background-color: #f1f5f9; color: #64748b; }
+.data-table tbody td.cell-success { background-color: #f0fdf4; color: #166534; font-weight: 700; }
+.data-table tbody td.cell-danger { background-color: #fef2f2; color: #b42318; font-weight: 700; }
+.data-table tbody td.cell-warning { background-color: #fff3c4; color: #7c5c00; font-weight: 700; }
 .compact-first-col thead th:first-child, .compact-first-col tbody td:first-child { white-space: nowrap; }
 .compact-first-col thead th:first-child, .compact-first-col tbody td:first-child { width: 1%; }
 .compact-first-col thead th, .compact-first-col tbody td { min-width: 0; }

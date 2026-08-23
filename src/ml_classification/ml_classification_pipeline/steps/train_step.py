@@ -44,10 +44,13 @@ class TrainStep(PipelineStepBase):
         model_dir = self.config.train_model_dir(model_name)
         return model_dir / "best_model.joblib", model_dir / "cv_results.csv"
 
-    def _is_model_fully_trained(self, model_name: str) -> bool:
+    def _is_model_fully_trained(self, model_name: str, supports_predict_proba: bool = True) -> bool:
         """Return True when all required artifacts for a trained model are present."""
         best_model_path, cv_results_path = self._model_artifact_paths(model_name)
-        return best_model_path.exists() and cv_results_path.exists()
+        required_paths = [best_model_path, cv_results_path]
+        if getattr(self.config, "optimize_class_probabilities", False) and supports_predict_proba:
+            required_paths.append(self.config.train_model_dir(model_name) / "oof_probabilities.joblib")
+        return all(path.exists() for path in required_paths)
 
     def _load_reused_training_metrics(
         self, candidate: Any, supports_predict_proba: bool
@@ -402,7 +405,7 @@ class TrainStep(PipelineStepBase):
             for candidate in candidates:
                 if candidate.name in existing_model_specs:
                     continue
-                if not self._is_model_fully_trained(candidate.name):
+                if not self._is_model_fully_trained(candidate.name, candidate.supports_predict_proba):
                     continue
                 existing_model_specs[candidate.name] = self._build_recovered_model_spec(
                     candidate,
@@ -418,7 +421,11 @@ class TrainStep(PipelineStepBase):
 
         for candidate in candidates:
             # Check if this model was already trained and we're not forcing retraining.
-            if candidate.name in existing_model_specs and not self.config.force_retrain_models and self._is_model_fully_trained(candidate.name):
+            if (
+                candidate.name in existing_model_specs
+                and not self.config.force_retrain_models
+                and self._is_model_fully_trained(candidate.name, candidate.supports_predict_proba)
+            ):
                 print_formatted_txt(
                     f"Skipping already-trained model '{candidate.name}' (set force_retrain_models=True to retrain)",
                     "INFO",

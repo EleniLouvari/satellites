@@ -4,11 +4,65 @@ from types import SimpleNamespace
 import warnings
 import json
 
+from sklearn.base import is_classifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import cross_val_predict
+
 from ml_classification.ml_classification_pipeline.core.config import ClassificationPipelineConfig
-from ml_classification.ml_classification_pipeline.core.models import build_model_candidates
+from ml_classification.ml_classification_pipeline.core.models import ContiguousLabelClassifier, build_model_candidates
 from ml_classification.ml_classification_pipeline.core.tensorflow_lstm_models import TemporalTensorBuilder
 from ml_classification.ml_classification_pipeline.steps.train_step import TrainStep
 from ml_classification.ml_classification_pipeline.steps.evaluate_step import EvaluateStep
+
+
+def test_contiguous_label_classifier_aligns_probabilities_across_missing_class_folds():
+    X = np.arange(12, dtype=float).reshape(6, 2)
+    y = np.array([0, 0, 1, 1, 2, 2])
+    cv = [
+        (np.array([0, 1, 2, 3]), np.array([4, 5])),
+        (np.array([2, 3, 4, 5]), np.array([0, 1])),
+        (np.array([0, 1, 4, 5]), np.array([2, 3])),
+    ]
+    estimator = ContiguousLabelClassifier(LogisticRegression(), num_classes=3)
+
+    probabilities = cross_val_predict(estimator, X, y, cv=cv, method="predict_proba")
+    fitted = estimator.fit(X[:4], y[:4])
+
+    assert is_classifier(estimator)
+    assert np.array_equal(fitted.classes_seen_, np.array([0, 1]))
+    assert np.array_equal(fitted.classes_, np.array([0, 1, 2]))
+    assert probabilities.shape == (6, 3)
+    assert np.allclose(probabilities.sum(axis=1), 1.0)
+
+
+def test_model_resume_requires_oof_probabilities_when_optimization_is_enabled():
+    class Artifact:
+        def __init__(self, present):
+            self.present = present
+
+        def exists(self):
+            return self.present
+
+    best_model = Artifact(present=True)
+    cv_results = Artifact(present=True)
+    oof_probabilities = Artifact(present=False)
+
+    class ModelDirectory:
+        def __truediv__(self, filename):
+            assert filename == "oof_probabilities.joblib"
+            return oof_probabilities
+
+    step = object.__new__(TrainStep)
+    step.config = SimpleNamespace(
+        optimize_class_probabilities=True,
+        train_model_dir=lambda _model_name: ModelDirectory(),
+    )
+    step._model_artifact_paths = lambda _model_name: (best_model, cv_results)
+
+    assert not step._is_model_fully_trained("xgboost", supports_predict_proba=True)
+
+    oof_probabilities.present = True
+    assert step._is_model_fully_trained("xgboost", supports_predict_proba=True)
 
 
 def test_prepare_search_parameters_knn_limits_neighbors():
@@ -302,7 +356,6 @@ def test_train_step_forces_tensorflow_outer_parallelism_to_one():
 def test_train_step_incremental_training_skips_existing_models(tmp_path):
     """Test that TrainStep skips models that already exist in model_specs.json when force_retrain=False."""
     import json
-    from pathlib import Path
 
     step = object.__new__(TrainStep)
     step.config = SimpleNamespace(

@@ -8,20 +8,17 @@ openEO user account to bypass per-user concurrent job limits (2 jobs max on CDSE
 from __future__ import annotations
 
 import os
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import geopandas as gpd
 import pandas as pd
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from shapely.geometry import box
-import time
 
 from common_libraries.io_library import write_data
 from .zonal_stats_job_manager import JobManagerSatelliteZonalStats
 
-if TYPE_CHECKING:
-    from _typeshed import SupportsRead
+PARTITION_RESULT_FILE_NAME = "satellite_parcel_time_stats.geoparquet"
 
 
 def split_geodataframe_by_grid(gdf: gpd.GeoDataFrame, rows: int = 1, cols: int = 2) -> list[gpd.GeoDataFrame]:
@@ -129,7 +126,7 @@ def load_openeo_users_from_env() -> list[tuple[str, str]]:
 
     user_names = [user for user, _ in credentials]
     print(f"Loaded {len(credentials)} openEO user(s): {user_names}")
-    print(f"Each spatial partition will use one user (round-robin assignment)")
+    print("Each spatial partition will use one user (round-robin assignment)")
     return credentials
 
 def run_partition_extractor(
@@ -198,6 +195,27 @@ def run_partition_extractor(
     print(f"PARTITION {part_idx}/{total_partitions}: {len(gdf_part)} parcels")
     print(f"{'─'*70}")
 
+    # Unpack known keys from config; remaining keys are passed as kwargs
+    output_dir = Path(config["output_dir"])
+    run_identifier = config["run_identifier"]
+    parcel_id_field = config["parcel_id_field"]
+    start_date = config["start_date"]
+    end_date = config["end_date"]
+    working_epsg = config["working_epsg"]
+    sentinel2_bands = config["sentinel2_bands"]
+    calculate_sentinel2_indices = config["calculate_sentinel2_indices"]
+    sentinel2_indices = config["sentinel2_indices"]
+    sentinel1_bands = config["sentinel1_bands"]
+    spatial_statistics = config["spatial_statistics"]
+    tile_size_metres = config["tile_size_metres"]
+    tile_buffer_metres = config["tile_buffer_metres"]
+    known_keys = {
+        "output_dir", "run_identifier", "parcel_id_field", "start_date", "end_date",
+        "working_epsg", "sentinel2_bands", "calculate_sentinel2_indices", "sentinel2_indices",
+        "sentinel1_bands", "spatial_statistics", "tile_size_metres", "tile_buffer_metres",
+    }
+    kwargs = {k: v for k, v in config.items() if k not in known_keys}
+
     # Select the user for this partition (round-robin)
     selected_user_idx = (part_idx - 1) % len(users_list)
     selected_user = users_list[selected_user_idx]
@@ -237,47 +255,121 @@ def run_partition_extractor(
     return part_idx, results
 
 
-def merge_and_save_results(
-    gdf_parcels: gpd.GeoDataFrame,
-    all_results: dict[int, gpd.GeoDataFrame],
-    output_dir: Path,
-    parcel_id_column: str,
-) -> tuple[gpd.GeoDataFrame, Path, Path]:
-    """Merge partition results and save as GeoParquet.
+def load_saved_partition_results(output_dir: Path) -> dict[int, gpd.GeoDataFrame]:
+    """Load completed partition results from an extraction output directory.
+
+    The expected layout is ``output_dir/partition_<n>/`` with one
+    :data:`PARTITION_RESULT_FILE_NAME` file in each completed partition.
 
     Parameters
     ----------
-    gdf_parcels : GeoDataFrame
-        Original input parcels (for reference counts)
-    all_results : dict[int, GeoDataFrame]
-        Results keyed by partition index
     output_dir : Path
-        Output directory for merged files
-    parcel_id_column : str
-        Name of parcel ID column
+        Base output directory containing the partition directories.
 
     Returns
     -------
-    tuple[GeoDataFrame, Path, Path]
+    dict[int, GeoDataFrame]
+        Saved results keyed by their numeric partition index.
+
+    Raises
+    ------
+    FileNotFoundError
+        If no saved partition result files are found.
+    ValueError
+        If a matching partition directory does not have a numeric suffix.
+    """
+    output_dir = Path(output_dir)
+    result_paths = list(output_dir.glob(f"partition_*/{PARTITION_RESULT_FILE_NAME}"))
+    if not result_paths:
+        raise FileNotFoundError(
+            f"No partition results found under {output_dir}. Expected files matching "
+            f"partition_*/{PARTITION_RESULT_FILE_NAME}."
+        )
+
+    indexed_paths = []
+    for result_path in result_paths:
+        partition_suffix = result_path.parent.name.removeprefix("partition_")
+        try:
+            partition_idx = int(partition_suffix)
+        except ValueError as exc:
+            raise ValueError(
+                f"Invalid partition directory {result_path.parent.name!r}; "
+                "expected partition_<number>."
+            ) from exc
+        indexed_paths.append((partition_idx, result_path))
+
+    saved_results = {}
+    for partition_idx, result_path in sorted(indexed_paths):
+        print(f"Loading partition {partition_idx}: {result_path}")
+        saved_results[partition_idx] = gpd.read_parquet(result_path)
+    return saved_results
+
+
+def merge_and_save_results(
+    gdf_parcels: gpd.GeoDataFrame | None = None,
+    all_results: dict[int, gpd.GeoDataFrame] | None = None,
+    output_dir: Path | None = None,
+    parcel_id_column: str | None = None,
+) -> tuple[gpd.GeoDataFrame, Path]:
+    """Merge partition results and save as GeoParquet.
+
+    When ``all_results`` is omitted, results are loaded from the saved
+    ``partition_*/satellite_parcel_time_stats.geoparquet`` files. This allows
+    merging to run independently of :func:`run_parallel_extractions` and in a
+    different Python session.
+
+    Parameters
+    ----------
+    gdf_parcels : GeoDataFrame, optional
+        Original input parcels, used only to report the expected row count.
+    all_results : dict[int, GeoDataFrame], optional
+        In-memory results keyed by partition index. If omitted, saved partition
+        results are discovered below ``output_dir``.
+    output_dir : Path, optional
+        Output directory for merged files
+    parcel_id_column : str, optional
+        Column used to remove duplicate parcels. When omitted, all partition
+        rows are retained because spatial partitions are disjoint by design.
+
+    Returns
+    -------
+    tuple[GeoDataFrame, Path]
         (merged_gdf, output_geoparquet_path)
     """
+    if output_dir is None:
+        raise ValueError("output_dir is required.")
+    output_dir = Path(output_dir)
+
+    if all_results is None:
+        all_results = load_saved_partition_results(output_dir)
+    if not all_results:
+        raise ValueError("No partition results were provided to merge.")
+
     print(f"\n{'='*70}")
     print(f"Merging {len(all_results)} partition result(s)")
     print(f"{'='*70}")
 
-    # Concatenate in partition order
-    merged_results = pd.concat([all_results[i] for i in sorted(all_results.keys())], ignore_index=False)
-    merged_results = merged_results[~merged_results.index.duplicated(keep="first")]
+    # Partition outputs each have their own RangeIndex, so their indexes must not
+    # be used for de-duplication after concatenation.
+    merged_results = pd.concat(
+        [all_results[i] for i in sorted(all_results)],
+        ignore_index=True,
+    )
+    if parcel_id_column is not None:
+        if parcel_id_column not in merged_results.columns:
+            raise KeyError(f"Parcel ID column {parcel_id_column!r} is missing from partition results.")
+        merged_results = merged_results.drop_duplicates(parcel_id_column, keep="first").reset_index(drop=True)
 
-    print(f"\nMerged results: {len(merged_results)} parcels (input: {len(gdf_parcels)})")
+    input_count = len(gdf_parcels) if gdf_parcels is not None else sum(map(len, all_results.values()))
+    print(f"\nMerged results: {len(merged_results)} parcels (input: {input_count})")
     print(f"Output columns: {merged_results.shape[1]}")
 
     # Create output paths
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_geoparquet = output_dir / "satellite_parcel_time_stats.geoparquet"
+    output_geoparquet = output_dir / PARTITION_RESULT_FILE_NAME
 
     print(f"\n{'='*70}")
-    print(f"Saving final merged results")
+    print("Saving final merged results")
     print(f"{'='*70}")
 
     # Save as GeoParquet
@@ -290,7 +382,7 @@ def run_parallel_extractions(
     spatial_parts: list[gpd.GeoDataFrame],
     users_list: list[tuple[str, str]],
     config: dict,
-) -> dict[int, gpd.GeoDataFrame]:
+) -> None:
     """Run parallel openEO extractions for multiple spatial partitions.
 
     Each partition is extracted independently using a different user account
@@ -319,14 +411,13 @@ def run_parallel_extractions(
 
     Returns
     -------
-    dict[int, GeoDataFrame]
-        Results indexed by partition number
+    None
+        Each partition writes its results to its own output directory.
     """
     print(f"\n{'='*70}")
     print(f"Running extraction on {len(spatial_parts)} spatial partition(s) IN PARALLEL")
     print(f"{'='*70}\n")
 
-    all_results = {}
     start_time = time.time()
 
     with ThreadPoolExecutor(max_workers=len(spatial_parts)) as executor:
@@ -345,11 +436,8 @@ def run_parallel_extractions(
 
         # Collect results as they complete
         for future in as_completed(futures):
-            part_idx, results = future.result()
-            all_results[part_idx] = results
+            part_idx, _ = future.result()
             print(f"[Completed] Partition {part_idx} result stored")
 
     elapsed = time.time() - start_time
     print(f"\n✓ All {len(spatial_parts)} partition(s) completed in {elapsed:.1f}s")
-
-    return all_results

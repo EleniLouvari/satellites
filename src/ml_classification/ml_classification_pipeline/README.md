@@ -2,6 +2,9 @@
 
 Restartable classification package designed for dataframe or GeoDataFrame projects.
 
+For a complete source tree and generated-artifact reference, see
+[STRUCTURE.md](STRUCTURE.md).
+
 Pipeline steps:
 
 1. `run_check(df)`
@@ -26,11 +29,21 @@ See [INCREMENTAL_WORKFLOW.md](INCREMENTAL_WORKFLOW.md) for:
 - `02_prepare/report.html`
 - `03_train/report.html`
 - `04_evaluate/report.html`
+- `final_dashboard/report.html` (created automatically when `run_evaluate()` finishes)
 - `05_predict/report.html`
 
 A top-level index page is written to:
 
 - `report_index.html`
+
+The final dashboard combines the OpenStreetMap-backed study-area map,
+one combined parcel-level box-plot figure with one row per month, NDVI on the
+left, NDWI on the right, and class/label on the shared x-axis; monthly
+highest/lowest index lines faceted by modeled class; CV fold stability;
+train-versus-test performance; and the selected best model or voting ensemble.
+The static map PNG is not included.
+Supporting plots and CSV tables are exported under `final_dashboard/plots` and
+`final_dashboard/data`.
 
 Schema metadata:
 

@@ -19,6 +19,11 @@ _SPECIAL_MODEL_DISPLAY_NAMES = {
 _AVERAGE_SPECIAL_MODELS = ("soft_voting", "rank_average", "rank_median")
 _ANALYTICAL_SPECIAL_MODELS = ("Voting",)
 _RANKING_METHODS = ("rank_average", "rank_median")
+_ENSEMBLE_DISPLAY_NAMES = frozenset(_SPECIAL_MODEL_DISPLAY_NAMES.values())
+_VOTING_STYLE_NOTE = (
+    "Green rows are base models included in Voting; gray rows are the remaining base models; "
+    "amber rows are aggregate Voting or ranking outputs."
+)
 _PERCENTAGE_METRICS = (
     "accuracy",
     "balanced_accuracy",
@@ -144,6 +149,137 @@ def _ranking_rows(ranking_metrics_df: pd.DataFrame | None, columns: pd.Index) ->
     return rank_rows.reindex(columns=columns)
 
 
+def _prepare_cv_results_table(
+    training_summary_df: pd.DataFrame | None,
+    selected_models: list[str] | None = None,
+) -> pd.DataFrame:
+    """Build a concise CV ranking table with the best-performing model first."""
+    if training_summary_df is None or training_summary_df.empty:
+        return pd.DataFrame()
+
+    required_columns = {"model", "best_cv_score", "cv_score_std", "cv_ranking_metric"}
+    if not required_columns.issubset(training_summary_df.columns):
+        return pd.DataFrame()
+
+    ranked_df = training_summary_df.copy()
+    ranked_df = ranked_df.sort_values(
+        ["cv_ranking_metric", "best_cv_score"],
+        ascending=[False, False],
+    ).reset_index(drop=True)
+    ranked_df.insert(0, "cv_rank", range(1, len(ranked_df) + 1))
+    ranked_df = ranked_df.rename(
+        columns={
+            "best_cv_score": "mean_cv_score",
+            "cv_ranking_metric": "cv_selection_score",
+            "cv_ranking_method": "ranking_method",
+        }
+    )
+    # Evaluation metrics elsewhere in the report are percentages, so use the
+    # same display convention for CV scores.
+    score_columns = ["mean_cv_score", "cv_score_std", "cv_selection_score"]
+    for column in score_columns:
+        ranked_df[column] = pd.to_numeric(ranked_df[column], errors="coerce") * 100
+
+    if selected_models is not None:
+        selected_model_set = {str(model_name) for model_name in selected_models}
+        ranked_df["selected_for_strategy"] = ranked_df["model"].astype(str).map(
+            lambda model_name: "Yes" if model_name in selected_model_set else "No"
+        )
+
+    display_columns = [
+        "cv_rank",
+        "model",
+        "mean_cv_score",
+        "cv_score_std",
+        "cv_selection_score",
+        "ranking_method",
+        "supports_predict_proba",
+        "selected_for_strategy",
+    ]
+    return ranked_df[[column for column in display_columns if column in ranked_df.columns]]
+
+
+def _supports_probability(value: Any) -> bool:
+    """Normalize boolean-like values loaded directly or through CSV."""
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes"}
+    return bool(value)
+
+
+def _configured_strategy_models(config, training_summary_df: pd.DataFrame) -> list[str]:
+    """Infer the training-stage strategy candidates using the production CV ordering."""
+    if training_summary_df.empty or "model" not in training_summary_df.columns:
+        return []
+
+    ranked_df = training_summary_df.sort_values(
+        ["cv_ranking_metric", "best_cv_score"],
+        ascending=[False, False],
+    )
+    if "supports_predict_proba" in ranked_df.columns:
+        ranked_df = ranked_df[ranked_df["supports_predict_proba"].map(_supports_probability)]
+    ranked_models = ranked_df["model"].astype(str).tolist()
+    top_voting_models = getattr(config, "top_voting_models", None)
+    if top_voting_models is not None:
+        ranked_models = ranked_models[: int(top_voting_models)]
+    if getattr(config, "selection_type", "single_model") != "soft_voting":
+        ranked_models = ranked_models[:1]
+    return ranked_models
+
+
+def _cv_ranking_formula(scoring_primary: str, ranking_method: str) -> str:
+    """Return a human-readable definition of the configured selection score."""
+    if ranking_method == "score_minus_std":
+        return f"mean CV {scoring_primary} - CV standard deviation"
+    return f"mean CV {scoring_primary}"
+
+
+def _model_selection_strategy(config, selection: dict[str, Any], cv_table: pd.DataFrame) -> dict[str, Any]:
+    """Combine configuration and frozen selection metadata for evaluation reporting."""
+    scoring_primary = getattr(config, "scoring_primary", "unknown")
+    ranking_method = getattr(config, "cv_ranking_method", None)
+    if not ranking_method:
+        ranking_method = str(selection.get("selected_metric", "cv_mean_score")).removeprefix("cv_")
+    selected_models = list(selection.get("selected_models", []))
+    selected_score = selection.get("selected_score")
+    details = {
+        "selection_type": selection.get("selection_type"),
+        "selection_source": selection.get("selection_source", "cross_validation"),
+        "scoring_primary": scoring_primary,
+        "cv_ranking_method": ranking_method,
+        "cv_ranking_formula": _cv_ranking_formula(scoring_primary, ranking_method),
+        "top_voting_models": getattr(config, "top_voting_models", None),
+        "best_cv_model": cv_table.iloc[0]["model"] if not cv_table.empty else None,
+        "selected_model_count": len(selected_models),
+        "selected_models": selected_models,
+        "selected_metric": selection.get("selected_metric", f"cv_{ranking_method}"),
+        "mean_selected_cv_score": float(selected_score) * 100 if selected_score is not None else None,
+        "score_display_unit": "percent",
+    }
+    for key in ("class_probability_multipliers", "probability_optimization", "labels"):
+        if key in selection:
+            details[key] = selection[key]
+    return details
+
+
+def _voting_member_row_styles(table: pd.DataFrame, voting_models: list[str] | None) -> list[dict[str, Any]]:
+    """Return green/gray row rules that distinguish voting members from other base models."""
+    if not voting_models or "model" not in table.columns:
+        return []
+
+    model_names = table["model"].dropna().astype(str).drop_duplicates().tolist()
+    voting_model_set = {str(model_name) for model_name in voting_models}
+    selected_models = [model_name for model_name in model_names if model_name in voting_model_set]
+    other_models = [
+        model_name
+        for model_name in model_names
+        if model_name not in voting_model_set and model_name not in _ENSEMBLE_DISPLAY_NAMES
+    ]
+    return [
+        {"column": "model", "values": selected_models, "style": "success"},
+        {"column": "model", "values": other_models, "style": "muted"},
+    ]
+
+
 def _build_average_metrics_section(
     title: str,
     metrics_df: pd.DataFrame,
@@ -151,18 +287,24 @@ def _build_average_metrics_section(
     scoring_primary: str,
     highlighted_models: list[str],
     ranking_text: str,
+    voting_models: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build an average-results section, optionally augmented with rank ensembles."""
     rank_rows = _ranking_rows(ranking_metrics_df, metrics_df.columns)
     combined_df = pd.concat([metrics_df, rank_rows], ignore_index=True) if not rank_rows.empty else metrics_df
+    display_table = _prepare_average_metrics(combined_df, scoring_primary)
     section = {
         "title": title,
-        "table": _prepare_average_metrics(combined_df, scoring_primary),
+        "table": display_table,
         "highlight_rows_where": {"column": "model", "values": highlighted_models.copy()},
+        "row_styles_where": _voting_member_row_styles(display_table, voting_models),
     }
+    section_text = _VOTING_STYLE_NOTE if voting_models else ""
     if not rank_rows.empty:
-        section["text"] = ranking_text
+        section_text = " ".join(filter(None, (ranking_text, section_text)))
         section["highlight_rows_where"]["values"] += ["Rank Average", "Rank Median"]
+    if section_text:
+        section["text"] = section_text
     return section
 
 
@@ -224,6 +366,8 @@ def _metric_definitions() -> pd.DataFrame:
 
 def _build_evaluation_sections(
     selection: dict[str, Any],
+    model_selection_strategy: dict[str, Any],
+    cv_selection_table: pd.DataFrame,
     analytical_train_df: pd.DataFrame,
     analytical_test_df: pd.DataFrame,
     train_average_section: dict[str, Any],
@@ -232,25 +376,49 @@ def _build_evaluation_sections(
 ) -> list[dict[str, Any]]:
     """Build the fixed, ordered core of the evaluation report."""
     analytical_text = "GeoDataFrameClassifier-style table included for continuity with legacy outputs."
-    return [
-        {"title": "Selected Strategy", "kv": selection},
-        {"title": "Metric Definitions", "table": _metric_definitions(), "compact_first_column": True},
-        {
-            "title": "Model Results on Train Set (Analytical per Class)",
-            "text": analytical_text,
-            "table": analytical_train_df,
-            "highlight_rows_where": {"column": "model", "values": ["Voting"]},
-        },
-        {
-            "title": "Model Results on Test Set (Analytical per Class)",
-            "text": analytical_text,
-            "table": analytical_test_df,
-            "highlight_rows_where": {"column": "model", "values": ["Voting"]},
-        },
-        train_average_section,
-        test_average_section,
-        {"title": "Classification Reports", "links": classification_links},
+    selected_strategy_models = list(selection["selected_models"])
+    voting_models = selected_strategy_models if selection["selection_type"] == "soft_voting" else None
+    if voting_models:
+        analytical_text = f"{analytical_text} {_VOTING_STYLE_NOTE}"
+    sections = [
+        {"title": "Model Selection Strategy", "kv": model_selection_strategy},
     ]
+    if not cv_selection_table.empty:
+        sections.append(
+            {
+                "title": "Voting Model Selection from Cross-Validation",
+                "text": (
+                    "Models are ordered by the CV selection score used by the pipeline, highest first. "
+                    "Green rows are included in the frozen strategy and gray rows are not selected. "
+                    "Scores are displayed as percentages."
+                ),
+                "table": cv_selection_table,
+                "row_styles_where": _voting_member_row_styles(cv_selection_table, selected_strategy_models),
+            }
+        )
+    sections.extend(
+        [
+            {"title": "Metric Definitions", "table": _metric_definitions(), "compact_first_column": True},
+            {
+                "title": "Model Results on Train Set (Analytical per Class)",
+                "text": analytical_text,
+                "table": analytical_train_df,
+                "highlight_rows_where": {"column": "model", "values": ["Voting"]},
+                "row_styles_where": _voting_member_row_styles(analytical_train_df, voting_models),
+            },
+            {
+                "title": "Model Results on Test Set (Analytical per Class)",
+                "text": analytical_text,
+                "table": analytical_test_df,
+                "highlight_rows_where": {"column": "model", "values": ["Voting"]},
+                "row_styles_where": _voting_member_row_styles(analytical_test_df, voting_models),
+            },
+            train_average_section,
+            test_average_section,
+            {"title": "Classification Reports", "links": classification_links},
+        ]
+    )
+    return sections
 
 
 def _build_supplementary_sections(
@@ -384,18 +552,34 @@ def write_train_report(
     params_df = pd.DataFrame(
         [{"model": model_name, "best_params": spec["best_params"]} for model_name, spec in model_specs.items()]
     )
+    strategy_models = _configured_strategy_models(config, training_summary_df)
+    cv_results_table = _prepare_cv_results_table(training_summary_df, strategy_models)
+    scoring_primary = config.scoring_primary
+    ranking_method = config.cv_ranking_method
+    strategy_summary = {
+        "scoring_primary": scoring_primary,
+        "cv_ranking_method": ranking_method,
+        "cv_ranking_formula": _cv_ranking_formula(scoring_primary, ranking_method),
+        "selection_type": config.selection_type,
+        "top_voting_models": config.top_voting_models,
+        "best_cv_model": cv_results_table.iloc[0]["model"] if not cv_results_table.empty else None,
+        "configured_strategy_models": strategy_models,
+    }
     write_html_report(
         config.train_dir / "report.html",
         "Step 3 Report: Model Training",
         "Candidate models, hyperparameter search outcomes, and selected estimators.",
         sections=[
+            {"title": "Model Selection Strategy", "kv": strategy_summary},
             {
-                "title": "Training Summary",
+                "title": "Cross-Validation Model Ranking",
                 "text": (
-                    "Models are ranked by the configured CV ranking method. "
-                    "`score_minus_std` favors models with both strong average CV score and lower fold-to-fold variability."
+                    "Models are ordered by the configured CV selection score, highest first. "
+                    "Green rows are expected strategy members and gray rows are the remaining models. "
+                    "Scores are displayed as percentages; score_minus_std rewards both performance and fold stability."
                 ),
-                "table": training_summary_df,
+                "table": cv_results_table,
+                "row_styles_where": _voting_member_row_styles(cv_results_table, strategy_models),
             },
             {"title": "Best Parameters", "table": params_df, "compact_first_column": True},
             {
@@ -443,6 +627,10 @@ def write_evaluate_report(
     interpretability_images = _report_images(interpretability_dir)
     interpretability_links = _report_links(interpretability_dir, excluded_names=(interpretability_summary_path.name,))
     highlighted_models = _highlighted_average_models(selection)
+    voting_models = list(selection["selected_models"]) if selection["selection_type"] == "soft_voting" else None
+    cv_summary_path = config.train_dir / "training_summary.csv"
+    cv_summary_df = _read_optional_csv(cv_summary_path)
+    cv_selection_table = _prepare_cv_results_table(cv_summary_df, list(selection.get("selected_models", [])))
     sorted_geo_train_metrics_df = _prepare_analytical_metrics(
         geo_train_metrics_df, train_metrics_df, config.scoring_primary
     )
@@ -457,6 +645,7 @@ def write_evaluate_report(
             "rank_average and rank_median rows show rank-based ensemble aggregation on the training set. "
             "Compare with the test-set table to assess overfitting."
         ),
+        voting_models,
     )
     test_average_section = _build_average_metrics_section(
         "Model Results on Test Set (Average)",
@@ -468,9 +657,12 @@ def write_evaluate_report(
             "rank_average and rank_median rows show the performance of rank-based ensemble aggregation. "
             "These methods are robust to probability calibration differences across model families."
         ),
+        voting_models,
     )
     sections = _build_evaluation_sections(
         selection,
+        _model_selection_strategy(config, selection, cv_selection_table),
+        cv_selection_table,
         sorted_geo_train_metrics_df,
         sorted_geo_test_metrics_df,
         train_average_section,
@@ -533,6 +725,16 @@ def write_predict_report(config, final_df: pd.DataFrame, selection: dict[str, An
 def write_index_report(config) -> None:
     """Write a top-level index page linking all step reports."""
     # Provide a single navigation entrypoint for generated pipeline reports.
+    links = [
+        {"label": "01 Check", "path": config.check_dir / "report.html"},
+        {"label": "02 Prepare", "path": config.prepare_dir / "report.html"},
+        {"label": "03 Train", "path": config.train_dir / "report.html"},
+        {"label": "04 Evaluate", "path": config.evaluate_dir / "report.html"},
+        {"label": "05 Predict", "path": config.predict_dir / "report.html"},
+    ]
+    final_dashboard_path = config.final_dashboard_dir / "report.html"
+    if final_dashboard_path.exists():
+        links.insert(0, {"label": "Final Dashboard", "path": final_dashboard_path})
     write_html_report(
         config.project_dir / "report_index.html",
         "ML Classification Pipeline Report Index",
@@ -540,13 +742,7 @@ def write_index_report(config) -> None:
         sections=[
             {
                 "title": "Step Reports",
-                "links": [
-                    {"label": "01 Check", "path": config.check_dir / "report.html"},
-                    {"label": "02 Prepare", "path": config.prepare_dir / "report.html"},
-                    {"label": "03 Train", "path": config.train_dir / "report.html"},
-                    {"label": "04 Evaluate", "path": config.evaluate_dir / "report.html"},
-                    {"label": "05 Predict", "path": config.predict_dir / "report.html"},
-                ],
+                "links": links,
             }
         ],
     )

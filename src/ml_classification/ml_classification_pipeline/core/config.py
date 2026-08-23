@@ -395,6 +395,11 @@ class ClassificationPipelineConfig:
         return self.project_dir / self.step_names[4]
 
     @property
+    def final_dashboard_dir(self) -> Path:
+        """Return the output directory for the post-evaluation dashboard."""
+        return self.project_dir / "final_dashboard"
+
+    @property
     def log_path(self) -> Path:
         """Return the absolute path to the pipeline log file."""
         # Log file path is derived from the configured project directory.
@@ -411,5 +416,6 @@ class ClassificationPipelineConfig:
             self.train_models_dir,
             self.evaluate_dir,
             self.predict_dir,
+            self.final_dashboard_dir,
         ):
             folder.mkdir(parents=True, exist_ok=True)

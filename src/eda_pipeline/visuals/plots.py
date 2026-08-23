@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
 from matplotlib.lines import Line2D
+from matplotlib.colors import LinearSegmentedColormap
 from pandas.plotting import scatter_matrix
 from scipy import stats
 
@@ -147,16 +148,22 @@ def create_eda_plots(df: pd.DataFrame, artifacts: dict, config: EDAConfig) -> di
 
     if config.target_column and config.target_column in df.columns:
         target_path = plots_dir / "target_distribution.png"
-        _plot_target_distribution(df[config.target_column], target_task, target_path)
+        _plot_target_distribution(
+            df[config.target_column], target_task, config.max_target_levels_for_plots, target_path
+        )
         plot_paths["target_distribution"] = target_path
         if target_task == "classification" and not artifacts.get("numeric_target_tests", pd.DataFrame()).empty:
-            target_boxplot_path = plots_dir / "numeric_by_target_boxplots.png"
             target_features = artifacts.get("numeric_target_tests", pd.DataFrame())
             selected_columns = _ordered_available_features(numeric_feature_columns, target_features, config.max_features_per_plot)
-            _plot_numeric_by_target_boxplots(
-                df, selected_columns, config.target_column, config.max_target_levels_for_plots, target_boxplot_path
-            )
-            plot_paths["numeric_by_target_boxplots"] = target_boxplot_path
+            target_profile_path = plots_dir / "numeric_target_median_percentile_heatmap.png"
+            if _plot_numeric_target_median_percentile_heatmap(
+                df,
+                selected_columns,
+                config.target_column,
+                config.max_target_levels_for_plots,
+                target_profile_path,
+            ):
+                plot_paths["numeric_target_median_percentile_heatmap"] = target_profile_path
             distribution_path = plots_dir / "numeric_target_distribution_comparison.png"
             if _plot_numeric_target_distribution_comparison(
                 df, selected_columns, config.target_column, config.max_target_levels_for_plots, distribution_path
@@ -210,7 +217,13 @@ def create_eda_plots(df: pd.DataFrame, artifacts: dict, config: EDAConfig) -> di
             plot_paths["geometry_overview"] = map_path
         if config.target_column and config.target_column in df.columns:
             target_heatmap_path = plots_dir / "geometry_target_heatmap.png"
-            if _plot_geometry_target_heatmap(df, config.target_column, target_heatmap_path):
+            if _plot_geometry_target_heatmap(
+                df,
+                config.target_column,
+                target_task,
+                config.max_target_levels_for_plots,
+                target_heatmap_path,
+            ):
                 plot_paths["geometry_target_heatmap"] = target_heatmap_path
 
     return plot_paths
@@ -503,15 +516,23 @@ def _plot_pca_scores(df: pd.DataFrame, numeric_columns: list[str], config: EDACo
     return True
 
 
-def _plot_target_distribution(series: pd.Series, target_task: str | None, output_path: Path) -> None:
+def _plot_target_distribution(
+    series: pd.Series, target_task: str | None, max_target_levels: int, output_path: Path
+) -> None:
     """Plot target distribution."""
     fig, ax = plt.subplots(figsize=(10, 5))
     if target_task == "regression":
         sns.histplot(series.dropna(), kde=True, ax=ax, color="#b279a2")
         ax.set_xlabel(series.name)
     else:
-        counts = series.dropna().astype(str).value_counts().head(30).sort_values()
-        sns.barplot(x=counts.values, y=counts.index, ax=ax, color="#b279a2")
+        target_colors = _target_color_mapping(series, max_target_levels)
+        values = _apply_target_color_mapping(series, target_colors)
+        counts = values.value_counts().sort_values()
+        ax.barh(
+            counts.index.astype(str),
+            counts.values,
+            color=[target_colors[str(level)] for level in counts.index],
+        )
         ax.set_xlabel("Count")
         ax.set_ylabel("")
     ax.set_title("Target Distribution")
@@ -527,28 +548,95 @@ def _limited_categories(series: pd.Series, max_categories: int) -> pd.Series:
     if len(counts) <= max_categories:
         return values
     top_categories = counts.head(max_categories - 1).index
-    return values.where(values.isin(top_categories), "Other")
+    return values.where(values.isna() | values.isin(top_categories), "Other")
 
 
-def _plot_numeric_by_target_boxplots(
+def _target_color_mapping(series: pd.Series, max_target_levels: int) -> dict[str, str]:
+    """Assign stable report-wide colors to categorical target levels."""
+    levels = series.astype("string").value_counts().index.astype(str).tolist()
+    if len(levels) > max_target_levels:
+        levels = [*levels[: max_target_levels - 1], "Other"]
+    return {str(level): TARGET_PALETTE[index % len(TARGET_PALETTE)] for index, level in enumerate(levels)}
+
+
+def _apply_target_color_mapping(series: pd.Series, target_colors: dict[str, str]) -> pd.Series:
+    """Apply the report-wide target grouping without re-ranking levels in a subset."""
+    values = series.astype("string")
+    if "Other" not in target_colors:
+        return values
+    retained_levels = [level for level in target_colors if level != "Other"]
+    return values.where(values.isna() | values.isin(retained_levels), "Other")
+
+
+def _plot_numeric_target_median_percentile_heatmap(
     df: pd.DataFrame, columns: list[str], target_column: str, max_target_levels: int, output_path: Path
-) -> None:
-    """Plot numeric feature distributions by categorical target."""
-    rows = len(columns)
-    fig, axes = plt.subplots(rows, 1, figsize=(12, max(3.2, 3.2 * rows)))
-    if rows == 1:
-        axes = [axes]
-    for ax, column in zip(axes, columns):
-        plot_df = df[[target_column, column]].dropna().copy()
+) -> bool:
+    """Compare target-class medians across numeric features on a common percentile scale."""
+    if not columns:
+        return False
+    target_colors = _target_color_mapping(df[target_column], max_target_levels)
+    target_levels = list(target_colors)
+    percentile_rows: dict[str, dict[str, float]] = {}
+    for column in columns:
+        plot_df = df[[target_column, column]].copy()
         plot_df[column] = pd.to_numeric(plot_df[column], errors="coerce")
-        plot_df = plot_df.dropna()
-        plot_df[target_column] = _limited_categories(plot_df[target_column], max_target_levels)
-        _boxplot(data=plot_df, x=target_column, y=column, ax=ax, color="#b279a2")
-        ax.set_title(f"{column} by {target_column}")
-        ax.tick_params(axis="x", labelrotation=30)
+        plot_df = plot_df.replace([np.inf, -np.inf], np.nan).dropna()
+        if plot_df.empty:
+            continue
+        plot_df[target_column] = _apply_target_color_mapping(plot_df[target_column], target_colors)
+        feature_values = plot_df[column].to_numpy(dtype=float)
+        percentile_rows[column] = {
+            level: (
+                float(
+                    stats.percentileofscore(
+                        feature_values,
+                        plot_df.loc[plot_df[target_column] == level, column].median(),
+                        kind="mean",
+                    )
+                )
+                if (plot_df[target_column] == level).any()
+                else np.nan
+            )
+            for level in target_levels
+        }
+    if not percentile_rows:
+        return False
+    profile = pd.DataFrame.from_dict(percentile_rows, orient="index", columns=target_levels).dropna(axis=1, how="all")
+    if profile.empty:
+        return False
+    cmap = LinearSegmentedColormap.from_list(
+        "target_median_percentiles",
+        ["#4C78A8", "#F4F5F7", "#F58518"],
+    )
+    fig, ax = plt.subplots(
+        figsize=(max(8, 1.15 * len(profile.columns) + 4), max(4, 0.55 * len(profile.index) + 2.5))
+    )
+    sns.heatmap(
+        profile,
+        mask=profile.isna(),
+        annot=True,
+        fmt=".0f",
+        cmap=cmap,
+        vmin=0,
+        vmax=100,
+        center=50,
+        linewidths=0.5,
+        linecolor="#FFFFFF",
+        cbar_kws={"label": "Class median percentile within feature"},
+        ax=ax,
+    )
+    ax.set_title("Target-Class Median Percentiles Across Numeric Features")
+    ax.set_xlabel(target_column)
+    ax.set_ylabel("Numeric feature")
+    ax.tick_params(axis="x", labelrotation=30)
+    for tick_label in ax.get_xticklabels():
+        if tick_label.get_text() in target_colors:
+            tick_label.set_color(target_colors[tick_label.get_text()])
+            tick_label.set_fontweight("bold")
     fig.tight_layout()
-    fig.savefig(output_path, dpi=140)
+    fig.savefig(output_path, dpi=140, bbox_inches="tight")
     plt.close(fig)
+    return True
 
 
 def _plot_numeric_target_distribution_comparison(
@@ -558,15 +646,28 @@ def _plot_numeric_target_distribution_comparison(
     if not columns:
         return False
     fig, axes = plt.subplots(len(columns), 2, figsize=(15, max(4, 3.8 * len(columns))), squeeze=False)
+    target_colors = _target_color_mapping(df[target_column], max_target_levels)
     for row_index, column in enumerate(columns):
         plot_df = df[[target_column, column]].copy()
         plot_df[column] = pd.to_numeric(plot_df[column], errors="coerce")
         plot_df = plot_df.replace([np.inf, -np.inf], np.nan).dropna()
-        plot_df[target_column] = _limited_categories(plot_df[target_column], max_target_levels)
-        order = plot_df[target_column].value_counts().index.tolist()
+        plot_df[target_column] = _apply_target_color_mapping(plot_df[target_column], target_colors)
+        order = [level for level in target_colors if (plot_df[target_column] == level).any()]
 
         box_axis, ecdf_axis = axes[row_index]
-        _boxplot(data=plot_df, x=target_column, y=column, order=order, ax=box_axis, color="#B279A2")
+        _boxplot(
+            data=plot_df,
+            x=target_column,
+            y=column,
+            order=order,
+            hue=target_column,
+            hue_order=order,
+            palette=target_colors,
+            dodge=False,
+            saturation=1,
+            legend=False,
+            ax=box_axis,
+        )
         box_axis.set_title(f"{column}: spread by {target_column}")
         box_axis.tick_params(axis="x", labelrotation=30)
         for level_index, level in enumerate(order):
@@ -578,7 +679,7 @@ def _plot_numeric_target_distribution_comparison(
                 values,
                 cumulative,
                 where="post",
-                color=TARGET_PALETTE[level_index % len(TARGET_PALETTE)],
+                color=target_colors[level],
                 linestyle=("-", "--", "-.", ":")[level_index % 4],
                 label=f"{level} (n={values.size})",
             )
@@ -601,17 +702,18 @@ def _plot_categorical_target_composition(
     if not columns:
         return False
     fig, axes = plt.subplots(len(columns), 1, figsize=(13, max(4, 4.2 * len(columns))), squeeze=False)
+    target_colors = _target_color_mapping(df[target_column], max_target_levels)
     for axis, column in zip(axes[:, 0], columns):
         plot_df = df[[column, target_column]].dropna().copy()
         plot_df[column] = _limited_categories(plot_df[column], max_feature_levels)
-        plot_df[target_column] = _limited_categories(plot_df[target_column], max_target_levels)
+        plot_df[target_column] = _apply_target_color_mapping(plot_df[target_column], target_colors)
         proportions = pd.crosstab(plot_df[column], plot_df[target_column], normalize="index")
         proportions = proportions.loc[plot_df[column].value_counts().reindex(proportions.index).sort_values().index]
         proportions.plot(
             kind="barh",
             stacked=True,
             ax=axis,
-            color=TARGET_PALETTE[: len(proportions.columns)],
+            color=[target_colors[str(level)] for level in proportions.columns],
             edgecolor="#334E48",
             linewidth=0.4,
         )
@@ -680,14 +782,20 @@ def _plot_feature_target_association_ranking(
     plt.close(fig)
 
 
-def _plot_geometry_target_heatmap(df: pd.DataFrame, target_column: str, output_path: Path) -> bool:
+def _plot_geometry_target_heatmap(
+    df: pd.DataFrame,
+    target_column: str,
+    target_task: str | None,
+    max_target_levels: int,
+    output_path: Path,
+) -> bool:
     """Plot geometries colored by the configured target column."""
     try:
         plot_df = df[[target_column, "geometry"]].dropna(subset=["geometry"]).copy()
         if plot_df.empty or plot_df[target_column].notna().sum() == 0:
             return False
         fig, ax = plt.subplots(figsize=(9, 8))
-        if pd.api.types.is_numeric_dtype(plot_df[target_column]):
+        if target_task == "regression":
             plot_df.plot(
                 column=target_column,
                 ax=ax,
@@ -699,18 +807,42 @@ def _plot_geometry_target_heatmap(df: pd.DataFrame, target_column: str, output_p
                 missing_kwds={"color": "#e5e7eb", "label": "Missing"},
             )
         else:
-            plot_df[target_column] = plot_df[target_column].astype(str)
+            target_colors = _target_color_mapping(df[target_column], max_target_levels)
+            plot_df[target_column] = _apply_target_color_mapping(plot_df[target_column], target_colors)
+            present_levels = [level for level in target_colors if (plot_df[target_column] == level).any()]
+            has_missing = plot_df[target_column].isna().any()
             plot_df.plot(
-                column=target_column,
                 ax=ax,
-                categorical=True,
-                legend=True,
-                cmap="tab20",
+                color=plot_df[target_column].map(target_colors).fillna("#e5e7eb"),
                 edgecolor="#2f4b4f",
                 linewidth=0.3,
                 alpha=0.85,
-                missing_kwds={"color": "#e5e7eb", "label": "Missing"},
             )
+            handles = [
+                Line2D(
+                    [0],
+                    [0],
+                    marker="s",
+                    linestyle="",
+                    markerfacecolor=target_colors[level],
+                    markeredgecolor="#2f4b4f",
+                    label=level,
+                )
+                for level in present_levels
+            ]
+            if has_missing:
+                handles.append(
+                    Line2D(
+                        [0],
+                        [0],
+                        marker="s",
+                        linestyle="",
+                        markerfacecolor="#e5e7eb",
+                        markeredgecolor="#2f4b4f",
+                        label="Missing",
+                    )
+                )
+            ax.legend(handles=handles, title=target_column)
         ax.set_title(f"Target Heatmap: {target_column}")
         ax.set_axis_off()
         fig.tight_layout()

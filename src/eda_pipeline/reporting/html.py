@@ -188,9 +188,13 @@ def _build_report_tabs(artifacts: dict[str, Any], plot_paths: dict[str, Path]) -
                     "images": _select_images(plot_paths, ["numeric_target_correlations", "numeric_target_scatter"]),
                 },
                 {
-                    "title": "Numeric vs Target Tests",
+                    "title": "Numeric Target-Class Median Profile",
+                    "text": (
+                        "Each heatmap cell is the target class median's percentile within the feature's full distribution. "
+                        "Values above 50 indicate relatively high class medians; values below 50 indicate relatively low ones."
+                    ),
                     "table": artifacts["numeric_target_tests"],
-                    "images": _select_images(plot_paths, ["numeric_by_target_boxplots"]),
+                    "images": _select_images(plot_paths, ["numeric_target_median_percentile_heatmap"]),
                 },
                 {
                     "title": "Categorical Features vs Numeric Target",

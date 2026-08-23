@@ -28,6 +28,7 @@ from ..core.metrics import (
 from ..core.persistence import load_joblib, load_json, print_formatted_txt, save_frame_csv, save_json, time_decorator
 from ..core.selection import apply_class_probability_multipliers, evaluate_voting_candidate, sort_metrics_without_voting
 from ..reporting import write_evaluate_report, write_index_report
+from ..reporting.final_dashboard import write_pipeline_final_dashboard
 from ..core import PipelineStepBase
 from ..visuals import (
     save_binary_curve_plots,
@@ -575,6 +576,8 @@ class EvaluateStep(PipelineStepBase):
             ranking_method_metrics_df=ranking_method_summary_df if not ranking_method_summary_df.empty else None,
             ranking_train_metrics_df=ranking_train_summary_df if not ranking_train_summary_df.empty else None,
         )
+        dashboard_path = write_pipeline_final_dashboard(self.config, train_report_df, test_report_df, selection)
+        print_formatted_txt(f"Generated final dashboard: {dashboard_path}", "RESULTS")
         write_index_report(self.config)
         print_formatted_txt(f"Selected strategy: {selection['selection_type']} using {selection['selected_models']}", "RESULTS")
         return selection_with_schema

@@ -4,10 +4,12 @@ import warnings
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from eda_pipeline import EDAConfig, EDAPipeline
 from eda_pipeline.core import build_eda_artifacts
 from eda_pipeline.visuals import create_eda_plots
+from eda_pipeline.visuals import plots as plots_module
 
 
 def test_build_eda_artifacts_from_a_dataframe() -> None:
@@ -138,9 +140,137 @@ def test_target_comparison_plots_are_created(tmp_path) -> None:
 
     plot_paths = create_eda_plots(data, artifacts, config)
 
-    expected = {"feature_target_association_ranking", "numeric_target_distribution_comparison", "categorical_target_composition"}
+    expected = {
+        "feature_target_association_ranking",
+        "numeric_target_distribution_comparison",
+        "numeric_target_median_percentile_heatmap",
+        "categorical_target_composition",
+    }
     assert expected.issubset(plot_paths)
     assert all(plot_paths[name].exists() for name in expected)
+
+
+def test_target_comparison_boxplots_match_ecdf_colors(monkeypatch) -> None:
+    data = pd.DataFrame(
+        {
+            "target": ["B", "B", "B", "A", "A"],
+            # The feature subset would rank A first; colors must still follow the full-target mapping (B, then A).
+            "numeric_feature": [3.0, np.nan, np.nan, 1.0, 2.0],
+        }
+    )
+    boxplot_calls = []
+    ecdf_colors = []
+
+    monkeypatch.setattr(plots_module, "_boxplot", lambda **kwargs: boxplot_calls.append(kwargs))
+    monkeypatch.setattr("matplotlib.figure.Figure.savefig", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("matplotlib.axes.Axes.legend", lambda *_args, **_kwargs: None)
+
+    def capture_step(_axis, *_args, **kwargs):
+        ecdf_colors.append(kwargs["color"])
+        return []
+
+    monkeypatch.setattr("matplotlib.axes.Axes.step", capture_step)
+
+    assert plots_module._plot_numeric_target_distribution_comparison(
+        data,
+        ["numeric_feature"],
+        "target",
+        10,
+        "unused.png",
+    )
+
+    expected_colors = {"B": plots_module.TARGET_PALETTE[0], "A": plots_module.TARGET_PALETTE[1]}
+    assert boxplot_calls[0]["palette"] == expected_colors
+    assert boxplot_calls[0]["hue"] == "target"
+    assert boxplot_calls[0]["hue_order"] == ["B", "A"]
+    assert boxplot_calls[0]["saturation"] == 1
+    assert ecdf_colors == list(expected_colors.values())
+
+
+def test_categorical_target_colors_are_consistent_across_report_plots(monkeypatch) -> None:
+    data = pd.DataFrame(
+        {
+            "target": ["B", "B", "B", "A", "A"],
+            "numeric_feature": [3.0, np.nan, np.nan, 1.0, 2.0],
+            "category": ["x", "x", "y", "x", "y"],
+            "geometry": ["shape"] * 5,
+        }
+    )
+    barh_colors = []
+    dataframe_plot_calls = []
+
+    def capture_barh(_axis, *_args, **kwargs):
+        barh_colors.extend(kwargs["color"])
+        return []
+
+    def capture_dataframe_plot(_frame, *_args, **kwargs):
+        dataframe_plot_calls.append(kwargs)
+
+    monkeypatch.setattr("matplotlib.axes.Axes.barh", capture_barh)
+    monkeypatch.setattr("matplotlib.axes.Axes.legend", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("matplotlib.figure.Figure.savefig", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(pd.DataFrame, "plot", capture_dataframe_plot)
+
+    plots_module._plot_target_distribution(data["target"], "classification", 10, "unused.png")
+    assert plots_module._plot_categorical_target_composition(
+        data, ["category"], "target", 10, 10, "unused.png"
+    )
+    assert plots_module._plot_geometry_target_heatmap(
+        data, "target", "classification", 10, "unused.png"
+    )
+
+    expected_colors = {"B": plots_module.TARGET_PALETTE[0], "A": plots_module.TARGET_PALETTE[1]}
+    assert barh_colors == [expected_colors["A"], expected_colors["B"]]
+    assert dataframe_plot_calls[0]["color"] == [expected_colors["A"], expected_colors["B"]]
+    assert dataframe_plot_calls[1]["color"].tolist() == [
+        expected_colors["B"],
+        expected_colors["B"],
+        expected_colors["B"],
+        expected_colors["A"],
+        expected_colors["A"],
+    ]
+
+
+def test_numeric_target_median_heatmap_uses_global_target_order_and_percentiles(monkeypatch) -> None:
+    data = pd.DataFrame(
+        {
+            "target": ["B", "B", "B", "A", "A"],
+            "numeric_feature": [3.0, np.nan, np.nan, 1.0, 2.0],
+        }
+    )
+    heatmap_profiles = []
+
+    def capture_heatmap(profile, **_kwargs):
+        heatmap_profiles.append(profile.copy())
+
+    monkeypatch.setattr(plots_module.sns, "heatmap", capture_heatmap)
+    monkeypatch.setattr("matplotlib.figure.Figure.savefig", lambda *_args, **_kwargs: None)
+
+    assert plots_module._plot_numeric_target_median_percentile_heatmap(
+        data, ["numeric_feature"], "target", 10, "unused.png"
+    )
+
+    profile = heatmap_profiles[0]
+    assert profile.columns.tolist() == ["B", "A"]
+    assert profile.loc["numeric_feature", "B"] == pytest.approx(83.333333)
+    assert profile.loc["numeric_feature", "A"] == pytest.approx(33.333333)
+
+
+def test_target_color_mapping_keeps_other_group_stable_in_subsets() -> None:
+    full_target = pd.Series(["A"] * 5 + ["B"] * 4 + ["C"] * 3 + ["D"] * 2)
+
+    target_colors = plots_module._target_color_mapping(full_target, 3)
+    subset = plots_module._apply_target_color_mapping(pd.Series(["C", "A", None, "D"]), target_colors)
+
+    assert target_colors == {
+        "A": plots_module.TARGET_PALETTE[0],
+        "B": plots_module.TARGET_PALETTE[1],
+        "Other": plots_module.TARGET_PALETTE[2],
+    }
+    assert subset.iloc[0] == "Other"
+    assert subset.iloc[1] == "A"
+    assert pd.isna(subset.iloc[2])
+    assert subset.iloc[3] == "Other"
 
 
 def test_qq_plot_uses_validity_ranked_global_feature_limit(tmp_path, monkeypatch) -> None:

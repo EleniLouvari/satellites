@@ -43,7 +43,7 @@ class ModelCandidate:
     supports_predict_proba: bool = True
 
 
-class ContiguousLabelClassifier(BaseEstimator, ClassifierMixin):
+class ContiguousLabelClassifier(ClassifierMixin, BaseEstimator):
     """Wrap estimators so probabilistic outputs align with contiguous encoded labels."""
 
     def __init__(self, base_estimator, num_classes: int | None = None):
@@ -88,6 +88,15 @@ class ContiguousLabelClassifier(BaseEstimator, ClassifierMixin):
         local_mapping = {label: idx for idx, label in enumerate(self.classes_seen_)}
         y_local = np.array([local_mapping[label] for label in y_array], dtype=int)
         self.estimator_.fit(self._ensure_feature_frame(X), y_local)
+        # ``cross_val_predict`` and other sklearn classifier utilities use
+        # ``classes_`` to align probability columns across folds.  The wrapper
+        # already expands probabilities to the global encoded class space, so
+        # advertise that same space instead of only the labels seen in this fit.
+        self.classes_ = (
+            np.arange(self.num_classes, dtype=int)
+            if self.num_classes is not None
+            else self.classes_seen_.copy()
+        )
         return self
 
     def predict(self, X):
