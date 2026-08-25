@@ -25,15 +25,16 @@ from ..core.metrics import (
     score_predictions,
     select_top_models_for_interpretability,
 )
+from ..core.class_reliability import (
+    calculate_oof_class_reliability,
+    combine_confidence_components,
+    get_class_reliability,
+)
 from ..core.persistence import load_joblib, load_json, print_formatted_txt, save_frame_csv, save_json, time_decorator
 from ..core.rank_confidence import (
     classify_ensemble_rank_based,
     probabilities_to_ranks,
     rank_confidence_thresholds_from_config,
-)
-from ..core.rank_confidence_calibration import (
-    apply_calibration_to_parcel_frame,
-    fit_class_aware_confidence_calibration,
 )
 from ..core.selection import apply_class_probability_multipliers, evaluate_voting_candidate, sort_metrics_without_voting
 from ..reporting import write_evaluate_report, write_index_report
@@ -107,6 +108,8 @@ class EvaluateStep(PipelineStepBase):
                     f"Model {model_name!r} returned {matrix.shape} probabilities; expected "
                     f"(n_rows, {len(labels)})."
                 )
+            if not np.isfinite(matrix).all() or np.any(matrix < 0) or np.any(matrix.sum(axis=1) <= 0):
+                raise ValueError(f"Model {model_name!r} returned malformed or non-finite probabilities.")
             probability_matrices.append(matrix)
 
         stacked = np.stack(probability_matrices, axis=0)  # [n_models, n_rows, n_classes]
@@ -160,24 +163,25 @@ class EvaluateStep(PipelineStepBase):
                 "best_prob_median_value": np.nanmax(median_prob, axis=1),
                 "predicted_class": labels_arr[strategy_indices],
                 "correct": labels_arr[strategy_indices] == y_true.astype(str).values,
-                "confidence_level": rank_confidence["confidence_level"],
-                "aggregate_rank_score": rank_confidence["aggregate_rank_score"],
-                "rank_margin": rank_confidence["rank_margin"],
+                "rank_confidence_level": rank_confidence["rank_confidence_level"],
+                "rank_confidence_valid": rank_confidence["rank_confidence_valid"],
+                "rank_confidence_reason": rank_confidence["rank_confidence_reason"],
+                "prediction_mean_borda": rank_confidence["prediction_mean_borda"],
+                "prediction_rank_range": rank_confidence["prediction_rank_range"],
+                "borda_margin": rank_confidence["borda_margin"],
                 "top1_agreement": rank_confidence["top1_agreement"],
                 "top2_agreement": rank_confidence["top2_agreement"],
                 "top3_agreement": rank_confidence["top3_agreement"],
-                "mean_rank": rank_confidence["mean_rank"],
-                "median_rank": rank_confidence["median_rank"],
-                "rank_std": rank_confidence["rank_std"],
-                "rank_iqr": rank_confidence["rank_iqr"],
+                "prediction_mean_rank": rank_confidence["prediction_mean_rank"],
+                "prediction_median_rank": rank_confidence["prediction_median_rank"],
+                "prediction_rank_std": rank_confidence["prediction_rank_std"],
+                "prediction_rank_iqr": rank_confidence["prediction_rank_iqr"],
                 "runner_up_class": rank_confidence["runner_up_class"],
-                "runner_up_rank_score": rank_confidence["runner_up_rank_score"],
-                "rank_prediction": rank_confidence["rank_prediction"],
+                "runner_up_borda": rank_confidence["runner_up_borda"],
+                "borda_prediction": rank_confidence["borda_prediction"],
                 "rank_winner_tied": rank_confidence["rank_winner_tied"],
                 "rank_agrees_with_prediction": rank_confidence["rank_agrees_with_prediction"],
                 "n_models_used": rank_confidence["n_models_used"],
-                "confidence_valid": rank_confidence["confidence_valid"],
-                "confidence_reason": rank_confidence["confidence_reason"],
             }
         )
 
@@ -235,26 +239,49 @@ class EvaluateStep(PipelineStepBase):
     @staticmethod
     def _summarize_rank_confidence(parcel_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
         """Summarize empirical correctness overall and by predicted class."""
-        summary_columns = ["confidence_level", "parcels", "percentage", "accuracy", "macro_f1"]
-        class_columns = ["predicted_class", "confidence_level", "parcels", "accuracy"]
-        if parcel_df.empty or "confidence_level" not in parcel_df:
+        summary_columns = [
+            "confidence_level", "parcel_count", "coverage", "correct", "incorrect",
+            "accuracy", "error_rate", "macro_f1", "parcels", "percentage",
+        ]
+        class_columns = ["predicted_class", "confidence_level", "count", "accuracy", "parcels"]
+        if parcel_df.empty:
+            return pd.DataFrame(columns=summary_columns), pd.DataFrame(columns=class_columns)
+
+        level_column = next(
+            (
+                column
+                for column in ("prediction_confidence_level", "rank_confidence_level", "confidence_level")
+                if column in parcel_df
+            ),
+            None,
+        )
+        if level_column is None:
             return pd.DataFrame(columns=summary_columns), pd.DataFrame(columns=class_columns)
 
         total = len(parcel_df)
         summary_rows = []
         for level in ("HIGH", "MEDIUM", "LOW"):
-            subset = parcel_df.loc[parcel_df["confidence_level"] == level]
+            subset = parcel_df.loc[parcel_df[level_column] == level]
             if subset.empty:
                 summary_rows.append(
-                    {"confidence_level": level, "parcels": 0, "percentage": 0.0, "accuracy": np.nan, "macro_f1": np.nan}
+                    {
+                        "confidence_level": level, "parcel_count": 0, "coverage": 0.0,
+                        "correct": 0, "incorrect": 0, "accuracy": np.nan,
+                        "error_rate": np.nan, "macro_f1": np.nan, "parcels": 0, "percentage": 0.0,
+                    }
                 )
                 continue
+            correct = int(subset["correct"].sum())
+            parcel_count = int(len(subset))
             summary_rows.append(
                 {
                     "confidence_level": level,
-                    "parcels": int(len(subset)),
-                    "percentage": float(len(subset) / total),
+                    "parcel_count": parcel_count,
+                    "coverage": float(parcel_count / total),
+                    "correct": correct,
+                    "incorrect": parcel_count - correct,
                     "accuracy": float(subset["correct"].mean()),
+                    "error_rate": float(1.0 - subset["correct"].mean()),
                     "macro_f1": float(
                         f1_score(
                             subset["true_label"],
@@ -263,15 +290,43 @@ class EvaluateStep(PipelineStepBase):
                             zero_division=0,
                         )
                     ),
+                    "parcels": parcel_count,
+                    "percentage": float(parcel_count / total),
                 }
             )
 
         class_summary = (
-            parcel_df.groupby(["predicted_class", "confidence_level"], observed=True)
-            .agg(parcels=("correct", "size"), accuracy=("correct", "mean"))
+            parcel_df.groupby(["predicted_class", level_column], observed=True)
+            .agg(count=("correct", "size"), accuracy=("correct", "mean"))
             .reset_index()
+            .rename(columns={level_column: "confidence_level"})
         )
+        class_summary["parcels"] = class_summary["count"]
         return pd.DataFrame(summary_rows, columns=summary_columns), class_summary.reindex(columns=class_columns)
+
+    @staticmethod
+    def _apply_class_reliability_guard(
+        parcel_df: pd.DataFrame,
+        reliability_contract: dict[str, Any],
+    ) -> pd.DataFrame:
+        """Apply the frozen OOF class table and combine it with rank confidence."""
+        if parcel_df.empty:
+            return parcel_df.copy()
+        result = parcel_df.copy()
+        reliability = get_class_reliability(result["predicted_class"].to_numpy(), reliability_contract)
+        final = combine_confidence_components(
+            result["rank_confidence_level"].to_numpy(),
+            result["rank_confidence_valid"].to_numpy(),
+            result["rank_confidence_reason"].to_numpy(),
+            reliability["class_reliability_level"],
+            reliability["class_reliability_valid"],
+            reliability["class_reliability_reason"],
+        )
+        for name, values in reliability.items():
+            result[name] = values
+        for name, values in final.items():
+            result[name] = values
+        return result
 
     def _to_geo_classifier_result_row(
         self,
@@ -637,35 +692,28 @@ class EvaluateStep(PipelineStepBase):
                 id_col=inputs["id_train"],
             )
 
-        # Keep calibration absent until sufficient selected-model OOF evidence is confirmed.
-        rank_calibration = None
-        # Fit only from OOF rows; train predictions and the holdout must never train calibration.
-        if (
-            self.config.rank_confidence_enabled
-            and self.config.rank_confidence_class_aware_calibration_enabled
-            and not oof_parcel_ranking_df.empty
-        ):
-            # Learn predicted-class/Top-1 empirical correctness with configured support controls.
-            rank_calibration = fit_class_aware_confidence_calibration(
-                oof_parcel_ranking_df,
-                high_min_accuracy=self.config.rank_confidence_high_min_empirical_accuracy,
-                medium_min_accuracy=self.config.rank_confidence_medium_min_empirical_accuracy,
-                minimum_oof_support=self.config.rank_confidence_minimum_oof_support,
-                max_top1_pool_distance=self.config.rank_confidence_max_top1_pool_distance,
+        confidence_enabled = bool(self.config.rank_confidence_enabled)
+        reliability_guard_enabled = bool(confidence_enabled and self.config.class_reliability_enabled)
+        class_reliability = None
+        if reliability_guard_enabled:
+            if oof_parcel_ranking_df.empty:
+                raise RuntimeError(
+                    "Simplified confidence requires selected-model OOF probabilities. Rerun Step 3 so Step 4 can "
+                    "fit the OOF class-reliability contract."
+                )
+            # This is the only fit: the prediction labels already reproduce deployed soft voting and multipliers.
+            class_reliability = calculate_oof_class_reliability(
+                true_labels=oof_parcel_ranking_df["true_label"].to_numpy(),
+                predicted_labels=oof_parcel_ranking_df["predicted_class"].to_numpy(),
+                class_names=labels,
+                minimum_support=self.config.class_reliability_minimum_oof_support,
+                high_min_precision=self.config.class_reliability_high_min_precision,
+                medium_min_precision=self.config.class_reliability_medium_min_precision,
             )
-            # Apply the OOF-frozen table to the untouched test rows for honest verification.
-            parcel_ranking_df = apply_calibration_to_parcel_frame(parcel_ranking_df, rank_calibration)
-            # Apply the same table to train diagnostics without using train correctness to refit it.
-            train_parcel_ranking_df = apply_calibration_to_parcel_frame(train_parcel_ranking_df, rank_calibration)
-            # Label OOF rows with their fitted empirical regions for calibration reporting.
-            oof_parcel_ranking_df = apply_calibration_to_parcel_frame(oof_parcel_ranking_df, rank_calibration)
-        # Fall back explicitly when an older run has no selected-model OOF probability artifacts.
-        elif self.config.rank_confidence_enabled and self.config.rank_confidence_class_aware_calibration_enabled:
-            print_formatted_txt(
-                "Class-aware rank confidence requested, but selected-model OOF probabilities are unavailable. "
-                "Using the provisional global rank thresholds for this evaluation.",
-                "WARNING",
-            )
+            # Holdout, train diagnostics, and OOF rows only apply the frozen table; none can modify it.
+            parcel_ranking_df = self._apply_class_reliability_guard(parcel_ranking_df, class_reliability)
+            train_parcel_ranking_df = self._apply_class_reliability_guard(train_parcel_ranking_df, class_reliability)
+            oof_parcel_ranking_df = self._apply_class_reliability_guard(oof_parcel_ranking_df, class_reliability)
 
         if not parcel_ranking_df.empty:
             ranking_dir = self.config.evaluate_dir / "ranking"
@@ -686,15 +734,36 @@ class EvaluateStep(PipelineStepBase):
         if self.config.rank_confidence_enabled and not parcel_ranking_df.empty:
             # Store all confidence artifacts under one dedicated evaluation directory.
             confidence_dir = self.config.evaluate_dir / "confidence"
-            if rank_calibration is not None:
-                # JSON is the machine-readable frozen contract consumed through selection_summary.
-                save_json(rank_calibration, confidence_dir / "rank_confidence_calibration.json")
-                # CSV exposes every class/vote estimate, support value, and pooling source for audit.
-                save_frame_csv(pd.DataFrame(rank_calibration["table"]), confidence_dir / "rank_confidence_calibration.csv")
+            class_reliability_df = pd.DataFrame()
+            if class_reliability is not None:
+                class_reliability_df = pd.DataFrame(
+                    [
+                        {
+                            "class": class_name,
+                            "oof_prediction_support": record["support"],
+                            "oof_correct": record["correct"],
+                            "oof_precision": record["precision"],
+                            "reliability_level": record["level"],
+                            "reliability_valid": record["valid"],
+                            "reliability_reason": record["reason"],
+                        }
+                        for class_name, record in class_reliability["classes"].items()
+                    ]
+                )
+                save_frame_csv(class_reliability_df, confidence_dir / "class_reliability_oof.csv")
             confidence_summary_df, confidence_by_class_df = self._summarize_rank_confidence(parcel_ranking_df)
+            if class_reliability is not None and not confidence_by_class_df.empty:
+                oof_precision = {
+                    class_name: record["precision"] for class_name, record in class_reliability["classes"].items()
+                }
+                test_precision = (
+                    parcel_ranking_df.groupby("predicted_class", observed=True)["correct"].mean().to_dict()
+                )
+                confidence_by_class_df["oof_class_precision"] = confidence_by_class_df["predicted_class"].map(oof_precision)
+                confidence_by_class_df["test_class_precision"] = confidence_by_class_df["predicted_class"].map(test_precision)
             save_frame_csv(parcel_ranking_df, confidence_dir / "rank_confidence_test.csv")
-            save_frame_csv(confidence_summary_df, confidence_dir / "confidence_level_metrics.csv")
-            save_frame_csv(confidence_by_class_df, confidence_dir / "confidence_by_class.csv")
+            save_frame_csv(confidence_summary_df, confidence_dir / "confidence_level_metrics_test.csv")
+            save_frame_csv(confidence_by_class_df, confidence_dir / "confidence_by_class_test.csv")
             if not oof_parcel_ranking_df.empty:
                 oof_confidence_summary_df, _ = self._summarize_rank_confidence(oof_parcel_ranking_df)
                 save_frame_csv(oof_parcel_ranking_df, confidence_dir / "rank_confidence_oof.csv")
@@ -707,33 +776,58 @@ class EvaluateStep(PipelineStepBase):
             if np.isfinite(ordered_accuracy).all():
                 holdout_monotonic = bool(ordered_accuracy[0] > ordered_accuracy[1] > ordered_accuracy[2])
 
-        # Freeze both fallback rank rules and any fitted empirical table with model selection.
-        selection["rank_confidence"] = {
-            "enabled": bool(self.config.rank_confidence_enabled),
-            "method": "within_model_average_ranks_and_normalized_borda_scores",
+        # Freeze the complete deployed definition. Step 5 never reads live thresholds when this exists.
+        confidence_contract = {
+            "enabled": confidence_enabled,
+            "method": (
+                "rank_consensus_with_class_reliability_guard"
+                if reliability_guard_enabled else "rank_consensus_only"
+            ),
+            "version": "2.0",
             "prediction_basis": selection["selection_type"],
-            "minimum_models": int(self.config.rank_confidence_minimum_models),
-            "thresholds": rank_confidence_thresholds_from_config(self.config),
-            "rank_rule_threshold_source": "provisional_configuration",
-            "thresholds_role": (
-                "fallback_only_when_oof_calibration_is_unavailable"
-                if rank_calibration is not None
-                else "confidence_level_assignment"
-            ),
-            "threshold_source": (
-                "oof_class_aware_empirical_calibration"
-                if rank_calibration is not None
-                else "provisional_configuration"
-            ),
-            # Step 5 treats this OOF-derived object as authoritative and never refits it.
-            "calibration": rank_calibration,
+            "rank": {
+                "minimum_models": int(self.config.rank_confidence_minimum_models),
+                **rank_confidence_thresholds_from_config(self.config),
+            },
+            "class_reliability": class_reliability,
             "holdout_accuracy_monotonic": holdout_monotonic,
             "holdout_level_counts": (
-                parcel_ranking_df["confidence_level"].value_counts().to_dict()
-                if not parcel_ranking_df.empty and self.config.rank_confidence_enabled
+                parcel_ranking_df[
+                    "prediction_confidence_level"
+                    if "prediction_confidence_level" in parcel_ranking_df
+                    else "rank_confidence_level"
+                ].value_counts().to_dict()
+                if not parcel_ranking_df.empty and confidence_enabled
                 else {}
             ),
+            "holdout_rank_level_counts": (
+                parcel_ranking_df["rank_confidence_level"].value_counts().to_dict()
+                if not parcel_ranking_df.empty and confidence_enabled else {}
+            ),
+            "holdout_class_reliability_level_counts": (
+                parcel_ranking_df["class_reliability_level"].value_counts().to_dict()
+                if class_reliability is not None and not parcel_ranking_df.empty else {}
+            ),
+            "oof_level_counts": (
+                oof_parcel_ranking_df[
+                    "prediction_confidence_level"
+                    if "prediction_confidence_level" in oof_parcel_ranking_df
+                    else "rank_confidence_level"
+                ].value_counts().to_dict()
+                if not oof_parcel_ranking_df.empty and confidence_enabled else {}
+            ),
+            "oof_rank_level_counts": (
+                oof_parcel_ranking_df["rank_confidence_level"].value_counts().to_dict()
+                if not oof_parcel_ranking_df.empty and confidence_enabled else {}
+            ),
+            "oof_class_reliability_level_counts": (
+                oof_parcel_ranking_df["class_reliability_level"].value_counts().to_dict()
+                if class_reliability is not None and not oof_parcel_ranking_df.empty else {}
+            ),
         }
+        selection["confidence"] = confidence_contract
+        # Retain a compact alias for report readers that predate the top-level confidence key.
+        selection["rank_confidence"] = confidence_contract
         selection_with_schema = self._with_schema(selection, "selection_summary")
 
         csv_contracts = {
@@ -747,24 +841,20 @@ class EvaluateStep(PipelineStepBase):
         if not parcel_ranking_df.empty:
             csv_contracts["parcel_best_class_by_ranking.csv"] = parcel_ranking_df.columns.tolist()
         if not confidence_summary_df.empty:
-            csv_contracts["confidence/confidence_level_metrics.csv"] = confidence_summary_df.columns.tolist()
-            csv_contracts["confidence/confidence_by_class.csv"] = confidence_by_class_df.columns.tolist()
+            csv_contracts["confidence/confidence_level_metrics_test.csv"] = confidence_summary_df.columns.tolist()
+            csv_contracts["confidence/confidence_by_class_test.csv"] = confidence_by_class_df.columns.tolist()
             csv_contracts["confidence/rank_confidence_test.csv"] = parcel_ranking_df.columns.tolist()
         if not oof_parcel_ranking_df.empty:
             csv_contracts["confidence/rank_confidence_oof.csv"] = oof_parcel_ranking_df.columns.tolist()
             csv_contracts["confidence/confidence_level_metrics_oof.csv"] = oof_confidence_summary_df.columns.tolist()
-        if rank_calibration is not None:
-            csv_contracts["confidence/rank_confidence_calibration.csv"] = list(
-                pd.DataFrame(rank_calibration["table"]).columns
-            )
+        if class_reliability is not None:
+            csv_contracts["confidence/class_reliability_oof.csv"] = class_reliability_df.columns.tolist()
         interpretability_summary_path = self.config.evaluate_dir / "interpretability" / "interpretability_summary.csv"
         if interpretability_summary_path.exists():
             interpretability_summary_df = read_data(str(interpretability_summary_path), watch_curly_brackets=False)
             csv_contracts["interpretability_summary.csv"] = interpretability_summary_df.columns.tolist()
         save_json(selection_with_schema, self.config.evaluate_dir / "selection_summary.json")
         json_contracts = {"selection_summary.json": sorted(selection_with_schema.keys())}
-        if rank_calibration is not None:
-            json_contracts["confidence/rank_confidence_calibration.json"] = sorted(rank_calibration.keys())
         self._save_schema_manifest(
             self.config.evaluate_dir,
             "evaluate_step_schema_manifest",

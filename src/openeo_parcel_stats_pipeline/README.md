@@ -65,7 +65,8 @@ compatible while each implementation has a single scope.
     filling may use neighboring pixels that fall inside an adjacent parcel.
 13. Add parcel metrics and derived statistics.
 14. Pivot every temporal feature to dated columns, attach the original parcel
-    attributes and geometry once, and write one ML-ready GeoParquet row per parcel.
+    attributes and geometry once, reproject geometry to `working_epsg`, and write
+    one ML-ready GeoParquet row per parcel.
 
 ## Requirements and setup
 
@@ -114,8 +115,8 @@ error.
 
 Choose a projected `working_epsg` appropriate for the parcel location, normally
 the local UTM zone. It is used for metre-based grids, parcel area, tile buffers,
-and local interpolation. A geographic CRS such as EPSG:4326 is not accepted as
-`working_epsg`.
+local interpolation, the requested NetCDF raster grid, and output GeoParquet
+geometry. A geographic CRS such as EPSG:4326 is not accepted as `working_epsg`.
 
 Example input:
 
@@ -446,7 +447,7 @@ The final GeoDataFrame has exactly one row per parcel. Core columns include:
 - derived fields when their source statistics exist: range, variance,
   coefficient of variation, IQR, Bowley skewness, p90-p10 spread, and valid-pixel
   fractions, also suffixed with their period;
-- parcel geometry in EPSG:4326.
+- parcel geometry in the configured projected `working_epsg`.
 
 The `feature__YYYYMMDD` naming matches the former ML-pipeline longitudinal
 reshape. The ML pipeline can therefore select dated feature columns directly;

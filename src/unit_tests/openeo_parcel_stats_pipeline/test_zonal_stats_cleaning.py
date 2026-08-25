@@ -75,6 +75,7 @@ def _extractor(**overrides) -> SatelliteZonalStats:
         "interpolation_variogram_lags": 15,
         "interpolation_variogram_max_distance_in_meters": None,
         "spatial_fill_window_sizes": (3, 5),
+        "working_epsg": 3857,
     }
     for name, value in {**defaults, **overrides}.items():
         setattr(extractor, name, value)
@@ -127,7 +128,8 @@ def test_time_series_reshape_creates_one_ml_ready_geoparquet_row_per_parcel() ->
     result = extractor._reshape_time_series_for_ml(long_data)
 
     assert isinstance(result, gpd.GeoDataFrame)
-    assert result.crs == extractor.parcels.crs
+    assert result.crs.to_epsg() == extractor.working_epsg
+    assert result.loc[1, "geometry"].x == pytest.approx(111_319.49, rel=1e-5)
     assert result["parcel_code"].tolist() == ["A", "B"]
     assert result["label"].tolist() == [1, 2]
     assert "period_start" not in result.columns

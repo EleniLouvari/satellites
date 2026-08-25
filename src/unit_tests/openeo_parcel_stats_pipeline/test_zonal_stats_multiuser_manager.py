@@ -98,6 +98,19 @@ def test_merge_and_save_results_deduplicates_by_parcel_id(monkeypatch):
     assert merged["parcel_id"].tolist() == [101]
 
 
+def test_merge_and_save_results_reprojects_to_working_epsg(monkeypatch):
+    monkeypatch.setattr(manager, "write_data", lambda data, path: None)
+
+    merged, _ = manager.merge_and_save_results(
+        all_results={1: _result(1, 0)},
+        output_dir=Path("."),
+        working_epsg=3857,
+    )
+
+    assert merged.crs.to_epsg() == 3857
+    assert merged.geometry.iloc[0].x == pytest.approx(111_319.49, rel=1e-5)
+
+
 def test_run_parallel_extractions_returns_none_after_all_partitions_complete(monkeypatch):
     completed_partitions = []
 

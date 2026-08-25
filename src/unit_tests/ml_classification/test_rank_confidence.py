@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 
 from ml_classification.ml_classification_pipeline.core.config import ClassificationPipelineConfig
+from ml_classification.ml_classification_pipeline.core.class_reliability import calculate_oof_class_reliability
 from ml_classification.ml_classification_pipeline.core.rank_confidence import (
     aggregate_rank_scores,
     assign_confidence_levels,
@@ -32,11 +33,11 @@ def test_unanimous_ranking_produces_high_confidence():
 
     result = classify_ensemble_rank_based(probabilities, CLASSES, minimum_models=3)
 
-    assert result["rank_prediction"].tolist() == ["a"]
-    assert result["confidence_level"].tolist() == ["HIGH"]
+    assert result["borda_prediction"].tolist() == ["a"]
+    assert result["rank_confidence_level"].tolist() == ["HIGH"]
     assert result["top1_agreement"] == pytest.approx([1.0])
-    assert result["aggregate_rank_score"] == pytest.approx([1.0])
-    assert result["rank_margin"][0] >= 0.20
+    assert result["prediction_mean_borda"] == pytest.approx([100.0])
+    assert result["borda_margin"][0] >= 20.0
 
 
 def test_probability_scale_invariance_and_average_tie_ranks():
@@ -65,8 +66,8 @@ def test_strong_disagreement_has_more_dispersion_than_mild_disagreement():
     mild_result = classify_ensemble_rank_based(mild, CLASSES)
     strong_result = classify_ensemble_rank_based(strong, CLASSES)
 
-    assert strong_result["rank_std"][0] > mild_result["rank_std"][0]
-    assert strong_result["aggregate_rank_score"][0] < mild_result["aggregate_rank_score"][0]
+    assert strong_result["prediction_rank_std"][0] > mild_result["prediction_rank_std"][0]
+    assert strong_result["prediction_mean_borda"][0] < mild_result["prediction_mean_borda"][0]
 
 
 def test_near_tie_is_low_confidence():
@@ -74,18 +75,16 @@ def test_near_tie_is_low_confidence():
 
     result = classify_ensemble_rank_based(probabilities, ["a", "b", "c"])
 
-    assert result["rank_margin"] == pytest.approx([0.0])
+    assert result["borda_margin"] == pytest.approx([0.0])
     assert result["rank_winner_tied"].tolist() == [True]
-    assert result["confidence_level"].tolist() == ["LOW"]
-    assert result["confidence_reason"].tolist() == ["rank_winner_tie"]
+    assert result["rank_confidence_level"].tolist() == ["LOW"]
+    assert result["rank_confidence_reason"].tolist() == ["rank_winner_tie"]
 
 
 def test_high_and_medium_threshold_boundaries_are_inclusive():
     features = {
-        "top1_agreement": np.array([0.75, 0.50]),
-        "top2_agreement": np.array([0.80, 0.60]),
-        "aggregate_rank_score": np.array([0.80, 0.60]),
-        "rank_margin": np.array([0.20, 0.10]),
+        "prediction_mean_borda": np.array([90.0, 75.0]),
+        "prediction_rank_range": np.array([2.0, 4.0]),
         "n_models_used": np.array([4, 4]),
         "rank_agrees_with_prediction": np.array([True, True]),
         "rank_winner_tied": np.array([False, False]),
@@ -95,7 +94,7 @@ def test_high_and_medium_threshold_boundaries_are_inclusive():
 
     assert levels.tolist() == ["HIGH", "MEDIUM"]
     assert valid.tolist() == [True, True]
-    assert reasons.tolist() == ["", ""]
+    assert reasons.tolist() == ["rank_confidence_high", "rank_confidence_medium"]
 
 
 def test_prediction_disagreement_is_explicitly_low_but_data_remain_valid():
@@ -103,11 +102,11 @@ def test_prediction_disagreement_is_explicitly_low_but_data_remain_valid():
 
     result = classify_ensemble_rank_based(probabilities, ["a", "b", "c"], predicted_class_indices=np.array([1]))
 
-    assert result["rank_prediction"].tolist() == ["a"]
-    assert result["confidence_level"].tolist() == ["LOW"]
-    assert result["confidence_valid"].tolist() == [True]
-    assert result["confidence_reason"].tolist() == ["rank_prediction_disagreement"]
-    assert result["rank_margin"][0] < 0
+    assert result["borda_prediction"].tolist() == ["a"]
+    assert result["rank_confidence_level"].tolist() == ["LOW"]
+    assert result["rank_confidence_valid"].tolist() == [True]
+    assert result["rank_confidence_reason"].tolist() == ["soft_vote_borda_disagreement"]
+    assert result["borda_margin"][0] < 0
 
 
 def test_too_few_models_is_flagged_and_downgraded():
@@ -115,9 +114,9 @@ def test_too_few_models_is_flagged_and_downgraded():
 
     result = classify_ensemble_rank_based(probabilities, ["a", "b", "c"], minimum_models=3)
 
-    assert result["confidence_level"].tolist() == ["LOW"]
-    assert result["confidence_valid"].tolist() == [False]
-    assert result["confidence_reason"].tolist() == ["insufficient_models"]
+    assert result["rank_confidence_level"].tolist() == ["LOW"]
+    assert result["rank_confidence_valid"].tolist() == [False]
+    assert result["rank_confidence_reason"].tolist() == ["insufficient_models"]
 
 
 def test_invalid_values_and_class_mismatch_are_rejected():
@@ -149,29 +148,30 @@ def test_equal_weights_reproduce_unweighted_aggregation():
 
 
 def test_rank_confidence_configuration_validates_threshold_order():
-    with pytest.raises(ValueError, match="HIGH rank-confidence top1"):
+    with pytest.raises(ValueError, match="Borda thresholds"):
         ClassificationPipelineConfig(
             project_dir=Path("unused"),
             target_column="label",
             feature_columns=["feature"],
-            rank_confidence_high_min_top1=0.40,
-            rank_confidence_medium_min_top1=0.50,
+            rank_confidence_high_min_borda=70.0,
+            rank_confidence_medium_min_borda=75.0,
         )
 
-    with pytest.raises(ValueError, match="Empirical rank-confidence thresholds"):
+    with pytest.raises(ValueError, match="Class-reliability precision thresholds"):
         ClassificationPipelineConfig(
             project_dir=Path("unused"),
             target_column="label",
             feature_columns=["feature"],
-            rank_confidence_high_min_empirical_accuracy=0.60,
-            rank_confidence_medium_min_empirical_accuracy=0.70,
+            class_reliability_high_min_precision=0.60,
+            class_reliability_medium_min_precision=0.70,
         )
-    with pytest.raises(ValueError, match="rank_confidence_max_top1_pool_distance"):
+    with pytest.raises(ValueError, match="range thresholds"):
         ClassificationPipelineConfig(
             project_dir=Path("unused"),
             target_column="label",
             feature_columns=["feature"],
-            rank_confidence_max_top1_pool_distance=-1,
+            rank_confidence_high_max_range=5,
+            rank_confidence_medium_max_range=4,
         )
 
 
@@ -190,33 +190,36 @@ def test_prediction_frame_includes_rank_confidence_and_uses_low_for_review():
     dataset = pd.DataFrame({"row_id": ["1"], "label": [None]})
     probabilities = np.array([[0.8, 0.2]])
     rank_confidence = {
-        "confidence_level": np.array(["LOW"]),
-        "aggregate_rank_score": np.array([1.0]),
-        "rank_margin": np.array([1.0]),
+        "prediction_confidence_level": np.array(["LOW"]),
+        "prediction_confidence_valid": np.array([False]),
+        "prediction_confidence_reason": np.array(["insufficient_models"]),
+        "prediction_mean_borda": np.array([100.0]),
+        "prediction_rank_range": np.array([0.0]),
         "top1_agreement": np.array([1.0]),
         "top2_agreement": np.array([1.0]),
         "top3_agreement": np.array([1.0]),
-        "mean_rank": np.array([1.0]),
-        "median_rank": np.array([1.0]),
-        "rank_std": np.array([0.0]),
-        "rank_iqr": np.array([0.0]),
+        "prediction_mean_rank": np.array([1.0]),
+        "prediction_median_rank": np.array([1.0]),
+        "prediction_rank_std": np.array([0.0]),
+        "prediction_rank_iqr": np.array([0.0]),
         "runner_up_class": np.array(["b"]),
-        "runner_up_rank_score": np.array([0.0]),
-        "rank_prediction": np.array(["a"]),
+        "runner_up_borda": np.array([0.0]),
+        "borda_prediction": np.array(["a"]),
         "rank_winner_tied": np.array([False]),
         "rank_agrees_with_prediction": np.array([True]),
         "n_models_used": np.array([2]),
-        "confidence_valid": np.array([False]),
-        "confidence_reason": np.array(["insufficient_models"]),
+        "rank_confidence_level": np.array(["LOW"]),
+        "rank_confidence_valid": np.array([False]),
+        "rank_confidence_reason": np.array(["insufficient_models"]),
     }
 
     frame, _ = step._create_prediction_frame(dataset, np.array(["a"]), probabilities, ["a", "b"], rank_confidence=rank_confidence)
 
     assert frame.loc[0, "prediction_confidence_level"] == "LOW"
     assert frame.loc[0, "prediction_max_probability"] == pytest.approx(0.8)
-    assert not bool(frame.loc[0, "rank_winner_tied"])
+    assert not bool(frame.loc[0, "prediction_borda_winner_tied"])
     assert bool(frame.loc[0, "prediction_needs_review"])
-    assert frame.loc[0, "rank_confidence_reason"] == "insufficient_models"
+    assert frame.loc[0, "prediction_rank_confidence_reason"] == "insufficient_models"
 
 
 def test_rank_confidence_requires_oof_artifact_for_incremental_resume():
@@ -327,37 +330,30 @@ def test_prediction_uses_frozen_step_four_confidence_contract():
     step = object.__new__(PredictStep)
     step.config = SimpleNamespace(
         rank_confidence_enabled=True,
+        class_reliability_enabled=True,
         rank_confidence_minimum_models=9,
-        rank_confidence_high_min_top1=1.0,
-        rank_confidence_high_min_top2=1.0,
-        rank_confidence_high_min_score=1.0,
-        rank_confidence_high_min_margin=1.0,
-        rank_confidence_medium_min_top1=1.0,
-        rank_confidence_medium_min_top2=1.0,
-        rank_confidence_medium_min_score=1.0,
-        rank_confidence_medium_min_margin=1.0,
+        rank_confidence_high_min_borda=100.0,
+        rank_confidence_high_max_range=0.0,
+        rank_confidence_medium_min_borda=100.0,
+        rank_confidence_medium_max_range=0.0,
     )
     frozen_thresholds = {
-        "high": {
-            "min_top1_agreement": 0.0,
-            "min_top2_agreement": 0.0,
-            "min_rank_score": 0.0,
-            "min_rank_margin": 0.0,
-        },
-        "medium": {
-            "min_top1_agreement": 0.0,
-            "min_top2_agreement": 0.0,
-            "min_rank_score": 0.0,
-            "min_rank_margin": 0.0,
-        },
+        "high_min_borda": 90.0,
+        "high_max_range": 2.0,
+        "medium_min_borda": 75.0,
+        "medium_max_range": 4.0,
     }
+    reliability = calculate_oof_class_reliability(
+        np.array(["a"] * 100), np.array(["a"] * 100), ["a", "b"]
+    )
     selection = {
         "selected_models": ["m1", "m2", "m3"],
         "labels": ["a", "b"],
-        "rank_confidence": {
+        "confidence": {
             "enabled": True,
-            "thresholds": frozen_thresholds,
-            "minimum_models": 3,
+            "method": "rank_consensus_with_class_reliability_guard",
+            "rank": {"minimum_models": 3, **frozen_thresholds},
+            "class_reliability": reliability,
         },
     }
     members = {
@@ -370,40 +366,29 @@ def test_prediction_uses_frozen_step_four_confidence_contract():
     assert contract["source"] == "selection_summary"
     assert contract["thresholds"] == frozen_thresholds
     assert contract["minimum_models"] == 3
-    assert result["confidence_level"].tolist() == ["HIGH"]
+    assert result["prediction_confidence_level"].tolist() == ["HIGH"]
 
 
-def test_prediction_applies_frozen_class_aware_oof_calibration():
-    oof = pd.concat(
-        [
-            _calibration_rows("a", 3, correct_count=95, total=100, n_models=3),
-            _calibration_rows("b", 3, correct_count=20, total=100, n_models=3),
-        ],
-        ignore_index=True,
+def test_prediction_applies_frozen_oof_class_reliability():
+    reliability = calculate_oof_class_reliability(
+        np.array(["a"] * 95 + ["b"] * 5 + ["b"] * 20 + ["a"] * 80),
+        np.array(["a"] * 100 + ["b"] * 100),
+        ["a", "b"],
     )
-    calibration = fit_class_aware_confidence_calibration(oof, minimum_oof_support=100)
     thresholds = {
-        "high": {
-            "min_top1_agreement": 0.0,
-            "min_top2_agreement": 0.0,
-            "min_rank_score": 0.0,
-            "min_rank_margin": 0.0,
-        },
-        "medium": {
-            "min_top1_agreement": 0.0,
-            "min_top2_agreement": 0.0,
-            "min_rank_score": 0.0,
-            "min_rank_margin": 0.0,
-        },
+        "high_min_borda": 90.0,
+        "high_max_range": 2.0,
+        "medium_min_borda": 75.0,
+        "medium_max_range": 4.0,
     }
     selection = {
         "selected_models": ["m1", "m2", "m3"],
         "labels": ["a", "b"],
-        "rank_confidence": {
+        "confidence": {
             "enabled": True,
-            "thresholds": thresholds,
-            "minimum_models": 3,
-            "calibration": calibration,
+            "method": "rank_consensus_with_class_reliability_guard",
+            "rank": {"minimum_models": 3, **thresholds},
+            "class_reliability": reliability,
         },
     }
     member_matrix = np.array([[0.8, 0.2], [0.2, 0.8]])
@@ -413,8 +398,8 @@ def test_prediction_applies_frozen_class_aware_oof_calibration():
 
     result, _ = step._calculate_rank_confidence(selection, np.array(["a", "b"]), members)
 
-    assert result["confidence_level"].tolist() == ["HIGH", "LOW"]
-    assert result["confidence_empirical_accuracy"].tolist() == pytest.approx([0.95, 0.20])
+    assert result["prediction_confidence_level"].tolist() == ["HIGH", "LOW"]
+    assert result["class_oof_precision"].tolist() == pytest.approx([0.95, 0.20])
 
 
 def test_confidence_summary_reports_accuracy_by_level():

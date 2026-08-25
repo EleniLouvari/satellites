@@ -15,6 +15,75 @@ from ml_classification.ml_classification_pipeline.steps.train_step import TrainS
 from ml_classification.ml_classification_pipeline.steps.evaluate_step import EvaluateStep
 
 
+def test_model_tune_params_can_be_overridden_per_model():
+    custom_gradient_boosting = {
+        "model__n_estimators": [50, 100],
+        "model__max_depth": [1],
+    }
+    config = ClassificationPipelineConfig(
+        project_dir="test_project",
+        target_column="label",
+        feature_columns=["feature"],
+        selected_models=("gradient_boosting",),
+        tune_params={"gradient_boosting": custom_gradient_boosting},
+        cv_folds=2,
+    )
+
+    candidates = build_model_candidates(config, numeric_features=["feature"], categorical_features=[])
+
+    assert candidates[0].param_distributions == custom_gradient_boosting
+    assert config.tune_params["extra_trees"]["model__n_estimators"] == [300, 500, 800]
+
+
+def test_every_model_candidate_uses_its_configured_tune_params(monkeypatch):
+    config = ClassificationPipelineConfig(
+        project_dir="test_project", target_column="label", feature_columns=["feature"], cv_folds=2
+    )
+    from ml_classification.ml_classification_pipeline.core import models as models_module
+
+    monkeypatch.setattr(models_module, "_safe_import", lambda module_name: object())
+    candidates = build_model_candidates(config, numeric_features=["feature"], categorical_features=[])
+
+    assert {candidate.name for candidate in candidates} == set(config.tune_params)
+    for candidate in candidates:
+        assert candidate.param_distributions == config.tune_params[candidate.name]
+
+
+def test_default_tune_params_are_independent_between_configs():
+    first = ClassificationPipelineConfig(
+        project_dir="first_project", target_column="label", feature_columns=["feature"], cv_folds=2
+    )
+    second = ClassificationPipelineConfig(
+        project_dir="second_project", target_column="label", feature_columns=["feature"], cv_folds=2
+    )
+
+    first.tune_params["gradient_boosting"]["model__n_estimators"].append(999)
+
+    assert 999 not in second.tune_params["gradient_boosting"]["model__n_estimators"]
+
+
+def test_tune_params_reject_unknown_models():
+    with np.testing.assert_raises_regex(ValueError, "unknown model names"):
+        ClassificationPipelineConfig(
+            project_dir="test_project",
+            target_column="label",
+            feature_columns=["feature"],
+            tune_params={"not_a_model": {"model__value": [1]}},
+            cv_folds=2,
+        )
+
+
+def test_tune_params_reject_empty_parameter_values():
+    with np.testing.assert_raises_regex(ValueError, "non-empty list or tuple"):
+        ClassificationPipelineConfig(
+            project_dir="test_project",
+            target_column="label",
+            feature_columns=["feature"],
+            tune_params={"gradient_boosting": {"model__n_estimators": []}},
+            cv_folds=2,
+        )
+
+
 def test_contiguous_label_classifier_aligns_probabilities_across_missing_class_folds():
     X = np.arange(12, dtype=float).reshape(6, 2)
     y = np.array([0, 0, 1, 1, 2, 2])

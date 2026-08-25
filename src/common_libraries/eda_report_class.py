@@ -1,7 +1,8 @@
 from import_libraries import *
 import global_variables as gb_l
-import libraries.common_libraries.generic_library as cm_l
-import libraries.common_libraries.geom_library as geom_l
+import common_libraries.generic_library as cm_l
+import common_libraries.io_library as io_l
+import common_libraries.geom_library as geom_l
 
 class EdaReport:
     def __init__(self, input_data, report_folder=None, report_name=None):
@@ -54,7 +55,7 @@ class EdaReport:
                 self.report_folder = os.path.join(self.report_folder, f"report_{self.report_name}")
 
             elif isinstance(self.input_data, str):
-                if cm_l.is_valid_path_filename(self.input_data):
+                if io_l.is_valid_path_filename(self.input_data):
                     self.input_type = "file"
                     self.file_name = os.path.splitext(os.path.basename(self.input_data))[0]
                     self.report_folder = os.path.join(os.path.dirname(self.input_data), f"report_{self.file_name}")
@@ -69,7 +70,7 @@ class EdaReport:
     def setup_logging(self):
         """Set up logging configuration"""
         try:
-            cm_l.create_folder(self.report_folder)
+            io_l.create_folder(self.report_folder)
 
             # Create timestamp for log file
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -159,13 +160,13 @@ class EdaReport:
             if input_type == "file":
                 if layer_name:
                     self.logger.info(f"Processing layer: {layer_name} from file: {self.gis_file}")
-                    gdf = cm_l.read_data(self.gis_file, layer=layer_name)
+                    gdf = io_l.read_data(self.gis_file, layer=layer_name)
                     self.save_folder = os.path.join(self.report_folder, layer_name)
                     self.report_name = f"report_{layer_name}"
                     relative_path = os.path.join(layer_name, self.report_name)
                 else:
                     self.logger.info(f"Processing file: {self.gis_file}")
-                    gdf = cm_l.read_data(self.gis_file)
+                    gdf = io_l.read_data(self.gis_file)
                     self.save_folder = self.report_folder
                     self.report_name = f"report_{self.file_name}"
                     relative_path = self.report_name
@@ -186,8 +187,8 @@ class EdaReport:
             }
 
             if "geometry" in gdf:
-                cm_l.delete_folder(self.save_folder)
-                cm_l.create_folder(self.save_folder)
+                io_l.delete_folder(self.save_folder)
+                io_l.create_folder(self.save_folder)
                 self.logger.info(f"Created folder: {self.save_folder}")
 
                 gdf = cm_l.fix_json_chars_in_column_names(gdf)
@@ -802,7 +803,6 @@ class EdaReport:
                 del self.gdf
                 # Force garbage collection to release resources
                 gc.collect()
-                # cm_l.delete_file(self.gis_file)
 
             return self.html_report_file
         except Exception as e:

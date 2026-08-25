@@ -212,7 +212,7 @@ def build_model_candidates(
                 _build_linear_preprocessor(config, numeric_features, categorical_features),
                 LogisticRegression(max_iter=2500, solver="saga", class_weight="balanced", random_state=config.random_state),
             ),
-            param_distributions={"model__C": [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0]},
+            param_distributions=config.tune_params["logistic_regression"],
         ),
         ModelCandidate(
             name="linear_sgd_classifier",
@@ -221,7 +221,7 @@ def build_model_candidates(
                 _build_linear_preprocessor(config, numeric_features, categorical_features),
                 SGDClassifier(loss="log_loss", penalty="elasticnet", class_weight="balanced", random_state=config.random_state),
             ),
-            param_distributions={"model__alpha": [1e-4, 1e-3, 1e-2, 1e-1], "model__l1_ratio": [0.0, 0.15, 0.5, 0.8, 1.0]},
+            param_distributions=config.tune_params["linear_sgd_classifier"],
         ),
         ModelCandidate(
             name="random_forest",
@@ -230,15 +230,7 @@ def build_model_candidates(
                 _build_tree_preprocessor(config, numeric_features, categorical_features),
                 RandomForestClassifier(random_state=config.random_state, n_jobs=1, class_weight="balanced_subsample"),
             ),
-            param_distributions={
-                "model__n_estimators": [300, 500, 800],
-                "model__max_depth": [5, 8, 12, 16],
-                "model__min_samples_split": [10, 20, 40],
-                "model__min_samples_leaf": [3, 5, 10, 20],
-                "model__max_features": ["sqrt", "log2", 0.3, 0.5],
-                "model__max_samples": [0.6, 0.8, None],
-                "model__ccp_alpha": [0.0, 0.0001, 0.001, 0.005],
-            },
+            param_distributions=config.tune_params["random_forest"],
         ),
         ModelCandidate(
             name="extra_trees",
@@ -249,15 +241,7 @@ def build_model_candidates(
                     random_state=config.random_state, n_jobs=1, class_weight="balanced", bootstrap=True
                 ),
             ),
-            param_distributions={
-                "model__n_estimators": [300, 500, 800],
-                "model__max_depth": [5, 8, 12, 16],
-                "model__min_samples_split": [10, 20, 40],
-                "model__min_samples_leaf": [3, 5, 10, 20],
-                "model__max_features": ["sqrt", "log2", 0.3, 0.5],
-                "model__max_samples": [0.6, 0.8, None],
-                "model__ccp_alpha": [0.0, 0.0001, 0.001],
-            },
+            param_distributions=config.tune_params["extra_trees"],
         ),
         ModelCandidate(
             name="gradient_boosting",
@@ -266,15 +250,7 @@ def build_model_candidates(
                 _build_dense_tree_preprocessor(config, numeric_features, categorical_features),
                 GradientBoostingClassifier(random_state=config.random_state),
             ),
-            param_distributions={
-                "model__n_estimators": [100, 200, 400],
-                "model__learning_rate": [0.01, 0.03, 0.05, 0.1],
-                "model__max_depth": [1, 2, 3],
-                "model__min_samples_split": [10, 20, 40],
-                "model__min_samples_leaf": [5, 10, 20],
-                "model__subsample": [0.6, 0.8],
-                "model__max_features": ["sqrt", 0.5, None],
-            },
+            param_distributions=config.tune_params["gradient_boosting"],
         ),
         ModelCandidate(
             name="decision_tree",
@@ -283,14 +259,7 @@ def build_model_candidates(
                 _build_tree_preprocessor(config, numeric_features, categorical_features),
                 DecisionTreeClassifier(random_state=config.random_state, class_weight="balanced"),
             ),
-            param_distributions={
-                "model__max_depth": [3, 5, 8, 12, 16],
-                "model__min_samples_split": [10, 20, 40],
-                "model__min_samples_leaf": [5, 10, 20, 40],
-                "model__criterion": ["gini", "entropy", "log_loss"],
-                "model__max_features": [None, "sqrt", 0.5],
-                "model__ccp_alpha": [0.0, 0.0001, 0.001, 0.005, 0.01],
-            },
+            param_distributions=config.tune_params["decision_tree"],
         ),
         ModelCandidate(
             name="knn",
@@ -299,12 +268,7 @@ def build_model_candidates(
                 _build_dense_linear_preprocessor(config, numeric_features, categorical_features),
                 KNeighborsClassifier(n_jobs=1),
             ),
-            param_distributions={
-                "model__n_neighbors": [5, 9, 15, 25, 40],
-                "model__weights": ["uniform", "distance"],
-                "model__p": [1, 2],
-                "model__leaf_size": [20, 30, 50],
-            },
+            param_distributions=config.tune_params["knn"],
         ),
         ModelCandidate(
             name="neural_network",
@@ -320,11 +284,7 @@ def build_model_candidates(
                     batch_size="auto",
                 ),
             ),
-            param_distributions={
-                "model__hidden_layer_sizes": [(32,), (64,), (64, 32)],
-                "model__alpha": [0.0001, 0.001, 0.01, 0.1],
-                "model__learning_rate_init": [0.0001, 0.0005, 0.001],
-            },
+            param_distributions=config.tune_params["neural_network"],
         ),
         ModelCandidate(
             name="bagging",
@@ -344,21 +304,14 @@ def build_model_candidates(
                     n_jobs=1,
                 ),
             ),
-            param_distributions={
-                "model__n_estimators": [100, 200, 400],
-                "model__max_samples": [0.5, 0.7, 0.9],
-                "model__max_features": [0.5, 0.7, 0.9],
-                "model__estimator__max_depth": [5, 8, 12, 16],
-                "model__estimator__min_samples_split": [10, 20, 40],
-                "model__estimator__min_samples_leaf": [3, 5, 10, 20],
-            },
+            param_distributions=config.tune_params["bagging"],
         ),
         ModelCandidate(
             name="bayesian",
             builder=lambda: _build_pipeline_with_optional_balancer(
                 config, _build_dense_linear_preprocessor(config, numeric_features, categorical_features), GaussianNB()
             ),
-            param_distributions={"model__var_smoothing": [1e-9, 1e-8, 1e-7, 1e-6]},
+            param_distributions=config.tune_params["bayesian"],
         ),
     ]
 
@@ -371,30 +324,14 @@ def build_model_candidates(
                     _build_dense_linear_preprocessor(config, numeric_features, categorical_features),
                     _build_tensorflow_estimator(config),
                 ),
-                param_distributions={
-                    "model__hidden_layer_sizes": [(64,), (128,), (128, 64)],
-                    "model__activation": ["relu", "selu", "gelu"],
-                    "model__dropout_rate": [0.0, 0.2, 0.4],
-                    "model__use_batch_normalization": [False, True],
-                    "model__learning_rate": [0.0001, 0.0005, 0.001],
-                    "model__batch_size": [32, 64],
-                    "model__l2_regularization": [0.0, 0.0001, 0.001],
-                },
+                param_distributions=config.tune_params["tensorflow_neural_network"],
             )
         )
         candidates.append(
             ModelCandidate(
                 name="keras_lstm",
                 builder=lambda: Pipeline(steps=[("model", _build_tensorflow_lstm_estimator(config))]),
-                param_distributions={
-                    "model__lstm_units_1": [32, 64],
-                    "model__lstm_units_2": [16, 32],
-                    "model__dense_units": [16, 32],
-                    "model__dropout_rate": [0.10, 0.25],
-                    "model__bidirectional": [False, True],
-                    "model__learning_rate": [0.0005, 0.001],
-                    "model__batch_size": [32, 64],
-                },
+                param_distributions=config.tune_params["keras_lstm"],
             )
         )
 
@@ -407,14 +344,7 @@ def build_model_candidates(
                     _build_hist_preprocessor(numeric_features),
                     HistGradientBoostingClassifier(random_state=config.random_state, class_weight="balanced"),
                 ),
-                param_distributions={
-                    "model__learning_rate": [0.01, 0.03, 0.05, 0.1],
-                    "model__max_iter": [100, 200, 400],
-                    "model__max_depth": [3, 5, 8],
-                    "model__max_leaf_nodes": [7, 15, 31],
-                    "model__min_samples_leaf": [20, 40, 60],
-                    "model__l2_regularization": [0.01, 0.1, 1.0, 10.0],
-                },
+                param_distributions=config.tune_params["hist_gradient_boosting"],
             )
         )
     xgboost_module = _safe_import("xgboost")
@@ -432,17 +362,7 @@ def build_model_candidates(
                         num_classes=num_classes,
                     ),
                 ),
-                param_distributions={
-                    "model__base_estimator__n_estimators": [200, 400, 600],
-                    "model__base_estimator__learning_rate": [0.01, 0.03, 0.05, 0.1],
-                    "model__base_estimator__max_depth": [2, 3, 4, 5],
-                    "model__base_estimator__min_child_weight": [3, 5, 10],
-                    "model__base_estimator__subsample": [0.6, 0.8, 1.0],
-                    "model__base_estimator__colsample_bytree": [0.5, 0.7, 0.9],
-                    "model__base_estimator__reg_alpha": [0.0, 0.01, 0.1, 1.0],
-                    "model__base_estimator__reg_lambda": [1.0, 5.0, 10.0],
-                    "model__base_estimator__gamma": [0.0, 0.1, 0.5],
-                },
+                param_distributions=config.tune_params["xgboost"],
             )
         )
     lightgbm_module = _safe_import("lightgbm")
@@ -460,17 +380,7 @@ def build_model_candidates(
                         num_classes=num_classes,
                     ),
                 ),
-                param_distributions={
-                    "model__base_estimator__n_estimators": [200, 400, 600],
-                    "model__base_estimator__learning_rate": [0.01, 0.03, 0.05, 0.1],
-                    "model__base_estimator__num_leaves": [7, 15, 31],
-                    "model__base_estimator__max_depth": [3, 5, 8],
-                    "model__base_estimator__min_child_samples": [20, 40, 80],
-                    "model__base_estimator__subsample": [0.6, 0.8, 1.0],
-                    "model__base_estimator__colsample_bytree": [0.5, 0.7, 0.9],
-                    "model__base_estimator__reg_alpha": [0.0, 0.1, 1.0],
-                    "model__base_estimator__reg_lambda": [0.1, 1.0, 10.0],
-                },
+                param_distributions=config.tune_params["lightgbm"],
             )
         )
     if config.selected_models:

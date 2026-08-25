@@ -258,16 +258,14 @@ def _model_selection_strategy(config, selection: dict[str, Any], cv_table: pd.Da
     for key in ("class_probability_multipliers", "probability_optimization", "labels"):
         if key in selection:
             details[key] = selection[key]
-    if "rank_confidence" in selection:
-        rank_confidence = dict(selection["rank_confidence"])
-        calibration = rank_confidence.pop("calibration", None)
-        if calibration is not None:
-            rank_confidence["calibration_summary"] = {
-                key: value
-                for key, value in calibration.items()
-                if key != "table"
+    if "confidence" in selection:
+        confidence = dict(selection["confidence"])
+        reliability = confidence.get("class_reliability")
+        if isinstance(reliability, dict):
+            confidence["class_reliability"] = {
+                key: value for key, value in reliability.items() if key != "classes"
             }
-        details["rank_confidence"] = rank_confidence
+        details["confidence"] = confidence
     return details
 
 
@@ -685,30 +683,22 @@ def write_evaluate_report(
     if oof_confidence_metrics_df is not None and not oof_confidence_metrics_df.empty:
         sections.append(
             {
-                "title": "OOF Calibration Performance (Descriptive)",
+                "title": "OOF Confidence Performance (Descriptive)",
                 "text": (
-                    "These out-of-fold rows fitted the class-aware confidence table, so this section "
-                    "describes calibration behavior but is not an independent validation result."
+                    "These out-of-fold rows fitted the per-class precision guard, so this section "
+                    "describes the frozen evidence but is not an independent validation result."
                 ),
                 "table": oof_confidence_metrics_df,
             }
         )
     if confidence_metrics_df is not None and not confidence_metrics_df.empty:
-        confidence_source = selection.get("rank_confidence", {}).get("threshold_source")
         confidence_text = (
-            "HIGH, MEDIUM, and LOW are assigned from predicted-class-aware empirical correctness tables "
-            "fitted on out-of-fold predictions. The untouched holdout results below verify that frozen "
-            "calibration; the levels are empirical categories, not statistical confidence intervals."
-            if confidence_source == "oof_class_aware_empirical_calibration"
-            else (
-                "HIGH, MEDIUM, and LOW describe cross-model rank consensus and winner separation; "
-                "they are not calibrated statistical probabilities. Thresholds are provisional until "
-                "validated empirically."
-            )
+            "Final confidence is the lower of parcel rank consensus and the frozen OOF precision level "
+            "for the predicted class. Soft voting still selects the class; ranks only measure member support."
         )
         sections.append(
             {
-                "title": "Holdout Validation Performance: Rank-Based Prediction Confidence",
+                "title": "Holdout Validation: Rank Consensus with Class Reliability Guard",
                 "text": confidence_text,
                 "table": confidence_metrics_df,
                 "links": _report_links(config.evaluate_dir / "confidence"),
@@ -717,7 +707,7 @@ def write_evaluate_report(
     if confidence_by_class_df is not None and not confidence_by_class_df.empty:
         sections.append(
             {
-                "title": "Holdout Rank Confidence by Predicted Class",
+                "title": "Holdout Confidence by Predicted Class",
                 "table": confidence_by_class_df,
             }
         )
@@ -745,20 +735,29 @@ def write_predict_report(config, final_df: pd.DataFrame, selection: dict[str, An
     confidence_columns = [
         config.prediction_confidence_column,
         config.prediction_confidence_level_column,
-        "rank_aggregate_score",
-        "rank_margin",
-        "rank_top1_agreement",
-        "rank_top2_agreement",
-        "rank_std",
-        "rank_runner_up_class",
-        "rank_prediction",
-        "rank_winner_tied",
-        "rank_agrees_with_prediction",
-        "rank_confidence_reason",
-        "rank_confidence_empirical_accuracy",
-        "rank_confidence_calibration_support",
-        "rank_confidence_calibration_valid",
-        "rank_confidence_calibration_source",
+        "prediction_confidence_valid",
+        "prediction_confidence_reason",
+        "prediction_mean_borda",
+        "prediction_rank_range",
+        "prediction_mean_rank",
+        "prediction_median_rank",
+        "prediction_borda_winner",
+        "prediction_borda_winner_tied",
+        "prediction_rank_agrees_with_final",
+        "prediction_rank_confidence_level",
+        "prediction_class_oof_precision",
+        "prediction_class_oof_support",
+        "prediction_class_reliability_level",
+        "prediction_class_reliability_valid",
+        "prediction_borda_margin",
+        "prediction_top1_agreement",
+        "prediction_top2_agreement",
+        "prediction_top3_agreement",
+        "prediction_runner_up_class",
+        "prediction_runner_up_borda",
+        "prediction_rank_models_used",
+        "prediction_rank_confidence_valid",
+        "prediction_rank_confidence_reason",
         config.prediction_review_column,
     ]
     preview_columns.extend(column for column in confidence_columns if column in final_df.columns)

@@ -2,9 +2,130 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 import warnings
+
+
+def _default_tune_params() -> dict[str, dict[str, list]]:
+    """Return an independent copy of the default search space for every model."""
+    return deepcopy(
+        {
+            "logistic_regression": {
+                "model__C": [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0],
+            },
+            "linear_sgd_classifier": {
+                "model__alpha": [1e-4, 1e-3, 1e-2, 1e-1],
+                "model__l1_ratio": [0.0, 0.15, 0.5, 0.8, 1.0],
+            },
+            "random_forest": {
+                "model__n_estimators": [300, 500, 800],
+                "model__max_depth": [5, 8, 12, 16],
+                "model__min_samples_split": [10, 20, 40],
+                "model__min_samples_leaf": [3, 5, 10, 20],
+                "model__max_features": ["sqrt", "log2", 0.3, 0.5],
+                "model__max_samples": [0.6, 0.8, None],
+                "model__ccp_alpha": [0.0, 0.0001, 0.001, 0.005],
+            },
+            "extra_trees": {
+                "model__n_estimators": [300, 500, 800],
+                "model__max_depth": [5, 8, 12, 16],
+                "model__min_samples_split": [10, 20, 40],
+                "model__min_samples_leaf": [3, 5, 10, 20],
+                "model__max_features": ["sqrt", "log2", 0.3, 0.5],
+                "model__max_samples": [0.6, 0.8, None],
+                "model__ccp_alpha": [0.0, 0.0001, 0.001],
+            },
+            "decision_tree": {
+                "model__max_depth": [3, 5, 8, 12, 16],
+                "model__min_samples_split": [10, 20, 40],
+                "model__min_samples_leaf": [5, 10, 20, 40],
+                "model__criterion": ["gini", "entropy", "log_loss"],
+                "model__max_features": [None, "sqrt", 0.5],
+                "model__ccp_alpha": [0.0, 0.0001, 0.001, 0.005, 0.01],
+            },
+            "knn": {
+                "model__n_neighbors": [5, 9, 15, 25, 40],
+                "model__weights": ["uniform", "distance"],
+                "model__p": [1, 2],
+                "model__leaf_size": [20, 30, 50],
+            },
+            "neural_network": {
+                "model__hidden_layer_sizes": [(32,), (64,), (64, 32)],
+                "model__alpha": [0.0001, 0.001, 0.01, 0.1],
+                "model__learning_rate_init": [0.0001, 0.0005, 0.001],
+            },
+            "tensorflow_neural_network": {
+                "model__hidden_layer_sizes": [(32,), (64,), (128,), (128, 64)],
+                "model__activation": ["relu", "selu", "gelu"],
+                "model__dropout_rate": [0.0, 0.2, 0.4],
+                "model__use_batch_normalization": [False, True],
+                "model__learning_rate": [0.0001, 0.0005, 0.001],
+                "model__batch_size": [32, 64],
+                "model__l2_regularization": [0.0, 0.0001, 0.001],
+            },
+            "bayesian": {
+                "model__var_smoothing": [1e-9, 1e-8, 1e-7, 1e-6],
+            },
+            "keras_lstm": {
+                "model__lstm_units_1": [32, 64],
+                "model__lstm_units_2": [16, 32],
+                "model__dense_units": [16, 32],
+                "model__dropout_rate": [0.10, 0.25],
+                "model__bidirectional": [False, True],
+                "model__learning_rate": [0.0005, 0.001],
+                "model__batch_size": [32, 64],
+            },
+            "bagging": {
+                "model__n_estimators": [100, 200, 400],
+                "model__max_samples": [0.5, 0.7, 0.9],
+                "model__max_features": [0.5, 0.7, 0.9],
+                "model__estimator__max_depth": [5, 8, 12, 16],
+                "model__estimator__min_samples_split": [10, 20, 40],
+                "model__estimator__min_samples_leaf": [3, 5, 10, 20],
+            },
+            "gradient_boosting": {
+                "model__n_estimators": [100, 200, 400],
+                "model__learning_rate": [0.01, 0.03, 0.05, 0.1],
+                "model__max_depth": [1, 2, 3],
+                "model__min_samples_split": [10, 20, 40],
+                "model__min_samples_leaf": [5, 10, 20],
+                "model__subsample": [0.6, 0.8],
+                "model__max_features": ["sqrt", 0.5, None],
+            },
+            "hist_gradient_boosting": {
+                "model__learning_rate": [0.01, 0.03, 0.05, 0.1],
+                "model__max_iter": [100, 200, 400],
+                "model__max_depth": [3, 5, 8],
+                "model__max_leaf_nodes": [7, 15, 31],
+                "model__min_samples_leaf": [20, 40, 60],
+                "model__l2_regularization": [0.01, 0.1, 1.0, 10.0],
+            },
+            "xgboost": {
+                "model__base_estimator__n_estimators": [200, 400, 600],
+                "model__base_estimator__learning_rate": [0.01, 0.03, 0.05, 0.1],
+                "model__base_estimator__max_depth": [2, 3, 4, 5],
+                "model__base_estimator__min_child_weight": [3, 5, 10],
+                "model__base_estimator__subsample": [0.6, 0.8, 1.0],
+                "model__base_estimator__colsample_bytree": [0.5, 0.7, 0.9],
+                "model__base_estimator__reg_alpha": [0.0, 0.01, 0.1, 1.0],
+                "model__base_estimator__reg_lambda": [1.0, 5.0, 10.0],
+                "model__base_estimator__gamma": [0.0, 0.1, 0.5],
+            },
+            "lightgbm": {
+                "model__base_estimator__n_estimators": [200, 400, 600],
+                "model__base_estimator__learning_rate": [0.01, 0.03, 0.05, 0.1],
+                "model__base_estimator__num_leaves": [7, 15, 31],
+                "model__base_estimator__max_depth": [3, 5, 8],
+                "model__base_estimator__min_child_samples": [20, 40, 80],
+                "model__base_estimator__subsample": [0.6, 0.8, 1.0],
+                "model__base_estimator__colsample_bytree": [0.5, 0.7, 0.9],
+                "model__base_estimator__reg_alpha": [0.0, 0.1, 1.0],
+                "model__base_estimator__reg_lambda": [0.1, 1.0, 10.0],
+            },
+        }
+    )
 
 
 # Slots prevent accidental runtime configuration attributes caused by misspellings.
@@ -66,6 +187,7 @@ class ClassificationPipelineConfig:
     selected_models: tuple[str, ...] | None = None
     max_search_candidates: int = 40
     n_jobs: int = -1
+    tune_params: dict[str, dict[str, list]] = field(default_factory=_default_tune_params)
 
     # ================================================================================
     # Model Training & Scoring Configuration
@@ -129,24 +251,14 @@ class ClassificationPipelineConfig:
     # ================================================================================
     rank_confidence_enabled: bool = True
     rank_confidence_minimum_models: int = 3
-    rank_confidence_high_min_top1: float = 0.75
-    rank_confidence_high_min_top2: float = 0.80
-    rank_confidence_high_min_score: float = 0.80
-    rank_confidence_high_min_margin: float = 0.20
-    rank_confidence_medium_min_top1: float = 0.50
-    rank_confidence_medium_min_top2: float = 0.60
-    rank_confidence_medium_min_score: float = 0.60
-    rank_confidence_medium_min_margin: float = 0.10
-    # Replace provisional global rank rules with OOF-predicted-class calibration when possible.
-    rank_confidence_class_aware_calibration_enabled: bool = True
-    # Assign HIGH when a supported OOF empirical accuracy reaches this boundary.
-    rank_confidence_high_min_empirical_accuracy: float = 0.85
-    # Assign MEDIUM below HIGH but at or above this empirical-accuracy boundary.
-    rank_confidence_medium_min_empirical_accuracy: float = 0.65
-    # Require this many within-class OOF rows after bounded neighboring Top-1 bin pooling.
-    rank_confidence_minimum_oof_support: int = 100
-    # Let sparse observed bins pool only with Top-1 counts this many votes away.
-    rank_confidence_max_top1_pool_distance: int = 1
+    rank_confidence_high_min_borda: float = 90.0
+    rank_confidence_high_max_range: float = 2.0
+    rank_confidence_medium_min_borda: float = 75.0
+    rank_confidence_medium_max_range: float = 4.0
+    class_reliability_enabled: bool = True
+    class_reliability_minimum_oof_support: int = 100
+    class_reliability_high_min_precision: float = 0.80
+    class_reliability_medium_min_precision: float = 0.60
 
     # ================================================================================
     # Interpretability & Feature Importance
@@ -168,6 +280,7 @@ class ClassificationPipelineConfig:
     log_filename: str = "pipeline.log"
     step_names: tuple[str, ...] = field(default=("01_check", "02_prepare", "03_train", "04_evaluate", "05_predict"))
     open_html_report: bool = True
+
 
     def __post_init__(self) -> None:
         """Normalize and validate configuration right after dataclass initialization."""
@@ -201,6 +314,22 @@ class ClassificationPipelineConfig:
         if self.spatial_interpolation_method is not None:
             # Normalize user-provided method names to lowercase for later comparisons.
             self.spatial_interpolation_method = self.spatial_interpolation_method.strip().lower()
+        self._normalize_tune_params()
+
+    def _normalize_tune_params(self) -> None:
+        """Merge model-level user search-space overrides with the default catalog."""
+        if not isinstance(self.tune_params, dict):
+            raise TypeError("tune_params must be a dictionary keyed by model name.")
+        defaults = _default_tune_params()
+        invalid_model_names = [name for name in self.tune_params if not isinstance(name, str)]
+        if invalid_model_names:
+            raise TypeError("tune_params model names must be strings.")
+        unknown_models = sorted(set(self.tune_params).difference(defaults))
+        if unknown_models:
+            raise ValueError(f"tune_params contains unknown model names: {unknown_models}")
+        for model_name, param_grid in self.tune_params.items():
+            defaults[model_name] = deepcopy(param_grid)
+        self.tune_params = defaults
 
     def _validate_strings_and_sequences(self) -> None:
         """Validate categorical options and sequence-based configuration fields."""
@@ -234,8 +363,20 @@ class ClassificationPipelineConfig:
             raise TypeError("optimize_class_probabilities must be a bool.")
         if not isinstance(self.rank_confidence_enabled, bool):
             raise TypeError("rank_confidence_enabled must be a bool.")
-        if not isinstance(self.rank_confidence_class_aware_calibration_enabled, bool):
-            raise TypeError("rank_confidence_class_aware_calibration_enabled must be a bool.")
+        if not isinstance(self.class_reliability_enabled, bool):
+            raise TypeError("class_reliability_enabled must be a bool.")
+        for model_name, param_grid in self.tune_params.items():
+            if not isinstance(param_grid, dict):
+                raise TypeError(f"tune_params['{model_name}'] must be a dictionary.")
+            for parameter_name, values in param_grid.items():
+                if not isinstance(parameter_name, str) or not parameter_name.startswith("model__"):
+                    raise ValueError(
+                        f"tune_params['{model_name}'] parameter names must start with 'model__'."
+                    )
+                if not isinstance(values, (list, tuple)) or not values:
+                    raise ValueError(
+                        f"tune_params['{model_name}']['{parameter_name}'] must be a non-empty list or tuple."
+                    )
         if not self.probability_multiplier_grid:
             raise ValueError("probability_multiplier_grid must contain at least one value.")
         if self.spatial_interpolation_method not in {None, "nearest", "idw", "kriging"}:
@@ -335,47 +476,26 @@ class ClassificationPipelineConfig:
             ),
             (int(self.rank_confidence_minimum_models) >= 1, "rank_confidence_minimum_models must be >= 1."),
             (
-                int(self.rank_confidence_minimum_oof_support) >= 1,
-                "rank_confidence_minimum_oof_support must be >= 1.",
-            ),
-            (
-                int(self.rank_confidence_max_top1_pool_distance) >= 0,
-                "rank_confidence_max_top1_pool_distance must be >= 0.",
+                int(self.class_reliability_minimum_oof_support) >= 1,
+                "class_reliability_minimum_oof_support must be >= 1.",
             ),
         )
         for condition, message in numeric_validations:
             if not condition:
                 raise ValueError(message)
 
-        confidence_threshold_fields = (
-            "rank_confidence_high_min_top1",
-            "rank_confidence_high_min_top2",
-            "rank_confidence_high_min_score",
-            "rank_confidence_high_min_margin",
-            "rank_confidence_medium_min_top1",
-            "rank_confidence_medium_min_top2",
-            "rank_confidence_medium_min_score",
-            "rank_confidence_medium_min_margin",
-        )
-        for field_name in confidence_threshold_fields:
-            value = float(getattr(self, field_name))
-            if not 0.0 <= value <= 1.0:
-                raise ValueError(f"{field_name} must be between 0 and 1.")
-        threshold_pairs = (
-            (self.rank_confidence_high_min_top1, self.rank_confidence_medium_min_top1, "top1"),
-            (self.rank_confidence_high_min_top2, self.rank_confidence_medium_min_top2, "top2"),
-            (self.rank_confidence_high_min_score, self.rank_confidence_medium_min_score, "score"),
-            (self.rank_confidence_high_min_margin, self.rank_confidence_medium_min_margin, "margin"),
-        )
-        for high_value, medium_value, label in threshold_pairs:
-            if float(high_value) < float(medium_value):
-                raise ValueError(f"HIGH rank-confidence {label} threshold must be >= the MEDIUM threshold.")
-        empirical_high = float(self.rank_confidence_high_min_empirical_accuracy)
-        empirical_medium = float(self.rank_confidence_medium_min_empirical_accuracy)
-        if not 0.0 <= empirical_medium <= empirical_high <= 1.0:
-            raise ValueError(
-                "Empirical rank-confidence thresholds must satisfy 0 <= MEDIUM <= HIGH <= 1."
-            )
+        high_borda = float(self.rank_confidence_high_min_borda)
+        medium_borda = float(self.rank_confidence_medium_min_borda)
+        if not 0.0 <= medium_borda <= high_borda <= 100.0:
+            raise ValueError("Rank-confidence Borda thresholds must satisfy 0 <= MEDIUM <= HIGH <= 100.")
+        high_range = float(self.rank_confidence_high_max_range)
+        medium_range = float(self.rank_confidence_medium_max_range)
+        if high_range < 0.0 or medium_range < high_range:
+            raise ValueError("Rank-confidence range thresholds must satisfy 0 <= HIGH <= MEDIUM.")
+        reliability_high = float(self.class_reliability_high_min_precision)
+        reliability_medium = float(self.class_reliability_medium_min_precision)
+        if not 0.0 <= reliability_medium <= reliability_high <= 1.0:
+            raise ValueError("Class-reliability precision thresholds must satisfy 0 <= MEDIUM <= HIGH <= 1.")
 
     def _apply_safe_caps(self) -> None:
         """Apply safe caps to dependent limits and emit warnings when clipped."""

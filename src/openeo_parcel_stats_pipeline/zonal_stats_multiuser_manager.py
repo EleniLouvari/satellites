@@ -310,6 +310,7 @@ def merge_and_save_results(
     all_results: dict[int, gpd.GeoDataFrame] | None = None,
     output_dir: Path | None = None,
     parcel_id_column: str | None = None,
+    working_epsg: int | None = None,
 ) -> tuple[gpd.GeoDataFrame, Path]:
     """Merge partition results and save as GeoParquet.
 
@@ -330,6 +331,10 @@ def merge_and_save_results(
     parcel_id_column : str, optional
         Column used to remove duplicate parcels. When omitted, all partition
         rows are retained because spatial partitions are disjoint by design.
+    working_epsg : int, optional
+        Projected output CRS. New partition outputs already use their configured
+        working EPSG; supplying this also reprojects previously saved partition
+        results before writing the merged GeoParquet.
 
     Returns
     -------
@@ -360,9 +365,20 @@ def merge_and_save_results(
             raise KeyError(f"Parcel ID column {parcel_id_column!r} is missing from partition results.")
         merged_results = merged_results.drop_duplicates(parcel_id_column, keep="first").reset_index(drop=True)
 
+    if working_epsg is not None:
+        try:
+            output_epsg = int(working_epsg)
+            output_crs = gpd.GeoSeries([], crs=f"EPSG:{output_epsg}").crs
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid working EPSG code: {working_epsg!r}.") from exc
+        if not output_crs.is_projected:
+            raise ValueError("working_epsg must identify a projected CRS.")
+        merged_results = merged_results.to_crs(output_crs)
+
     input_count = len(gdf_parcels) if gdf_parcels is not None else sum(map(len, all_results.values()))
     print(f"\nMerged results: {len(merged_results)} parcels (input: {input_count})")
     print(f"Output columns: {merged_results.shape[1]}")
+    print(f"Output CRS: {merged_results.crs}")
 
     # Create output paths
     output_dir.mkdir(parents=True, exist_ok=True)

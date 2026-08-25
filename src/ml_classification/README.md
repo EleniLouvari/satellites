@@ -83,6 +83,10 @@ places for source data or code.
 - `cv_ranking_method`: `"score_minus_std"` (default, rewards stability) or
   `"mean_score"`.
 - `scoring_primary`: primary CV and comparison metric; defaults to `f1_macro`.
+- `tune_params`: optional model-keyed search-space overrides. Each supplied
+  model entry replaces that model's complete default grid; omitted models keep
+  their defaults. Parameter names use the pipeline prefix, such as
+  `model__n_estimators`.
 - `label_balancing_method`: `"none"`, `"random_oversample"`, or `"smote"`.
 - `spatial_split=True`: enables geometry-based splitting. `by_group` holds out
   whole grid cells; `by_row` samples rows while retaining class coverage.
@@ -92,14 +96,13 @@ places for source data or code.
 - `prediction_confidence_threshold`: legacy maximum-probability review threshold
   used when rank confidence is disabled (default `0.60`).
 - `rank_confidence_enabled=True`: calculates parcel-level `HIGH`, `MEDIUM`, or
-  `LOW` ensemble confidence from within-model class ranks. LOW or invalid
-  confidence is marked in `prediction_needs_review`; thresholds and the minimum
-  model count are configurable. Step 4 freezes this definition in
-  `selection_summary.json`, and Step 5 uses that frozen definition.
-- `rank_confidence_class_aware_calibration_enabled=True`: replaces the
-  provisional global H/M/L rule with predicted-class-aware empirical accuracy
-  learned from OOF predictions. Defaults are HIGH at `>=0.85`, MEDIUM at
-  `>=0.65`, and at least 100 OOF parcels per pooled class/Top-1 estimate.
+  `LOW` support from the selected members' within-model ranks. Defaults use a
+  mean Borda score of 90/75 and predicted-class rank ranges of 2/4 for
+  HIGH/MEDIUM, with Borda-winner agreement required.
+- `class_reliability_enabled=True`: guards rank confidence with frozen OOF
+  precision for the predicted class. Defaults are HIGH at `>=0.80`, MEDIUM at
+  `>=0.60`, and at least 100 OOF predictions for that exact class. Final
+  confidence is the lower of rank confidence and class reliability.
 - `open_html_report=True`: open generated HTML reports after writing them.
 
 Satellite zonal statistics already writes one ML-ready GeoParquet row per

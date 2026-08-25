@@ -40,6 +40,7 @@ ml_classification_pipeline/
 |   |-- multiclass_ranking_library.py
 |   |-- persistence.py
 |   |-- rank_confidence.py
+|   |-- class_reliability.py
 |   |-- rank_confidence_calibration.py
 |   |-- selection.py
 |   |-- spatial_interpolation.py
@@ -86,8 +87,9 @@ ml_classification_pipeline/
 | `core/models.py` | Defines model candidates, sklearn-compatible wrappers, preprocessing, optional balancing, search spaces, and estimator reconstruction by model name. |
 | `core/multiclass_ranking_library.py` | Provides class-specific ranks, top/median/power/nDCG measures, plots, and printable multiclass ranking reports. |
 | `core/persistence.py` | Centralizes logging, timing, directory management, output reset behavior, and JSON/joblib/CSV serialization. |
-| `core/rank_confidence.py` | Validates member-model outputs, converts within-model probabilities to average ranks and normalized Borda scores, and calculates parcel-level rank-confidence diagnostics and levels. |
-| `core/rank_confidence_calibration.py` | Fits predicted-class-aware empirical correctness tables from OOF Top-1 agreement, pools sparse observed bins only within a bounded adjacent distance, and applies the frozen calibration to holdout and production rows. |
+| `core/rank_confidence.py` | Validates selected-member outputs, converts within-model probabilities to average ranks and 0-100 Borda scores, and assigns parcel rank confidence from Borda support, predicted-class rank range, and winner agreement. |
+| `core/class_reliability.py` | Fits one OOF soft-voting precision record per predicted class, applies the frozen table, and combines it with parcel rank confidence using the lower level. |
+| `core/rank_confidence_calibration.py` | Legacy class x Top-1 calibration retained for import compatibility; it is not used by Steps 4 or 5. |
 | `core/selection.py` | Ranks probability models from CV, applies `top_voting_models`, evaluates soft voting, optimizes optional class multipliers, freezes selection, and refits the selected strategy. |
 | `core/spatial_interpolation.py` | Fills missing spatial feature values with the configured nearest, IDW, or kriging method. |
 | `core/spatial_split.py` | Implements spatial train/test splitting using grid intersections, class-preservation checks, and spatial grouping. |
@@ -215,11 +217,10 @@ project_dir/
 |   |-- confidence/
 |   |   |-- rank_confidence_test.csv
 |   |   |-- rank_confidence_oof.csv
-|   |   |-- rank_confidence_calibration.json
-|   |   |-- rank_confidence_calibration.csv
-|   |   |-- confidence_level_metrics.csv
+|   |   |-- class_reliability_oof.csv
+|   |   |-- confidence_level_metrics_test.csv
 |   |   |-- confidence_level_metrics_oof.csv
-|   |   `-- confidence_by_class.csv
+|   |   `-- confidence_by_class_test.csv
 |   `-- interpretability/                        [optional]
 |       |-- interpretability_summary.csv
 |       |-- <model_name>_feature_importance.csv
@@ -285,13 +286,13 @@ project_dir/
 | `model_metrics_train.csv` / `model_metrics_test.csv` | Standard metrics for every evaluated base model. |
 | `*_with_voting.csv` | Base-model metrics plus the soft-voting aggregate when an ensemble is available. |
 | `geo_classifier_style_*_metrics.csv` | Legacy-compatible analytical layout with per-class values. |
-| `selection_summary.json` | Frozen selection type, selected models, CV metric, labels, optional probability optimization, and rank-confidence thresholds/minimum-model contract. Step 5 treats this as authoritative. |
+| `selection_summary.json` | Frozen selection type, selected models, CV metric, labels, optional probability optimization, rank thresholds, and OOF class-reliability contract. Step 5 treats this as authoritative. |
 | `reports/<model>_classification_report.csv` | Per-class precision, recall, F1, support, and aggregate rows. |
 | `confusion_matrices/*`, `panels/*`, `curves/*`, `plots/*` | Model evaluation graphics referenced by the HTML report. |
 | `ranking/parcel_best_class_by_ranking*.csv` | Per-row predictions from probability average/median and rank average/median. |
 | `ranking/ranking_method_metrics*.csv` | Train/test performance summaries of the ranking aggregation methods. |
 | `confidence/rank_confidence_*.csv` | Parcel-level holdout/OOF rank evidence, confidence levels, agreement, margin, dispersion, runner-up, and model-count diagnostics. |
-| `confidence/rank_confidence_calibration.*` | Frozen OOF-derived predicted-class/Top-1 empirical accuracy table with exact support, bounded pooled support/distance, provenance, and assigned confidence level. |
+| `confidence/class_reliability_oof.csv` | Frozen OOF prediction support, correct count, precision, level, and validity for each exact predicted class. |
 | `confidence/confidence_*.csv` | Overall and per-class empirical correctness summaries for HIGH, MEDIUM, and LOW parcels. |
 | `interpretability/*` | Feature importance and optional SHAP diagnostics for top CV-ranked models. These explain models but do not affect selection or prediction. |
 

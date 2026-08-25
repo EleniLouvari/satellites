@@ -109,7 +109,7 @@ def test_write_evaluate_report_assembles_expected_sections_without_artifacts():
     assert test_average_section["table"].loc[0, "f1_macro"] == 80.0
 
 
-def test_write_evaluate_report_separates_oof_calibration_from_holdout_validation():
+def test_write_evaluate_report_separates_oof_evidence_from_holdout_validation():
     config = SimpleNamespace(
         evaluate_dir=Path("missing-evaluation-output"),
         train_dir=Path("missing-training-output"),
@@ -124,7 +124,7 @@ def test_write_evaluate_report_separates_oof_calibration_from_holdout_validation
     selection = {
         "selection_type": "single_model",
         "selected_models": ["base_model"],
-        "rank_confidence": {"threshold_source": "oof_class_aware_empirical_calibration"},
+        "confidence": {"method": "rank_consensus_with_class_reliability_guard"},
     }
 
     with patch.object(reports_module, "write_html_report") as write_html_report:
@@ -139,8 +139,8 @@ def test_write_evaluate_report_separates_oof_calibration_from_holdout_validation
 
     sections = write_html_report.call_args.kwargs["sections"]
     titles = [section["title"] for section in sections]
-    oof_title = "OOF Calibration Performance (Descriptive)"
-    holdout_title = "Holdout Validation Performance: Rank-Based Prediction Confidence"
+    oof_title = "OOF Confidence Performance (Descriptive)"
+    holdout_title = "Holdout Validation: Rank Consensus with Class Reliability Guard"
     assert titles.index(oof_title) < titles.index(holdout_title)
     assert "not an independent validation result" in next(
         section["text"] for section in sections if section["title"] == oof_title

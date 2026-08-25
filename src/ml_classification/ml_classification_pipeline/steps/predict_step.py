@@ -9,8 +9,8 @@ import numpy as np
 # Prediction reloads persisted training artifacts so inference matches the fitted feature space.
 from ..core.metrics import load_modeling_context
 from ..core.persistence import load_joblib, load_json, print_formatted_txt, save_frame_csv, save_joblib, save_json, time_decorator
+from ..core.class_reliability import combine_confidence_components, get_class_reliability
 from ..core.rank_confidence import classify_ensemble_rank_based, rank_confidence_thresholds_from_config
-from ..core.rank_confidence_calibration import apply_class_aware_confidence_calibration
 from ..core.selection import fit_and_predict_selected_strategy
 from ..reporting import write_index_report, write_predict_report
 from ..core import PipelineStepBase
@@ -22,8 +22,11 @@ class PredictStep(PipelineStepBase):
 
     def _resolve_rank_confidence_contract(self, selection: dict[str, Any]) -> dict[str, Any]:
         """Resolve the frozen Step-4 confidence contract with legacy fallback."""
-        # Read the confidence definition persisted alongside the selected strategy.
-        frozen = selection.get("rank_confidence")
+        frozen = selection.get("confidence")
+        legacy_rank = selection.get("rank_confidence")
+        supported_methods = {"rank_consensus_with_class_reliability_guard", "rank_consensus_only"}
+        if frozen is None and isinstance(legacy_rank, dict) and legacy_rank.get("method") in supported_methods:
+            frozen = legacy_rank
         if frozen is not None:
             # Reject corrupted or manually edited summaries with an invalid object type.
             if not isinstance(frozen, dict):
@@ -36,30 +39,48 @@ class PredictStep(PipelineStepBase):
                     "enabled": False,
                     "thresholds": None,
                     "minimum_models": None,
-                    "calibration": None,
+                    "class_reliability": None,
                     "source": "selection_summary",
                 }
-            # Require the complete frozen rank contract before running production inference.
-            if "thresholds" not in frozen or "minimum_models" not in frozen:
+            if frozen.get("method") not in supported_methods:
                 raise RuntimeError(
-                    "The frozen rank-confidence contract is incomplete; thresholds and minimum_models are required."
+                    "The frozen confidence contract uses an obsolete method. Rerun Step 4 to create the "
+                    "rank-consensus-with-class-reliability contract."
                 )
-            # Carry both the fallback rank rules and optional OOF empirical table forward.
+            rank = frozen.get("rank")
+            reliability = frozen.get("class_reliability")
+            requires_reliability = frozen["method"] == "rank_consensus_with_class_reliability_guard"
+            if not isinstance(rank, dict) or (requires_reliability and not isinstance(reliability, dict)):
+                raise RuntimeError("The frozen confidence contract is incomplete; rerun Step 4.")
             return {
                 "enabled": True,
-                "thresholds": frozen["thresholds"],
-                "minimum_models": int(frozen["minimum_models"]),
-                "calibration": frozen.get("calibration"),
+                "method": frozen["method"],
+                "thresholds": {
+                    "high_min_borda": rank["high_min_borda"],
+                    "high_max_range": rank["high_max_range"],
+                    "medium_min_borda": rank["medium_min_borda"],
+                    "medium_max_range": rank["medium_max_range"],
+                },
+                "minimum_models": int(rank["minimum_models"]),
+                "class_reliability": reliability,
                 "source": "selection_summary",
             }
 
-        # Backward compatibility for selection summaries created before the
-        # confidence contract was persisted by Step 4.
+        if selection.get("rank_confidence") is not None and self.config.rank_confidence_enabled:
+            raise RuntimeError(
+                "selection_summary.json contains the obsolete class x Top-1 confidence method. "
+                "Rerun Step 4 before production prediction."
+            )
+        if self.config.rank_confidence_enabled and getattr(self.config, "class_reliability_enabled", True):
+            raise RuntimeError(
+                "selection_summary.json has no frozen class-reliability contract. Rerun Step 4 before prediction."
+            )
         return {
             "enabled": bool(self.config.rank_confidence_enabled),
+            "method": "rank_consensus_only" if self.config.rank_confidence_enabled else None,
             "thresholds": rank_confidence_thresholds_from_config(self.config),
             "minimum_models": int(self.config.rank_confidence_minimum_models),
-            "calibration": None,
+            "class_reliability": None,
             "source": "live_config_legacy_fallback",
         }
 
@@ -90,21 +111,22 @@ class PredictStep(PipelineStepBase):
             confidence_thresholds=contract["thresholds"],
             minimum_models=contract["minimum_models"],
         )
-        # Replace provisional H/M/L with the frozen OOF empirical category when available.
-        if contract["calibration"] is not None:
-            # Update only confidence outputs; all underlying rank diagnostics remain unchanged.
-            result.update(
-                apply_class_aware_confidence_calibration(
-                    predicted_classes=predictions,
-                    top1_agreement=result["top1_agreement"],
-                    n_models_used=result["n_models_used"],
-                    confidence_valid=result["confidence_valid"],
-                    confidence_reason=result["confidence_reason"],
-                    rank_agrees_with_prediction=result["rank_agrees_with_prediction"],
-                    rank_winner_tied=result["rank_winner_tied"],
-                    calibration=contract["calibration"],
-                )
+        if contract["class_reliability"] is not None:
+            reliability = get_class_reliability(predictions, contract["class_reliability"])
+            final = combine_confidence_components(
+                result["rank_confidence_level"],
+                result["rank_confidence_valid"],
+                result["rank_confidence_reason"],
+                reliability["class_reliability_level"],
+                reliability["class_reliability_valid"],
+                reliability["class_reliability_reason"],
             )
+            result.update(reliability)
+            result.update(final)
+        else:
+            result["prediction_confidence_level"] = result["rank_confidence_level"]
+            result["prediction_confidence_valid"] = result["rank_confidence_valid"]
+            result["prediction_confidence_reason"] = result["rank_confidence_reason"]
         # Return both parcel results and contract provenance for output summaries.
         return result, contract
 
@@ -126,6 +148,8 @@ class PredictStep(PipelineStepBase):
         unknown_mask = final_df[self.config.target_column].isna()
         # Attach predicted labels and confidence score (max class probability).
         final_df[self.config.prediction_column] = predictions
+        if self.config.prediction_column != "predicted_class":
+            final_df["predicted_class"] = predictions
         final_df[self.config.prediction_confidence_column] = np.max(probabilities, axis=1)
         # Mark rows that need manual review because confidence is below threshold.
         final_df[self.config.prediction_review_column] = (
@@ -133,35 +157,40 @@ class PredictStep(PipelineStepBase):
         )
         if rank_confidence is not None:
             rank_columns = {
-                self.config.prediction_confidence_level_column: "confidence_level",
-                "rank_aggregate_score": "aggregate_rank_score",
-                "rank_margin": "rank_margin",
-                "rank_top1_agreement": "top1_agreement",
-                "rank_top2_agreement": "top2_agreement",
-                "rank_top3_agreement": "top3_agreement",
-                "rank_mean": "mean_rank",
-                "rank_median": "median_rank",
-                "rank_std": "rank_std",
-                "rank_iqr": "rank_iqr",
-                "rank_runner_up_class": "runner_up_class",
-                "rank_runner_up_score": "runner_up_rank_score",
-                "rank_prediction": "rank_prediction",
-                "rank_winner_tied": "rank_winner_tied",
-                "rank_agrees_with_prediction": "rank_agrees_with_prediction",
-                "rank_n_models_used": "n_models_used",
-                "rank_confidence_valid": "confidence_valid",
-                "rank_confidence_reason": "confidence_reason",
-                "rank_confidence_empirical_accuracy": "confidence_empirical_accuracy",
-                "rank_confidence_calibration_support": "confidence_calibration_support",
-                "rank_confidence_calibration_valid": "confidence_calibration_valid",
-                "rank_confidence_calibration_source": "confidence_calibration_source",
+                self.config.prediction_confidence_level_column: "prediction_confidence_level",
+                "prediction_confidence_valid": "prediction_confidence_valid",
+                "prediction_confidence_reason": "prediction_confidence_reason",
+                "prediction_mean_borda": "prediction_mean_borda",
+                "prediction_rank_range": "prediction_rank_range",
+                "prediction_mean_rank": "prediction_mean_rank",
+                "prediction_median_rank": "prediction_median_rank",
+                "prediction_rank_std": "prediction_rank_std",
+                "prediction_rank_iqr": "prediction_rank_iqr",
+                "prediction_borda_winner": "borda_prediction",
+                "prediction_borda_winner_tied": "rank_winner_tied",
+                "prediction_rank_agrees_with_final": "rank_agrees_with_prediction",
+                "prediction_rank_confidence_level": "rank_confidence_level",
+                "prediction_class_oof_precision": "class_oof_precision",
+                "prediction_class_oof_support": "class_oof_support",
+                "prediction_class_reliability_level": "class_reliability_level",
+                "prediction_class_reliability_valid": "class_reliability_valid",
+                "prediction_class_reliability_reason": "class_reliability_reason",
+                "prediction_borda_margin": "borda_margin",
+                "prediction_top1_agreement": "top1_agreement",
+                "prediction_top2_agreement": "top2_agreement",
+                "prediction_top3_agreement": "top3_agreement",
+                "prediction_runner_up_class": "runner_up_class",
+                "prediction_runner_up_borda": "runner_up_borda",
+                "prediction_rank_models_used": "n_models_used",
+                "prediction_rank_confidence_valid": "rank_confidence_valid",
+                "prediction_rank_confidence_reason": "rank_confidence_reason",
             }
             for output_column, result_key in rank_columns.items():
                 if result_key in rank_confidence:
                     final_df[output_column] = rank_confidence[result_key]
             final_df[self.config.prediction_review_column] = (
                 (final_df[self.config.prediction_confidence_level_column] == "LOW")
-                | ~final_df["rank_confidence_valid"].astype(bool)
+                | ~final_df["prediction_confidence_valid"].astype(bool)
             )
         # Produce a filled target column that uses prediction only where original was unknown.
         final_df[self.config.prediction_filled_column] = final_df[self.config.target_column].where(
@@ -178,29 +207,36 @@ class PredictStep(PipelineStepBase):
             self.config.prediction_confidence_column, self.config.prediction_review_column,
             self.config.prediction_filled_column,
         ]
+        if "predicted_class" in final_df and "predicted_class" not in preview_columns:
+            preview_columns.insert(3, "predicted_class")
         optional_confidence_columns = [
             self.config.prediction_confidence_level_column,
-            "rank_aggregate_score",
-            "rank_margin",
-            "rank_top1_agreement",
-            "rank_top2_agreement",
-            "rank_top3_agreement",
-            "rank_mean",
-            "rank_median",
-            "rank_std",
-            "rank_iqr",
-            "rank_runner_up_class",
-            "rank_runner_up_score",
-            "rank_prediction",
-            "rank_winner_tied",
-            "rank_agrees_with_prediction",
-            "rank_n_models_used",
-            "rank_confidence_valid",
-            "rank_confidence_reason",
-            "rank_confidence_empirical_accuracy",
-            "rank_confidence_calibration_support",
-            "rank_confidence_calibration_valid",
-            "rank_confidence_calibration_source",
+            "prediction_confidence_valid",
+            "prediction_confidence_reason",
+            "prediction_mean_borda",
+            "prediction_rank_range",
+            "prediction_mean_rank",
+            "prediction_median_rank",
+            "prediction_rank_std",
+            "prediction_rank_iqr",
+            "prediction_borda_winner",
+            "prediction_borda_winner_tied",
+            "prediction_rank_agrees_with_final",
+            "prediction_rank_confidence_level",
+            "prediction_class_oof_precision",
+            "prediction_class_oof_support",
+            "prediction_class_reliability_level",
+            "prediction_class_reliability_valid",
+            "prediction_class_reliability_reason",
+            "prediction_borda_margin",
+            "prediction_top1_agreement",
+            "prediction_top2_agreement",
+            "prediction_top3_agreement",
+            "prediction_runner_up_class",
+            "prediction_runner_up_borda",
+            "prediction_rank_models_used",
+            "prediction_rank_confidence_valid",
+            "prediction_rank_confidence_reason",
         ]
         preview_columns.extend(column for column in optional_confidence_columns if column in final_df.columns)
         # Persist full predictions, a compact CSV preview, and the summary JSON.
@@ -232,6 +268,7 @@ class PredictStep(PipelineStepBase):
         """Run full-dataset inference and persist final prediction artifacts."""
         # Load required context and execute selected prediction strategy.
         print_formatted_txt("Classify all data...", "SUBSECTION")
+        # Load all the initial data
         dataset, context, selection, model_specs = self._load_prediction_inputs()
         active_features = context["active_features"]
         numeric_features = context["numeric_features"]
@@ -242,7 +279,7 @@ class PredictStep(PipelineStepBase):
         labeled_df = dataset.loc[dataset[self.config.target_column].notna(), :].copy()
         labeled_df[self.config.target_column] = labeled_df[self.config.target_column].astype(str)
 
-        # Execute the chosen selection strategy (may refit models) to obtain predictions and probabilities.
+        # Execute the chosen selection strategy (may refit models using all labeled data) to obtain predictions and probabilities.
         predictions, probabilities, member_probabilities = fit_and_predict_selected_strategy(
             config=self.config,
             X_fit=labeled_df[active_features].copy(),
@@ -254,9 +291,8 @@ class PredictStep(PipelineStepBase):
             categorical_features=categorical_features,
         )
 
-        rank_confidence, rank_contract = self._calculate_rank_confidence(
-            selection, predictions, member_probabilities
-        )
+        # Calculate rank-based confidence and class-reliability metrics if the frozen contract enabled them.
+        rank_confidence, rank_contract = self._calculate_rank_confidence(selection, predictions, member_probabilities)
 
         # Augment the dataset with predictions, probabilities and filled labels.
         final_df, unknown_mask = self._create_prediction_frame(
@@ -267,6 +303,7 @@ class PredictStep(PipelineStepBase):
             rank_confidence=rank_confidence,
         )
         unknown_rows_before = int(unknown_mask.sum())
+        # Fill all unknown rows with predictions and mark those needing review based on confidence.
         rows_filled = int(final_df.loc[unknown_mask, self.config.prediction_filled_column].notna().sum())
         summary_values = {
             "selection_type": selection["selection_type"],
@@ -278,8 +315,10 @@ class PredictStep(PipelineStepBase):
             "review_decision_basis": "rank_confidence" if rank_confidence is not None else "maximum_probability",
             "rank_confidence_enabled": bool(rank_contract["enabled"]),
             "rank_confidence_contract_source": rank_contract["source"],
-            "rank_confidence_calibration_method": (
-                rank_contract["calibration"].get("method") if rank_contract["calibration"] is not None else None
+            "confidence_method": rank_contract.get("method"),
+            "class_reliability_method": (
+                rank_contract["class_reliability"].get("method")
+                if rank_contract["class_reliability"] is not None else None
             ),
             "rank_confidence_minimum_models": rank_contract["minimum_models"],
             "rank_confidence_level_counts": (
@@ -291,10 +330,8 @@ class PredictStep(PipelineStepBase):
         }
         if rank_confidence is None:
             summary_values["maximum_probability_review_threshold"] = self.config.prediction_confidence_threshold
-        predict_summary = self._with_schema(
-            summary_values,
-            "predict_summary",
-        )
+        # Save the final predictions, a preview CSV, and the summary JSON with schema manifest.
+        predict_summary = self._with_schema(summary_values, "predict_summary")
         self._persist_predictions(final_df, predict_summary)
         self._save_prediction_plots(final_df)
 

@@ -201,8 +201,12 @@ def evaluate_voting_candidate(
             voting_probabilities[split_name] = apply_class_probability_multipliers(
                 probabilities, labels, selection.get("class_probability_multipliers")
             )
-    voting_predictions_train, voting_metrics_train = _score_probability_strategy(voting_probabilities["train"], y_train, labels, "soft_voting")
-    voting_predictions_test, voting_metrics_test = _score_probability_strategy(voting_probabilities["test"], y_test, labels, "soft_voting")
+    voting_predictions_train, voting_metrics_train = _score_probability_strategy(
+        voting_probabilities["train"], y_train, labels, "soft_voting"
+    )
+    voting_predictions_test, voting_metrics_test = _score_probability_strategy(
+        voting_probabilities["test"], y_test, labels, "soft_voting"
+    )
 
     # Append the soft-voting summary row to the existing metric tables and
     # persist artifacts used in the evaluation report.
@@ -257,17 +261,26 @@ def fit_and_predict_selected_strategy(
             raise RuntimeError(
                 f"Model {model_name!r} probability columns are not aligned with the canonical class order."
             )
+        # Predict probabilities for all rows and validate the output shape and values.
         probabilities = np.asarray(estimator.predict_proba(X_all), dtype=np.float64)
         if probabilities.ndim != 2 or probabilities.shape[1] != len(selection["labels"]):
             raise RuntimeError(
                 f"Model {model_name!r} returned {probabilities.shape} probabilities; expected "
                 f"(n_rows, {len(selection['labels'])})."
             )
+        if not np.isfinite(probabilities).all() or np.any(probabilities < 0) or np.any(probabilities.sum(axis=1) <= 0):
+            raise RuntimeError(f"Model {model_name!r} returned malformed or non-finite probabilities.")
         fitted_probabilities[model_name] = probabilities
 
+    # Average the selected model probabilities and apply any learned class multipliers.
     averaged_probs = np.mean(list(fitted_probabilities.values()), axis=0)
-    averaged_probs = apply_class_probability_multipliers(averaged_probs, list(selection["labels"]), selection.get("class_probability_multipliers"))
+    # Apply class multipliers learned from out-of-fold predictions if they exist.
+    averaged_probs = apply_class_probability_multipliers(
+        averaged_probs, list(selection["labels"]), selection.get("class_probability_multipliers")
+    )
+    # Convert averaged probabilities to hard labels using argmax and return all outputs.
     prediction_encoded = np.argmax(averaged_probs, axis=1)
+    # Convert the integer-encoded predictions back to the original label strings.
     predictions = np.asarray(selection["labels"])[prediction_encoded]
     return predictions, averaged_probs, fitted_probabilities
 

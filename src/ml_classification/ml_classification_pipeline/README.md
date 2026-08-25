@@ -77,26 +77,30 @@ config = ClassificationPipelineConfig(
     spatial_split_grid_size=10,
     label_balancing_method="none",  # options: none, random_oversample, smote
     smote_k_neighbors=5,
+    # A supplied model entry replaces that model's complete default search space.
+    # Models omitted from tune_params retain their default search spaces.
+    tune_params={
+        "gradient_boosting": {
+            "model__n_estimators": [50, 100, 200],
+            "model__learning_rate": [0.03, 0.05, 0.1],
+            "model__max_depth": [1, 2],
+            "model__max_features": ["sqrt", 0.3],
+        },
+    },
     optimize_class_probabilities=False,  # learn class multipliers from out-of-fold probabilities
     probability_multiplier_grid=(0.8, 1.0, 1.2, 1.5, 2.0),
     probability_optimization_iterations=2,
     probability_optimization_max_accuracy_drop=0.02,
     rank_confidence_enabled=True,
     rank_confidence_minimum_models=3,
-    # Provisional defaults; validate these against OOF and holdout results.
-    rank_confidence_high_min_top1=0.75,
-    rank_confidence_high_min_top2=0.80,
-    rank_confidence_high_min_score=0.80,
-    rank_confidence_high_min_margin=0.20,
-    rank_confidence_medium_min_top1=0.50,
-    rank_confidence_medium_min_top2=0.60,
-    rank_confidence_medium_min_score=0.60,
-    rank_confidence_medium_min_margin=0.10,
-    rank_confidence_class_aware_calibration_enabled=True,
-    rank_confidence_high_min_empirical_accuracy=0.85,
-    rank_confidence_medium_min_empirical_accuracy=0.65,
-    rank_confidence_minimum_oof_support=100,
-    rank_confidence_max_top1_pool_distance=1,
+    rank_confidence_high_min_borda=90.0,
+    rank_confidence_high_max_range=2.0,
+    rank_confidence_medium_min_borda=75.0,
+    rank_confidence_medium_max_range=4.0,
+    class_reliability_enabled=True,
+    class_reliability_minimum_oof_support=100,
+    class_reliability_high_min_precision=0.80,
+    class_reliability_medium_min_precision=0.60,
     interpretability_top_models=3,
     interpretability_include_shap=False,
 )
@@ -136,31 +140,30 @@ config = ClassificationPipelineConfig(
 
 When rank confidence is enabled, the pipeline retains every selected model's
 probabilities long enough to compare its within-model class ordering. It keeps
-Top-1/Top-2/Top-3 agreement, normalized Borda rank score, margin, and dispersion
-as parcel diagnostics. The numeric
+Top-1/Top-2/Top-3 agreement, a 0-100 mean Borda score, and rank dispersion as
+parcel diagnostics. H/M/L rank confidence itself uses only mean Borda, the
+predicted-class rank range, Borda-winner agreement/ties, and model count. The numeric
 `prediction_max_probability` is retained as a diagnostic only; it is not
 treated as calibrated statistical confidence and does not control the review
 flag when rank confidence is available.
 
-By default, Step 4 uses OOF correctness to fit a class-aware empirical table
-indexed by predicted class and Top-1 vote count. Sufficient exact bins are used
-without pooling. Sparse observed bins may pool only with bins from the same
-predicted class within `rank_confidence_max_top1_pool_distance` (one vote by
-default), and only when the bounded region reaches
-`rank_confidence_minimum_oof_support`. Unseen exact bins and bounded regions
-without sufficient OOF support remain invalid and `LOW`. The defaults map
-empirical accuracy `>=0.85` to `HIGH`, `>=0.65` to `MEDIUM`, and lower accuracy
-to `LOW`.
+By default, Step 4 uses selected-member OOF soft-voting predictions to calculate
+one precision value per predicted class. No Top-1 bins, neighboring-bin pooling,
+or class pooling are used. Classes with fewer than
+`class_reliability_minimum_oof_support` predictions remain invalid and `LOW`.
+The defaults map OOF class precision `>=0.80` to `HIGH`, `>=0.60` to `MEDIUM`,
+and lower precision to `LOW`. Final confidence is the lower of parcel rank
+confidence and this frozen class reliability level.
 
 For soft voting, the predicted label remains probability-based. If the
 rank-aggregated winner disagrees with that label, the parcel receives `LOW`
 rank confidence and the disagreement is retained in the diagnostic columns.
-Calibration is never learned from final prediction rows or recalculated on the
-test set. Step 4 freezes the complete OOF-derived calibration and minimum-model
-rule in `selection_summary.json`; Step 5 applies that exact contract even if the
-live configuration later changes. The untouched holdout confidence artifacts
-verify the frozen OOF calibration. The older global rank thresholds remain a
-fallback when class-aware calibration is disabled or OOF data is unavailable.
+Class reliability is never learned from final prediction rows or recalculated
+on the test set. Step 4 freezes the OOF class table and rank thresholds in
+`selection_summary.json`; Step 5 applies that exact contract even if the live
+configuration later changes. The untouched holdout confidence artifacts verify
+the frozen contract. Old selection summaries using class x Top-1 calibration
+must rerun Step 4 before production prediction.
 
 The zonal-statistics pipeline performs the time-series pivot before writing the
 GeoParquet. The ML pipeline validates the one-row-per-parcel grain, holds out

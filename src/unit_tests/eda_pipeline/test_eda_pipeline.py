@@ -8,6 +8,7 @@ import pytest
 
 from eda_pipeline import EDAConfig, EDAPipeline
 from eda_pipeline.core import build_eda_artifacts
+from eda_pipeline.reporting import html as html_module
 from eda_pipeline.visuals import create_eda_plots
 from eda_pipeline.visuals import plots as plots_module
 
@@ -409,3 +410,39 @@ def test_pipeline_preserves_geodataframe_and_writes_annotated_geoparquet(tmp_pat
     )
     assert result["saved_paths"]["target_summary"].relative_to(tmp_path).as_posix() == "tables/target/target_summary.csv"
     assert "Proposed initial ML features (1): x" in capsys.readouterr().out
+
+
+def test_geometry_report_uses_target_heatmap_without_geometry_overview() -> None:
+    data = pd.DataFrame(
+        {
+            "target": ["A", "A", "B", "B"],
+            "feature": [1.0, 2.0, 3.0, 4.0],
+        }
+    )
+    config = EDAConfig(
+        output_dir="unused",
+        target_column="target",
+        target_task="classification",
+        include_html_report=False,
+        include_plots=False,
+        include_geospatial=False,
+    )
+    artifacts = build_eda_artifacts(data, config)
+    artifacts["geospatial_summary"] = pd.DataFrame({"metric": ["geometry_count"], "value": [4]})
+
+    tabs = html_module._build_report_tabs(
+        artifacts,
+        {
+            "geometry_overview": "geometry_overview.png",
+            "geometry_target_heatmap": "geometry_target_heatmap.png",
+        },
+    )
+
+    geometry_sections = next(tab["sections"] for tab in tabs if tab["id"] == "geometry")
+    report_image_keys = {
+        image_key
+        for section in geometry_sections
+        for image_key in section.get("images", {})
+    }
+    assert "geometry_overview" not in report_image_keys
+    assert "geometry_target_heatmap" in report_image_keys

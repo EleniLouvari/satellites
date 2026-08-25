@@ -261,11 +261,7 @@ def _build_report_tabs(artifacts: dict[str, Any], plot_paths: dict[str, Path]) -
     if not artifacts["geospatial_summary"].empty:
         geometry_sections = [
             {"title": "Geometry Column Profile", "table": _profile_for_types(column_profile, ["geometry"])},
-            {
-                "title": "Geometry Summary",
-                "table": artifacts["geospatial_summary"],
-                "images": _select_images(plot_paths, ["geometry_overview"]),
-            },
+            {"title": "Geometry Summary", "table": artifacts["geospatial_summary"]},
         ]
         if "geometry_target_heatmap" in plot_paths:
             geometry_sections.append(

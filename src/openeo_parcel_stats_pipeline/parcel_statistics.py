@@ -555,20 +555,26 @@ class ParcelStatisticsCalculator:
             pivoted = static.merge(pivoted, on=self.PARCEL_ID_FIELD, how="inner", validate="one_to_one")
 
         # Reattach source labels/metadata and geometry once, after all dated features have been generated.
-        parcel_attribute_columns = [column for column in self.parcels.columns if column not in {self.PARCEL_ID_FIELD, "geometry"}]
+        # Parcels are kept internally in WGS84 for openEO feature collections, but persisted results use the
+        # configured projected CRS so partition and merged GeoParquet outputs have a stable metric projection.
+        output_parcels = self.parcels.to_crs(epsg=self.working_epsg)
+        parcel_attribute_columns = [
+            column for column in output_parcels.columns if column not in {self.PARCEL_ID_FIELD, "geometry"}
+        ]
         collisions = sorted(set(parcel_attribute_columns).intersection(pivoted.columns))
         if collisions:
             raise ValueError(
                 "Parcel attributes collide with generated zonal-statistics columns. "
                 f"Rename these parcel columns before extraction: {collisions}"
             )
-        parcel_attributes = self.parcels[[self.PARCEL_ID_FIELD, *parcel_attribute_columns, "geometry"]]
+        parcel_attributes = output_parcels[[self.PARCEL_ID_FIELD, *parcel_attribute_columns, "geometry"]]
         result = parcel_attributes.merge(pivoted, on=self.PARCEL_ID_FIELD, how="inner", validate="one_to_one")
-        result = gpd.GeoDataFrame(result, geometry="geometry", crs=self.parcels.crs)
+        result = gpd.GeoDataFrame(result, geometry="geometry", crs=output_parcels.crs)
         self.parcel_logger.info(
-            "Reshaped %s parcel-period rows into %s ML-ready parcel rows with %s dated features.",
+            "Reshaped %s parcel-period rows into %s ML-ready parcel rows with %s dated features in EPSG:%s.",
             len(data),
             len(result),
             len(pivoted.columns) - len(static_columns) - 1,
+            self.working_epsg,
         )
         return result
