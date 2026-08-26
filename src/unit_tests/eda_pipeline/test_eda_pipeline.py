@@ -161,10 +161,11 @@ def test_target_comparison_boxplots_match_ecdf_colors(monkeypatch) -> None:
     )
     boxplot_calls = []
     ecdf_colors = []
+    legend_calls = []
 
     monkeypatch.setattr(plots_module, "_boxplot", lambda **kwargs: boxplot_calls.append(kwargs))
     monkeypatch.setattr("matplotlib.figure.Figure.savefig", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr("matplotlib.axes.Axes.legend", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("matplotlib.axes.Axes.legend", lambda *_args, **_kwargs: legend_calls.append(_kwargs))
 
     def capture_step(_axis, *_args, **kwargs):
         ecdf_colors.append(kwargs["color"])
@@ -186,6 +187,20 @@ def test_target_comparison_boxplots_match_ecdf_colors(monkeypatch) -> None:
     assert boxplot_calls[0]["hue_order"] == ["B", "A"]
     assert boxplot_calls[0]["saturation"] == 1
     assert ecdf_colors == list(expected_colors.values())
+    assert legend_calls == []
+
+
+def test_vertical_category_labels_are_smaller_and_truncated() -> None:
+    fig, axis = plots_module.plt.subplots()
+    axis.set_xticks([0, 1], labels=["short", "a_target_label_longer_than_fifteen"])
+
+    plots_module._format_vertical_category_labels(axis)
+
+    labels = axis.get_xticklabels()
+    assert [label.get_text() for label in labels] == ["short", "a_target_label_"]
+    assert all(label.get_rotation() == 90 for label in labels)
+    assert all(label.get_fontsize() == 8 for label in labels)
+    plots_module.plt.close(fig)
 
 
 def test_categorical_target_colors_are_consistent_across_report_plots(monkeypatch) -> None:

@@ -230,6 +230,7 @@ def test_write_pipeline_final_dashboard_exports_report_and_seasonal_peak_graph(m
         predict_dir=predict_dir,
         final_dashboard_dir=final_dashboard_dir,
         target_column="label",
+        prediction_column="label_prediction",
         scoring_primary="f1_macro",
     )
     train_metrics = pd.DataFrame(
@@ -255,7 +256,25 @@ def test_write_pipeline_final_dashboard_exports_report_and_seasonal_peak_graph(m
         "selected_score": 0.69,
     }
 
-    output = write_pipeline_final_dashboard(config, train_metrics, test_metrics, selection)
+    predictions = pd.DataFrame(
+        {
+            "label": ["110", "110", "119", "119"],
+            "label_prediction": ["110", "119", "119", "110"],
+            "prediction_borda_winner": ["110", "119", "119", "110"],
+            "prediction_class_oof_precision": [0.90, 0.68, 0.84, 0.71],
+            "prediction_class_reliability_level": ["HIGH", "MEDIUM", "HIGH", "MEDIUM"],
+            "prediction_rank_confidence_level": ["HIGH", "HIGH", "HIGH", "MEDIUM"],
+            "prediction_confidence_level": ["HIGH", "MEDIUM", "HIGH", "MEDIUM"],
+        }
+    )
+
+    output = write_pipeline_final_dashboard(
+        config,
+        train_metrics,
+        test_metrics,
+        selection,
+        prediction_df=predictions,
+    )
 
     assert output == final_dashboard_dir / "report.html"
     assert output.exists()
@@ -265,7 +284,11 @@ def test_write_pipeline_final_dashboard_exports_report_and_seasonal_peak_graph(m
     assert (final_dashboard_dir / "plots" / "seasonal_ndvi_high_low_by_class.png").exists()
     assert (final_dashboard_dir / "plots" / "seasonal_ndwi_high_low_by_class.png").exists()
     assert (final_dashboard_dir / "plots" / "selected_model_cv_folds.png").exists()
+    assert (final_dashboard_dir / "plots" / "borda_consensus_correctness_overview.png").exists()
+    assert (final_dashboard_dir / "plots" / "need_to_check_rate_by_predicted_class.png").exists()
+    assert (final_dashboard_dir / "plots" / "need_to_check_confidence_components.png").exists()
     assert (final_dashboard_dir / "data" / "monthly_index_high_low_by_class.csv").exists()
+    assert (final_dashboard_dir / "data" / "need_to_check_by_predicted_class.csv").exists()
     cv_models = set(pd.read_csv(final_dashboard_dir / "data" / "cv_model_ranking.csv")["model"])
     performance_models = set(pd.read_csv(final_dashboard_dir / "data" / "train_test_model_metrics.csv")["model"])
     assert cv_models == {"base", "other"}
@@ -276,6 +299,8 @@ def test_write_pipeline_final_dashboard_exports_report_and_seasonal_peak_graph(m
     assert "Monthly Highest and Lowest NDVI by Modeled Class" in html
     assert "Monthly Highest and Lowest NDWI by Modeled Class" in html
     assert "Train versus Spatial Holdout" in html
+    assert "Prediction Confidence Diagnostics" in html
+    assert "Unknown fill rows are excluded" in html
     assert "<td class='cell-success'>0.7200</td>" in html
     assert "<td class='cell-warning'>0.7400</td>" in html
     assert "<td class='cell-success'>0.7400</td>" not in html

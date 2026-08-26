@@ -105,13 +105,14 @@ ml_classification_pipeline/
 | `steps/prepare_step.py` | Step 2. Encodes labels, creates train/test partitions, builds stratified or spatial CV folds, and persists modeling context. |
 | `steps/train_step.py` | Step 3. Builds candidates, performs halving random search using `scoring_primary`, stores estimators and CV results, creates optional OOF probabilities, and supports incremental training. |
 | `steps/evaluate_step.py` | Step 4. Evaluates base models, produces holdout diagnostics, freezes selection from training CV, computes voting/ranking ensembles, and creates interpretability artifacts. |
-| `steps/predict_step.py` | Step 5. Refits the frozen strategy on all labeled rows, predicts the full dataset, adds probabilities and confidence fields, and persists final output. |
+| `steps/predict_step.py` | Step 5. Refits the frozen strategy on all labeled rows, predicts the full dataset, adds probabilities and confidence fields, persists final output, and refreshes the final dashboard with validation-backed confidence diagnostics. |
 
 ## `reporting/`: HTML report construction
 
 | File | Responsibility |
 |---|---|
 | `reporting/__init__.py` | Exports step-report and report-index writers. |
+| `reporting/confidence_diagnostics.py` | Builds shared Borda-consensus correctness summaries, class-risk tables, confidence-component matrices, confusion views, and the interactive confidence-flow diagram. |
 | `reporting/html.py` | Renders standalone styled HTML with key/value blocks, tables, semantic row colors, images, embeds, and links. |
 | `reporting/reports.py` | Assembles all step reports and the index, including metrics, CV rankings, selection explanations, Voting highlights, and artifact links. |
 

@@ -8,6 +8,10 @@ import pandas as pd
 
 from common_libraries.io_library import read_data
 
+from .confidence_diagnostics import (
+    export_prediction_confidence_diagnostics,
+    prepare_class_risk_display_table,
+)
 from .html import write_html_report
 
 
@@ -766,38 +770,254 @@ def write_predict_report(config, final_df: pd.DataFrame, selection: dict[str, An
     predicted_map_path = config.predict_dir / "plots" / "predicted_labels_map.png"
     if predicted_map_path.exists():
         images.append({"title": "Classified Predicted Labels Map", "path": predicted_map_path})
+
+    confidence_artifacts = export_prediction_confidence_diagnostics(
+        final_df,
+        config.target_column,
+        config.prediction_column,
+        config.predict_dir,
+        probability_threshold=getattr(config, "prediction_confidence_threshold", 0.60),
+    )
+    prediction_summary = {
+        "selection_type": selection["selection_type"],
+        "selected_models": selection["selected_models"],
+        "rows_total": len(final_df),
+        "rows_unknown_original": int(final_df[config.target_column].isna().sum()),
+        "confidence_method": (
+            "within-model ranks" if config.prediction_confidence_level_column in final_df else "maximum probability"
+        ),
+        "confidence_level_counts": (
+            final_df[config.prediction_confidence_level_column].value_counts().to_dict()
+            if config.prediction_confidence_level_column in final_df
+            else {}
+        ),
+    }
+    if confidence_artifacts is not None:
+        prediction_summary.update(confidence_artifacts.summary)
+
+    sections: list[dict[str, Any]] = [
+        {"title": "Prediction Summary", "kv": prediction_summary},
+        {"title": "Prediction Preview", "table": final_df[preview_columns + probability_columns].head(50)},
+    ]
+    if confidence_artifacts is not None:
+        overview_path = confidence_artifacts.images.get("overview")
+        if overview_path is not None:
+            sections.append(
+                {
+                    "title": "Borda Consensus and Prediction Correctness",
+                    "text": (
+                        "Correctness is evaluated only for parcels with a known original reference label. "
+                        "The four groups separate whether the Borda winner supports the final prediction from "
+                        "whether that prediction matches the reference label. Unlabeled fill rows are excluded."
+                    ),
+                    "images": [{"title": "Borda Consensus and Prediction Correctness", "path": overview_path}],
+                }
+            )
+        median_summary = confidence_artifacts.tables["confidence_metric_median_summary"].copy()
+        if not median_summary.empty:
+            numeric_columns = ["Correct", "Needs check", "Needs check minus Correct"]
+            for column in numeric_columns:
+                median_summary[column] = median_summary[column].map(
+                    lambda value: f"{value:.3f}" if pd.notna(value) else "n/a"
+                )
+            sections.append(
+                {
+                    "title": "Confidence Metric Median Comparison",
+                    "text": (
+                        "Medians compare correct predictions with the needs-check cohort after restricting both "
+                        "groups to rows where Borda agrees with the final prediction. The final column is "
+                        "Needs check minus Correct; warm cells are positive differences and cool cells are "
+                        "negative differences. For rank range, lower values indicate tighter model agreement."
+                    ),
+                    "table": median_summary,
+                    "numeric_cell_styles": {
+                        "Needs check minus Correct": {
+                            "positive": "danger",
+                            "negative": "success",
+                        }
+                    },
+                }
+            )
+        distribution_path = confidence_artifacts.images.get("distribution")
+        if distribution_path is not None:
+            distribution_guide = pd.DataFrame(
+                [
+                    {
+                        "Metric": "Maximum predicted probability",
+                        "More favorable": "Higher",
+                        "Meaning": "Probability assigned to the final predicted class.",
+                    },
+                    {
+                        "Metric": "Borda winner margin",
+                        "More favorable": "Higher",
+                        "Meaning": "Separation between the Borda winner and runner-up.",
+                    },
+                    {
+                        "Metric": "Mean Borda score",
+                        "More favorable": "Higher",
+                        "Meaning": "Overall ensemble support for the predicted class.",
+                    },
+                    {
+                        "Metric": "Rank range",
+                        "More favorable": "Lower",
+                        "Meaning": "Smaller values mean models ranked the class more consistently.",
+                    },
+                    {
+                        "Metric": "Top-1 model agreement",
+                        "More favorable": "Higher",
+                        "Meaning": "Share of models selecting the same class as their first choice.",
+                    },
+                    {
+                        "Metric": "OOF precision of predicted class",
+                        "More favorable": "Higher",
+                        "Meaning": "Historical precision of that class in out-of-fold validation.",
+                    },
+                ]
+            )
+            sections.append(
+                {
+                    "title": "Distribution Comparison",
+                    "text": (
+                        "This comparison uses known-label parcels where the Borda winner agrees with the final "
+                        "prediction. Blue represents correct predictions and orange represents incorrect "
+                        "predictions marked Needs check. In every panel, the horizontal axis is the confidence "
+                        "metric and the vertical axis is the share of that group at or below the selected value. "
+                        "For example, reading upward from an x value shows what percentage of Correct and Needs "
+                        "check parcels have a metric no greater than that value. For metrics where higher is more "
+                        "favorable, an orange curve that rises earlier or lies above the blue curve indicates that "
+                        "Needs check cases tend to have lower values. Rank range is reversed: lower is more "
+                        "favorable, so an earlier blue curve indicates tighter model agreement among correct "
+                        "predictions. A large gap between curves means the metric separates the groups well; "
+                        "substantial overlap means the metric is weak on its own. These curves compare group "
+                        "distributions and should not be read as the probability that an individual prediction is "
+                        "wrong."
+                    ),
+                    "images": [{"title": "Confidence Distribution Comparison", "path": distribution_path}],
+                    "table": distribution_guide,
+                }
+            )
+        joint_path = confidence_artifacts.images.get("joint_behavior")
+        if joint_path is not None:
+            sections.append(
+                {
+                    "title": "Joint Probability-Consensus Behavior",
+                    "text": (
+                        "The left panel estimates empirical needs-check risk within sufficiently populated "
+                        "probability-Borda hexagons; the right panel shows the supporting parcel density. Read the "
+                        "panels together so rare combinations are not mistaken for dominant failure modes."
+                    ),
+                    "images": [{"title": "Joint Probability-Consensus Behavior", "path": joint_path}],
+                }
+            )
+        class_confidence_path = confidence_artifacts.images.get("class_confidence_risk")
+        if class_confidence_path is not None:
+            sections.append(
+                {
+                    "title": "Class-Level Confidence Risk",
+                    "text": (
+                        "Each point is a predicted class: horizontal position is median maximum probability, "
+                        "vertical position is observed needs-check rate, point size is parcel support, and color "
+                        "is median out-of-fold class precision. Labels prioritize classes contributing the "
+                        "largest high-confidence error burden."
+                    ),
+                    "images": [{"title": "Class-Level Confidence Risk", "path": class_confidence_path}],
+                }
+            )
+        class_rate_path = confidence_artifacts.images.get("class_rate")
+        if class_rate_path is not None:
+            sections.append(
+                {
+                    "title": "Need-to-Check Rate by Predicted Class",
+                    "text": (
+                        "This view is restricted to parcels where Borda agrees with the final prediction. "
+                        "Rates use all such parcels in each predicted class; annotations retain the error count, "
+                        "denominator, and median out-of-fold class precision. Small classes should be interpreted "
+                        "with their support counts."
+                    ),
+                    "images": [{"title": "Need-to-Check Rate by Predicted Class", "path": class_rate_path}],
+                    "table": prepare_class_risk_display_table(
+                        confidence_artifacts.tables["need_to_check_by_predicted_class"]
+                    ),
+                }
+            )
+        reason_path = confidence_artifacts.images.get("reason_heatmap")
+        reason_embed = confidence_artifacts.embeds.get("reason_sankey")
+        if reason_path is not None or reason_embed is not None:
+            reason_section: dict[str, Any] = {
+                "title": "Confidence Components of Incorrect Consensus Predictions",
+                "text": (
+                    "For need-to-check parcels, the heatmap crosses predicted-class reliability with rank/ensemble "
+                    "confidence. The interactive flow then follows predicted class through class reliability, rank "
+                    "confidence, and final confidence. Large flows reveal combinations that repeatedly produce "
+                    "confident errors rather than isolated cases."
+                ),
+            }
+            if reason_path is not None:
+                reason_section["images"] = [
+                    {"title": "Class Reliability versus Rank Confidence", "path": reason_path}
+                ]
+            if reason_embed is not None:
+                reason_section["embeds"] = [
+                    {"title": "Need-to-Check Confidence Flow", "path": reason_embed}
+                ]
+            sections.append(reason_section)
+        confusion_path = confidence_artifacts.images.get("confusion")
+        if confusion_path is not None:
+            sections.append(
+                {
+                    "title": "Need-to-Check Class Confusions",
+                    "text": (
+                        "The matrix focuses on the twelve labels most often involved in incorrect Borda-consensus "
+                        "predictions. Color is normalized within each displayed true class while cell annotations "
+                        "show exact parcel counts, making systematic substitutions visible without losing support."
+                    ),
+                    "images": [{"title": "True versus Predicted Class Confusions", "path": confusion_path}],
+                }
+            )
+
+    sections.append(
+        {
+            "title": "Prediction Output Plots",
+            "text": "These plots summarize the filled-label distribution and spatial prediction coverage.",
+            "images": images,
+        }
+    )
+    output_links = [
+        {"label": "Final Predictions Joblib", "path": config.predict_dir / "final_predictions.joblib"},
+        {"label": "Final Predictions Preview CSV", "path": config.predict_dir / "final_predictions_preview.csv"},
+    ]
+    if confidence_artifacts is not None:
+        output_links.extend(
+            [
+                {
+                    "label": "Borda/Correctness Group Summary",
+                    "path": config.predict_dir / "data" / "diagnostic_group_summary.csv",
+                },
+                {
+                    "label": "Confidence Metric Median Summary",
+                    "path": config.predict_dir / "data" / "confidence_metric_median_summary.csv",
+                },
+                {
+                    "label": "Need-to-Check by Predicted Class",
+                    "path": config.predict_dir / "data" / "need_to_check_by_predicted_class.csv",
+                },
+                {
+                    "label": "Confidence Component Matrix",
+                    "path": config.predict_dir / "data" / "need_to_check_reason_matrix.csv",
+                },
+                {
+                    "label": "Need-to-Check Confusion Matrix",
+                    "path": config.predict_dir / "data" / "need_to_check_confusion.csv",
+                },
+            ]
+        )
+    sections.append({"title": "Saved Outputs", "links": output_links})
+
     write_html_report(
         config.predict_dir / "report.html",
         "Step 5 Report: Final Prediction Fill",
         "Predictions on the full dataset, including rows that originally had unknown labels.",
-        sections=[
-            {
-                "title": "Prediction Summary",
-                "kv": {
-                    "selection_type": selection["selection_type"],
-                    "selected_models": selection["selected_models"],
-                    "rows_total": len(final_df),
-                    "rows_unknown_original": int(final_df[config.target_column].isna().sum()),
-                    "confidence_method": (
-                        "within-model ranks" if config.prediction_confidence_level_column in final_df else "maximum probability"
-                    ),
-                    "confidence_level_counts": (
-                        final_df[config.prediction_confidence_level_column].value_counts().to_dict()
-                        if config.prediction_confidence_level_column in final_df
-                        else {}
-                    ),
-                },
-            },
-            {"title": "Prediction Preview", "table": final_df[preview_columns + probability_columns].head(50)},
-            {"title": "Plots", "images": images},
-            {
-                "title": "Saved Outputs",
-                "links": [
-                    {"label": "Final Predictions Joblib", "path": config.predict_dir / "final_predictions.joblib"},
-                    {"label": "Final Predictions Preview CSV", "path": config.predict_dir / "final_predictions_preview.csv"},
-                ],
-            },
-        ],
+        sections=sections,
     )
 
 

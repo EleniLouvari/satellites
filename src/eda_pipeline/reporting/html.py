@@ -545,7 +545,7 @@ def _style() -> str:
     return """
 <style>
 body { margin: 0; background: #f7f8f5; color: #1f2933; font-family: 'Segoe UI', Arial, sans-serif; }
-main { max-width: 1320px; margin: 0 auto; padding: 32px 20px 64px; }
+main { max-width: 1800px; margin: 0 auto; padding: 32px 20px 64px; }
 h1 { margin: 0 0 8px; color: #16302b; }
 h2 { color: #16302b; margin-top: 0; }
 .intro { margin-bottom: 24px; color: #52606d; }

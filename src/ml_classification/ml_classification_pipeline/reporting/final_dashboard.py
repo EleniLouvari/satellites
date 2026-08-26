@@ -28,6 +28,10 @@ import pyarrow.parquet as pq
 import seaborn as sns
 
 from ..core.persistence import ensure_dir, load_joblib
+from .confidence_diagnostics import (
+    export_prediction_confidence_diagnostics,
+    prepare_class_risk_display_table,
+)
 from .html import write_html_report
 
 
@@ -1091,8 +1095,9 @@ def write_pipeline_final_dashboard(
     train_metrics_df: pd.DataFrame,
     test_metrics_df: pd.DataFrame,
     selection: dict[str, Any],
+    prediction_df: pd.DataFrame | None = None,
 ) -> Path:
-    """Create the final HTML dashboard automatically after evaluation."""
+    """Create the final HTML dashboard, optionally including prediction diagnostics."""
     dashboard_dir = ensure_dir(config.final_dashboard_dir)
     plots_dir = ensure_dir(dashboard_dir / "plots")
     data_dir = ensure_dir(dashboard_dir / "data")
@@ -1171,6 +1176,17 @@ def write_pipeline_final_dashboard(
     cv_ranking.to_csv(data_dir / "cv_model_ranking.csv", index=False)
     performance_table.to_csv(data_dir / "train_test_model_metrics.csv", index=False)
 
+    confidence_artifacts = None
+    if prediction_df is not None:
+        prediction_column = getattr(config, "prediction_column", f"{config.target_column}_prediction")
+        confidence_artifacts = export_prediction_confidence_diagnostics(
+            prediction_df,
+            config.target_column,
+            prediction_column,
+            dashboard_dir,
+            include=("overview", "class_rate", "reason_heatmap"),
+        )
+
     strategy_test = selected_test_metrics.loc[selected_test_metrics["model"].astype(str) == strategy_model].iloc[0]
     strategy_train = selected_train_metrics.loc[selected_train_metrics["model"].astype(str) == strategy_model]
     train_score = float(strategy_train.iloc[0][primary_metric]) if not strategy_train.empty else np.nan
@@ -1188,6 +1204,18 @@ def write_pipeline_final_dashboard(
         f"test_{primary_metric}": test_score,
         f"train_test_{primary_metric}_gap": float(train_score - test_score) if not np.isnan(train_score) else np.nan,
     }
+    if confidence_artifacts is not None:
+        summary.update(
+            {
+                "prediction_validation_rows": confidence_artifacts.summary["validation_rows_with_reference"],
+                "prediction_accuracy": confidence_artifacts.summary["prediction_accuracy"],
+                "borda_agreement_rate": confidence_artifacts.summary["borda_agreement_rate"],
+                "need_to_check_rows": confidence_artifacts.summary["need_to_check_rows"],
+                "need_to_check_rate_among_borda_agreement": confidence_artifacts.summary[
+                    "need_to_check_rate_among_borda_agreement"
+                ],
+            }
+        )
 
     probability_optimization = selection.get("probability_optimization") or {}
     probability_table = pd.DataFrame(
@@ -1218,6 +1246,23 @@ def write_pipeline_final_dashboard(
             {"label": "Monthly NDVI/NDWI by Class", "path": data_dir / "monthly_index_by_class.csv"},
             {"label": "Monthly High/Low Index Values by Class", "path": data_dir / "monthly_index_high_low_by_class.csv"},
         ]
+    if confidence_artifacts is not None:
+        data_links.extend(
+            [
+                {
+                    "label": "Borda/Correctness Group Summary",
+                    "path": data_dir / "diagnostic_group_summary.csv",
+                },
+                {
+                    "label": "Need-to-Check by Predicted Class",
+                    "path": data_dir / "need_to_check_by_predicted_class.csv",
+                },
+                {
+                    "label": "Confidence Component Matrix",
+                    "path": data_dir / "need_to_check_reason_matrix.csv",
+                },
+            ]
+        )
     test_metric_column_styles = {
         str(column): "success" for column in performance_table.columns if str(column).startswith("test_")
     }
@@ -1275,27 +1320,63 @@ def write_pipeline_final_dashboard(
             "cell_styles_where": voting_test_cell_styles,
             "highlight_rows_where": {"column": "model", "values": [strategy_model]},
         },
-        {
-            "title": "Best Model and Voting Result",
-            "kv": {
-                "selection_type": selection.get("selection_type"),
-                "selected_models": list(selection.get("selected_models", [])),
-                "selected_metric": selection.get("selected_metric"),
-                "selected_cv_score": selection.get("selected_score"),
-                f"holdout_{primary_metric}": test_score,
-            },
-            "table": probability_table,
-        },
-        {
-            "title": "Dashboard Data",
-            "links": data_links,
-        },
     ]
+    if confidence_artifacts is not None:
+        confidence_images = []
+        for key, title in (
+            ("overview", "Borda Consensus and Prediction Correctness"),
+            ("class_rate", "Need-to-Check Rate by Predicted Class"),
+            ("reason_heatmap", "Confidence Components of Incorrect Consensus Predictions"),
+        ):
+            path = confidence_artifacts.images.get(key)
+            if path is not None:
+                confidence_images.append({"title": title, "path": path})
+        sections.append(
+            {
+                "title": "Prediction Confidence Diagnostics",
+                "text": (
+                    "These diagnostics use only parcels with known original reference labels. The overview shows "
+                    "whether Borda consensus aligns with correctness; the class chart identifies where incorrect "
+                    "consensus predictions concentrate; and the component matrix shows how class reliability and "
+                    "rank confidence combine inside the need-to-check cohort. Unknown fill rows are excluded from "
+                    "all correctness rates."
+                ),
+                "images": confidence_images,
+                "table": prepare_class_risk_display_table(
+                    confidence_artifacts.tables["need_to_check_by_predicted_class"],
+                    limit=15,
+                ),
+            }
+        )
+    sections.extend(
+        [
+            {
+                "title": "Best Model and Voting Result",
+                "kv": {
+                    "selection_type": selection.get("selection_type"),
+                    "selected_models": list(selection.get("selected_models", [])),
+                    "selected_metric": selection.get("selected_metric"),
+                    "selected_cv_score": selection.get("selected_score"),
+                    f"holdout_{primary_metric}": test_score,
+                },
+                "table": probability_table,
+            },
+            {
+                "title": "Dashboard Data",
+                "links": data_links,
+            },
+        ]
+    )
     output_path = dashboard_dir / "report.html"
     write_html_report(
         output_path,
         "Final Crop Classification Dashboard",
-        "Study-area coverage, crop seasonality, cross-validation stability, holdout performance, and final model selection.",
+        (
+            "Study-area coverage, crop seasonality, cross-validation stability, holdout performance, final model "
+            "selection, and prediction confidence diagnostics."
+            if confidence_artifacts is not None
+            else "Study-area coverage, crop seasonality, cross-validation stability, holdout performance, and final model selection."
+        ),
         sections,
     )
     return output_path

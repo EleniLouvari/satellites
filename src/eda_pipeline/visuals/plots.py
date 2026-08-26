@@ -568,6 +568,13 @@ def _apply_target_color_mapping(series: pd.Series, target_colors: dict[str, str]
     return values.where(values.isna() | values.isin(retained_levels), "Other")
 
 
+def _format_vertical_category_labels(axis, max_characters: int = 15, font_size: int = 8) -> None:
+    """Truncate crowded category labels and display them vertically."""
+    labels = [tick_label.get_text()[:max_characters] for tick_label in axis.get_xticklabels()]
+    axis.set_xticks(axis.get_xticks(), labels=labels)
+    axis.tick_params(axis="x", labelrotation=90, labelsize=font_size)
+
+
 def _plot_numeric_target_median_percentile_heatmap(
     df: pd.DataFrame, columns: list[str], target_column: str, max_target_levels: int, output_path: Path
 ) -> bool:
@@ -669,7 +676,7 @@ def _plot_numeric_target_distribution_comparison(
             ax=box_axis,
         )
         box_axis.set_title(f"{column}: spread by {target_column}")
-        box_axis.tick_params(axis="x", labelrotation=30)
+        _format_vertical_category_labels(box_axis)
         for level_index, level in enumerate(order):
             values = np.sort(plot_df.loc[plot_df[target_column] == level, column].to_numpy(dtype=float))
             if values.size == 0:
@@ -687,7 +694,6 @@ def _plot_numeric_target_distribution_comparison(
         ecdf_axis.set_xlabel(column)
         ecdf_axis.set_ylabel("Cumulative proportion")
         ecdf_axis.set_ylim(0, 1.02)
-        ecdf_axis.legend(loc="best", fontsize=8)
     fig.suptitle(f"Numeric Feature Distributions by Target: {target_column}", y=1.002)
     fig.tight_layout()
     fig.savefig(output_path, dpi=140, bbox_inches="tight")

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
+import pandas as pd
 
 # Prediction reloads persisted training artifacts so inference matches the fitted feature space.
 from ..core.metrics import load_modeling_context
@@ -13,6 +14,7 @@ from ..core.class_reliability import combine_confidence_components, get_class_re
 from ..core.rank_confidence import classify_ensemble_rank_based, rank_confidence_thresholds_from_config
 from ..core.selection import fit_and_predict_selected_strategy
 from ..reporting import write_index_report, write_predict_report
+from ..reporting.final_dashboard import write_pipeline_final_dashboard
 from ..core import PipelineStepBase
 from ..visuals import save_predicted_labels_map, save_prediction_fill_plot
 
@@ -336,6 +338,13 @@ class PredictStep(PipelineStepBase):
         self._save_prediction_plots(final_df)
 
         write_predict_report(self.config, final_df, selection)
+        write_pipeline_final_dashboard(
+            self.config,
+            pd.read_csv(self.config.evaluate_dir / "model_metrics_train_with_voting.csv"),
+            pd.read_csv(self.config.evaluate_dir / "model_metrics_test_with_voting.csv"),
+            selection,
+            prediction_df=final_df,
+        )
         write_index_report(self.config)
         print_formatted_txt(f"Filled {rows_filled} unknown labels.", "RESULTS")
         return predict_summary
