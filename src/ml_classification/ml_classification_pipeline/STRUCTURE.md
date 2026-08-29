@@ -233,9 +233,27 @@ project_dir/
     |-- predict_summary.json
     |-- schema_manifest.json
     |-- report.html
+    |-- data/
+    |   |-- inspection_need_summary.csv
+    |   |-- inspection_check_type_summary.csv
+    |   |-- inspection_priority_by_predicted_class.csv
+    |   |-- inspection_declaration_conflict_matrix.csv
+    |   |-- inspection_evidence_quality_matrix.csv
+    |   |-- inspection_confidence_review_comparison.csv
+    |   |-- inspection_need_by_declaration_status.csv
+    |   |-- inspection_score_by_confidence_data.csv
+    |   `-- inspection_top_priority_parcels.csv
     `-- plots/
         |-- filled_target_distribution.png
-        `-- predicted_labels_map.png              [optional]
+        |-- inspection_risk_relationships.png
+        |-- inspection_check_type_distribution.png
+        |-- inspection_priority_by_predicted_class.png
+        |-- inspection_need_by_declaration_status.png
+        |-- inspection_score_confidence_data_heatmap.png
+        |-- inspection_declaration_conflicts.png   [when conflicts exist]
+        |-- inspection_evidence_quality_heatmap.png
+        |-- inspection_confidence_review_comparison.png
+        `-- predicted_labels_map.png               [optional]
 ```
 
 ## Generated-file reference
@@ -301,10 +319,11 @@ project_dir/
 
 | File | Contents |
 |---|---|
-| `final_predictions.joblib` | Complete output with predictions, filled target, class probabilities, `prediction_max_probability`, rank-confidence level and diagnostics, and review flag. |
-| `final_predictions_preview.csv` | Lightweight CSV with identifiers, target/prediction fields, and rank-confidence diagnostics. |
+| `final_predictions.joblib` | Complete output with predictions, filled target, class probabilities, rank-confidence diagnostics, independent model/data/geometry risks, declaration agreement, label-aware inspection need/check type, and explainable reasons. |
+| `final_predictions_preview.csv` | Full-row lightweight CSV with identifiers, target/prediction fields, rank-confidence diagnostics, declaration agreement, and inspection-priority fields. |
 | `predict_summary.json` | Prediction counts, confidence diagnostics, selected strategy, output path, and schema metadata. |
-| `plots/*` | Filled-target distribution and optional predicted-label map. |
+| `data/inspection_*.csv` | Operational inspection summaries, matrices, predicted-crop rates, and the parcel audit queue used by the report. |
+| `plots/*` | Filled-target distribution, enlarged inspection diagnostics, and optional predicted-label map. |
 
 Every step-level `schema_manifest.json` records the expected JSON and CSV
 contracts for that step. JSON summary files also include an `_schema` object

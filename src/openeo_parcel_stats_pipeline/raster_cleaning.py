@@ -495,6 +495,36 @@ class RasterCleaner:
         result = self._merge_filled_values(variable_values, filled, eligible_mask, fill_allowed)
         return (result, null_counts) if return_null_counts else result
 
+    def _fill_temporal_cube_only(self, observed: np.ndarray, eligible_mask: np.ndarray) -> np.ndarray:
+        """Return the cube state immediately after temporal filling.
+
+        This reproduces the temporal stage of :meth:`_fill_variable_cube`
+        without running any spatial operation.  Keeping this intermediate
+        state lets parcel aggregation attribute every imputed output pixel to
+        either temporal or spatial filling.
+        """
+        if not getattr(self, "fill_nulls", False):
+            return observed.copy()
+
+        eligible_count = int(eligible_mask.sum())
+        if eligible_count == 0:
+            return observed.copy()
+
+        temporally_filled = observed.copy()
+        for variable_index in range(observed.shape[1]):
+            variable_values = observed[:, variable_index]
+            observed_counts = np.isfinite(variable_values[:, eligible_mask]).sum(axis=1)
+            fill_allowed = observed_counts / eligible_count >= self.minimum_observed_fraction_for_fill
+            fill_source = variable_values.copy()
+            # Match the main filling path: weak periods are neither targets nor
+            # temporal sources for other periods.
+            fill_source[~fill_allowed] = np.nan
+            candidate = self._fill_temporal_neighbors(fill_source)
+            temporally_filled[:, variable_index] = self._merge_filled_values(
+                variable_values, candidate, eligible_mask, fill_allowed
+            )
+        return temporally_filled
+
     def _build_cleaning_report(
         self,
         cleaned: np.ndarray,

@@ -57,7 +57,7 @@ def _default_tune_params() -> dict[str, dict[str, list]]:
                 "model__learning_rate_init": [0.0001, 0.0005, 0.001],
             },
             "tensorflow_neural_network": {
-                "model__hidden_layer_sizes": [(32,), (64,), (128,), (128, 64)],
+                "model__hidden_layer_sizes": [(32,), (64,), (64, 32)],
                 "model__activation": ["relu", "selu", "gelu"],
                 "model__dropout_rate": [0.0, 0.2, 0.4],
                 "model__use_batch_normalization": [False, True],
@@ -246,6 +246,23 @@ class ClassificationPipelineConfig:
     prediction_review_column: str = "prediction_needs_review"
 
     # ================================================================================
+    # Explainable Inspection Priority
+    # Independent model, source-data, and geometry risks combined after prediction
+    # ================================================================================
+    inspection_scoring_enabled: bool = True
+    inspection_data_reliability_column: str = "data_reliability_score"
+    inspection_geometry_complexity_column: str = "geom_shape_complexity_score"
+    inspection_model_weight: float = 0.60
+    inspection_data_weight: float = 0.25
+    inspection_geometry_weight: float = 0.15
+    inspection_low_data_reliability_threshold: float = 0.60
+    inspection_medium_data_reliability_threshold: float = 0.80
+    inspection_medium_geometry_risk_threshold: float = 0.50
+    inspection_high_geometry_risk_threshold: float = 0.75
+    inspection_medium_score_threshold: float = 25.0
+    inspection_high_score_threshold: float = 50.0
+
+    # ================================================================================
     # Rank-Based Ensemble Confidence
     # Qualitative confidence derived from within-model class rankings
     # ================================================================================
@@ -365,6 +382,8 @@ class ClassificationPipelineConfig:
             raise TypeError("rank_confidence_enabled must be a bool.")
         if not isinstance(self.class_reliability_enabled, bool):
             raise TypeError("class_reliability_enabled must be a bool.")
+        if not isinstance(self.inspection_scoring_enabled, bool):
+            raise TypeError("inspection_scoring_enabled must be a bool.")
         for model_name, param_grid in self.tune_params.items():
             if not isinstance(param_grid, dict):
                 raise TypeError(f"tune_params['{model_name}'] must be a dictionary.")
@@ -474,6 +493,17 @@ class ClassificationPipelineConfig:
                 0.0 <= float(self.prediction_confidence_threshold) <= 1.0,
                 "prediction_confidence_threshold must be between 0 and 1.",
             ),
+            (
+                all(
+                    float(weight) >= 0.0
+                    for weight in (
+                        self.inspection_model_weight,
+                        self.inspection_data_weight,
+                        self.inspection_geometry_weight,
+                    )
+                ),
+                "Inspection risk weights must be non-negative.",
+            ),
             (int(self.rank_confidence_minimum_models) >= 1, "rank_confidence_minimum_models must be >= 1."),
             (
                 int(self.class_reliability_minimum_oof_support) >= 1,
@@ -496,6 +526,30 @@ class ClassificationPipelineConfig:
         reliability_medium = float(self.class_reliability_medium_min_precision)
         if not 0.0 <= reliability_medium <= reliability_high <= 1.0:
             raise ValueError("Class-reliability precision thresholds must satisfy 0 <= MEDIUM <= HIGH <= 1.")
+        inspection_weight_sum = sum(
+            map(
+                float,
+                (
+                    self.inspection_model_weight,
+                    self.inspection_data_weight,
+                    self.inspection_geometry_weight,
+                ),
+            )
+        )
+        if abs(inspection_weight_sum - 1.0) > 1e-9:
+            raise ValueError("Inspection risk weights must sum to 1.0.")
+        data_low = float(self.inspection_low_data_reliability_threshold)
+        data_medium = float(self.inspection_medium_data_reliability_threshold)
+        if not 0.0 <= data_low <= data_medium <= 1.0:
+            raise ValueError("Inspection data-reliability thresholds must satisfy 0 <= LOW <= MEDIUM <= 1.")
+        geometry_medium = float(self.inspection_medium_geometry_risk_threshold)
+        geometry_high = float(self.inspection_high_geometry_risk_threshold)
+        if not 0.0 <= geometry_medium <= geometry_high <= 1.0:
+            raise ValueError("Inspection geometry-risk thresholds must satisfy 0 <= MEDIUM <= HIGH <= 1.")
+        score_medium = float(self.inspection_medium_score_threshold)
+        score_high = float(self.inspection_high_score_threshold)
+        if not 0.0 <= score_medium <= score_high <= 100.0:
+            raise ValueError("Inspection score thresholds must satisfy 0 <= MEDIUM <= HIGH <= 100.")
 
     def _apply_safe_caps(self) -> None:
         """Apply safe caps to dependent limits and emit warnings when clipped."""

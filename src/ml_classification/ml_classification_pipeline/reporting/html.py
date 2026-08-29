@@ -37,39 +37,120 @@ def write_html_report(output_path: str | Path, title: str, intro: str, sections:
         f"<h1>{escape(title)}</h1>",
         f"<p class='intro'>{escape(intro)}</p>",
     ]
-    for section in sections:
-        body.append("<section class='card'>")
-        body.append(f"<h2>{escape(section['title'])}</h2>")
-        if section.get("text"):
-            body.append(f"<p>{escape(section['text'])}</p>")
-        if section.get("kv"):
-            body.append(_render_key_values(section["kv"]))
-        if section.get("table") is not None:
-            body.append(
-                _render_table(
-                    section["table"],
-                    highlight_rows_where=section.get("highlight_rows_where"),
-                    row_styles_where=section.get("row_styles_where"),
-                    column_styles=section.get("column_styles"),
-                    numeric_cell_styles=section.get("numeric_cell_styles"),
-                    cell_styles_where=section.get("cell_styles_where"),
-                    compact_first_column=section.get("compact_first_column", True),
-                )
-            )
-        if section.get("images"):
-            body.append(_render_images(section["images"], output_path.parent))
-        if section.get("embeds"):
-            body.append(_render_embeds(section["embeds"], output_path.parent))
-        if section.get("links"):
-            body.append(_render_links(section["links"], output_path.parent))
-        body.append("</section>")
-    body.extend(["</main>", "</body>", "</html>"])
+    has_tabs = False
+    for section_index, section in enumerate(sections):
+        if section.get("tabs"):
+            has_tabs = True
+            body.append(_render_tabs(section, output_path.parent, section_index))
+        else:
+            body.append(_render_section(section, output_path.parent))
+    body.extend(["</main>"])
+    if has_tabs:
+        body.append(_tab_script())
+    body.extend(["</body>", "</html>"])
     output_path.write_text("\n".join(body), encoding="utf-8")
     append_log(f"Generated HTML report: {output_path}", level="INFO")
-    if section.get("open_html_report", False):
+    if any(section.get("open_html_report", False) for section in sections):
         import webbrowser
 
         webbrowser.open(output_path.as_uri())
+
+
+def _render_section(section: dict[str, Any], report_dir: Path, css_class: str = "card") -> str:
+    """Render one ordinary report section for the page or a tab panel."""
+    parts = [f"<section class='{escape(css_class)}'>", f"<h2>{escape(section['title'])}</h2>"]
+    if section.get("text"):
+        parts.append(f"<p>{escape(section['text'])}</p>")
+    if section.get("kv"):
+        parts.append(_render_key_values(section["kv"]))
+    if section.get("table") is not None:
+        parts.append(
+            _render_table(
+                section["table"],
+                highlight_rows_where=section.get("highlight_rows_where"),
+                row_styles_where=section.get("row_styles_where"),
+                column_styles=section.get("column_styles"),
+                numeric_cell_styles=section.get("numeric_cell_styles"),
+                cell_styles_where=section.get("cell_styles_where"),
+                compact_first_column=section.get("compact_first_column", True),
+            )
+        )
+    if section.get("images"):
+        parts.append(_render_images(section["images"], report_dir))
+    if section.get("embeds"):
+        parts.append(_render_embeds(section["embeds"], report_dir))
+    if section.get("links"):
+        parts.append(_render_links(section["links"], report_dir))
+    parts.append("</section>")
+    return "".join(parts)
+
+
+def _render_tabs(section: dict[str, Any], report_dir: Path, group_index: int) -> str:
+    """Render accessible tab controls containing complete report sections."""
+    tabs = section["tabs"]
+    group_id = f"report-tabs-{group_index}"
+    parts = ["<section class='card tab-card'>", f"<h2>{escape(section['title'])}</h2>"]
+    if section.get("text"):
+        parts.append(f"<p>{escape(section['text'])}</p>")
+    parts.append(f"<div class='tab-list' role='tablist' aria-label='{escape(section['title'])}'>")
+    for tab_index, tab in enumerate(tabs):
+        tab_id = f"{group_id}-tab-{tab_index}"
+        panel_id = f"{group_id}-panel-{tab_index}"
+        selected = "true" if tab_index == 0 else "false"
+        active_class = " active" if tab_index == 0 else ""
+        tab_index_value = "0" if tab_index == 0 else "-1"
+        parts.append(
+            f"<button class='tab-button{active_class}' role='tab' id='{tab_id}' "
+            f"aria-selected='{selected}' aria-controls='{panel_id}' tabindex='{tab_index_value}'>"
+            f"{escape(tab['label'])}</button>"
+        )
+    parts.append("</div>")
+    for tab_index, tab in enumerate(tabs):
+        tab_id = f"{group_id}-tab-{tab_index}"
+        panel_id = f"{group_id}-panel-{tab_index}"
+        hidden = "" if tab_index == 0 else " hidden"
+        parts.append(
+            f"<div class='tab-panel' role='tabpanel' id='{panel_id}' aria-labelledby='{tab_id}'{hidden}>"
+        )
+        for tab_section in tab.get("sections", []):
+            parts.append(_render_section(tab_section, report_dir, css_class="tab-section"))
+        parts.append("</div>")
+    parts.append("</section>")
+    return "".join(parts)
+
+
+def _tab_script() -> str:
+    """Return the small inline controller used by accessible report tabs."""
+    return """
+<script>
+document.querySelectorAll('.tab-list').forEach((tabList) => {
+  const tabs = Array.from(tabList.querySelectorAll('[role="tab"]'));
+  const activate = (nextTab) => {
+    tabs.forEach((tab) => {
+      const selected = tab === nextTab;
+      tab.classList.toggle('active', selected);
+      tab.setAttribute('aria-selected', String(selected));
+      tab.tabIndex = selected ? 0 : -1;
+      document.getElementById(tab.getAttribute('aria-controls')).hidden = !selected;
+    });
+    nextTab.focus();
+  };
+  tabs.forEach((tab, index) => {
+    tab.addEventListener('click', () => activate(tab));
+    tab.addEventListener('keydown', (event) => {
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault();
+      let nextIndex = index;
+      if (event.key === 'ArrowRight') nextIndex = (index + 1) % tabs.length;
+      if (event.key === 'ArrowLeft') nextIndex = (index - 1 + tabs.length) % tabs.length;
+      if (event.key === 'Home') nextIndex = 0;
+      if (event.key === 'End') nextIndex = tabs.length - 1;
+      activate(tabs[nextIndex]);
+    });
+  });
+});
+</script>
+"""
 
 
 def _render_key_values(values: dict[str, Any]) -> str:
@@ -244,6 +325,18 @@ h1, h2 { color: #12343b; }
 .intro { font-size: 1.05rem; max-width: 900px; }
 .card { background: #ffffff; border-radius: 18px; padding: 22px 24px; margin: 20px 0;
 box-shadow: 0 8px 24px rgba(18, 52, 59, 0.08); }
+.tab-card { padding-bottom: 28px; }
+.tab-list { display: flex; flex-wrap: wrap; gap: 10px; margin: 18px 0 8px; border-bottom: 1px solid #d9e2ec; }
+.tab-button { appearance: none; border: 0; border-bottom: 3px solid transparent; background: transparent;
+color: #486581; cursor: pointer; font: inherit; font-weight: 700; padding: 12px 18px; }
+.tab-button:hover { color: #0f766e; background: #f0fdfa; }
+.tab-button:focus-visible { outline: 3px solid #f2b134; outline-offset: 2px; }
+.tab-button.active { color: #12343b; border-bottom-color: #0f766e; }
+.tab-panel { padding-top: 8px; }
+.tab-panel[hidden] { display: none; }
+.tab-section { padding: 24px 0 30px; border-bottom: 1px solid #e5e7eb; }
+.tab-section:last-child { border-bottom: 0; padding-bottom: 0; }
+.tab-section h2 { font-size: 1.35rem; margin-top: 0; }
 .kv-table, .data-table { width: 100%; border-collapse: collapse; margin-top: 12px; }
 .kv-table th, .kv-table td, .data-table th, .data-table td { border-bottom: 1px solid #e5e7eb;
 padding: 12px 16px; text-align: left; vertical-align: top; }
@@ -280,5 +373,10 @@ min-width: 130px; line-height: 1.35; border-right: 1px solid #e5e7eb; }
 .link-list a { color: #0f766e; text-decoration: none; }
 .link-list a:hover { text-decoration: underline; }
 .muted { color: #7b8794; }
+@media print {
+  .tab-list { display: none; }
+  .tab-panel[hidden] { display: block; }
+  .tab-panel::before { content: attr(aria-labelledby); display: none; }
+}
 </style>
 """

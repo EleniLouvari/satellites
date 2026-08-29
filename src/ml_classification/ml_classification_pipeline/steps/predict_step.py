@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import Any
 
 import numpy as np
@@ -9,6 +10,7 @@ import pandas as pd
 
 # Prediction reloads persisted training artifacts so inference matches the fitted feature space.
 from ..core.metrics import load_modeling_context
+from ..core.inspection import INSPECTION_OUTPUT_COLUMNS, calculate_inspection_metrics
 from ..core.persistence import load_joblib, load_json, print_formatted_txt, save_frame_csv, save_joblib, save_json, time_decorator
 from ..core.class_reliability import combine_confidence_components, get_class_reliability
 from ..core.rank_confidence import classify_ensemble_rank_based, rank_confidence_thresholds_from_config
@@ -16,7 +18,7 @@ from ..core.selection import fit_and_predict_selected_strategy
 from ..reporting import write_index_report, write_predict_report
 from ..reporting.final_dashboard import write_pipeline_final_dashboard
 from ..core import PipelineStepBase
-from ..visuals import save_predicted_labels_map, save_prediction_fill_plot
+from ..visuals import save_inspection_relationship_plot, save_predicted_labels_map, save_prediction_fill_plot
 
 
 class PredictStep(PipelineStepBase):
@@ -239,6 +241,9 @@ class PredictStep(PipelineStepBase):
             "prediction_rank_models_used",
             "prediction_rank_confidence_valid",
             "prediction_rank_confidence_reason",
+            self.config.inspection_data_reliability_column,
+            self.config.inspection_geometry_complexity_column,
+            *INSPECTION_OUTPUT_COLUMNS,
         ]
         preview_columns.extend(column for column in optional_confidence_columns if column in final_df.columns)
         # Persist full predictions, a compact CSV preview, and the summary JSON.
@@ -264,6 +269,54 @@ class PredictStep(PipelineStepBase):
             final_df, self.config.prediction_filled_column, plots / "predicted_labels_map.png",
             title="Classified Predicted Labels Map", max_geometries=self.config.max_map_geometries,
         )
+        save_inspection_relationship_plot(
+            final_df,
+            plots / "inspection_risk_relationships.png",
+            self.config,
+        )
+
+    def _add_inspection_metrics(self, final_df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, Any]]:
+        """Attach inspection risks when all three independent inputs exist."""
+        # Allow deployments to disable the complete inspection layer without changing prediction.
+        if not self.config.inspection_scoring_enabled:
+            return final_df, {"inspection_scoring_enabled": False, "inspection_scoring_available": False}
+
+        # Declaration columns are optional; only the three label-independent risk inputs are required.
+        required = {
+            self.config.prediction_confidence_level_column,
+            self.config.inspection_data_reliability_column,
+            self.config.inspection_geometry_complexity_column,
+        }
+        missing = sorted(required.difference(final_df.columns))
+        if missing:
+            warnings.warn(
+                f"Inspection scoring skipped because required columns are missing: {missing}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return final_df, {
+                "inspection_scoring_enabled": True,
+                "inspection_scoring_available": False,
+                "inspection_missing_columns": missing,
+            }
+
+        # The helper adds score, label agreement, final need, check type, and reasons per parcel.
+        scored = calculate_inspection_metrics(final_df, self.config)
+        mean_score = scored["inspection_score"].mean()
+        # Persist aggregate counts in predict_summary.json for fast operational monitoring.
+        return scored, {
+            "inspection_scoring_enabled": True,
+            "inspection_scoring_available": True,
+            "inspection_weights": {
+                "model": self.config.inspection_model_weight,
+                "data": self.config.inspection_data_weight,
+                "geometry": self.config.inspection_geometry_weight,
+            },
+            "inspection_need_counts": scored["inspection_need"].value_counts(dropna=False).to_dict(),
+            "inspection_check_type_counts": scored["inspection_check_type"].value_counts(dropna=False).to_dict(),
+            "label_prediction_status_counts": scored["label_prediction_status"].value_counts(dropna=False).to_dict(),
+            "inspection_score_mean": None if pd.isna(mean_score) else float(mean_score),
+        }
 
     @time_decorator
     def run_predict(self) -> dict[str, Any]:
@@ -304,6 +357,7 @@ class PredictStep(PipelineStepBase):
             selection["labels"],
             rank_confidence=rank_confidence,
         )
+        final_df, inspection_summary = self._add_inspection_metrics(final_df)
         unknown_rows_before = int(unknown_mask.sum())
         # Fill all unknown rows with predictions and mark those needing review based on confidence.
         rows_filled = int(final_df.loc[unknown_mask, self.config.prediction_filled_column].notna().sum())
@@ -329,6 +383,7 @@ class PredictStep(PipelineStepBase):
                 else {}
             ),
             "output_path": str(self.config.predict_dir / "final_predictions.joblib"),
+            **inspection_summary,
         }
         if rank_confidence is None:
             summary_values["maximum_probability_review_threshold"] = self.config.prediction_confidence_threshold

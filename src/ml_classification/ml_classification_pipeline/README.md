@@ -153,6 +153,7 @@ By default, Step 4 uses selected-member OOF soft-voting predictions to calculate
 one precision value per predicted class. No Top-1 bins, neighboring-bin pooling,
 or class pooling are used. Classes with fewer than
 `class_reliability_minimum_oof_support` predictions remain invalid and `LOW`.
+
 The defaults map OOF class precision `>=0.80` to `HIGH`, `>=0.60` to `MEDIUM`,
 and lower precision to `LOW`. Final confidence is the lower of parcel rank
 confidence and this frozen class reliability level.
@@ -166,6 +167,45 @@ on the test set. Step 4 freezes the OOF class table and rank thresholds in
 configuration later changes. The untouched holdout confidence artifacts verify
 the frozen contract. Old selection summaries using class x Top-1 calibration
 must rerun Step 4 before production prediction.
+
+Step 5 also creates an independent inspection-priority assessment when
+`data_reliability_score` and `geom_shape_complexity_score` are available:
+
+```text
+confidence_risk = HIGH: 0.0, MEDIUM: 0.5, LOW: 1.0
+data_risk = 1 - data_reliability_score
+geometry_risk = percentile_rank(geom_shape_complexity_score)
+inspection_score = 100 * (0.60*confidence_risk + 0.25*data_risk + 0.15*geometry_risk)
+```
+
+The numeric score is deliberately independent of the farmer declaration. When
+the declared target is available, Step 5 compares it with the prediction and
+uses that comparison only as an operational policy overlay. It writes
+`label_prediction_status`, the score-derived `inspection_need_base`, and the
+final label-aware `inspection_need`.
+
+Rows needing attention are separated into two mutually exclusive types:
+
+- `DECLARATION_CONFLICT`: high-confidence prediction and reliable EO data support
+  a crop different from the farmer declaration. A clean-geometry conflict is
+  promoted to `VERY_HIGH` with reason `STRONG_DECLARATION_CONFLICT`.
+- `INSUFFICIENT_EO_EVIDENCE`: low confidence, unreliable observations, complex
+  geometry, or missing evidence means EO cannot reliably verify the declaration.
+
+The remaining priority values are `LOW`, `MEDIUM`, `MEDIUM_UNCERTAIN`,
+`MEDIUM_HIGH`, `HIGH`, and `UNKNOWN`. The final artifacts also include a
+pipe-separated `inspection_reasons` field. The weights and evidence thresholds
+are configuration fields so they can later be calibrated against validation
+errors. The Step 5 report crosses prediction confidence, data reliability,
+geometry risk, declaration agreement, and inspection score.
+
+The report keeps all existing model-confidence diagnostics in a
+`Confidence Levels` tab and places the composite operational workflow in a separate
+`Inspection Priority` tab. Inspection charts are exported one per full-width
+image for readability. The operational tab includes check-type and need
+summaries, EO evidence-quality and declaration-agreement matrices,
+predicted-crop inspection rates, reliable declaration conflicts, a comparison
+with the confidence-only review flag, and the ordered parcel inspection queue.
 
 The zonal-statistics pipeline performs the time-series pivot before writing the
 GeoParquet. The ML pipeline validates the one-row-per-parcel grain, holds out

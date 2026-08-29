@@ -68,7 +68,9 @@ class SatelliteZonalStats(
     spatial_statistics:
         Optional parcel statistics calculated locally from the monthly cube.
         ``mean`` is always included; supported additions are median, sd, min,
-        max, count and selected percentiles.
+        max and selected percentiles. ``count`` is accepted for compatibility,
+        but now produces the single parcel-level ``intersected_pixel_count``
+        instead of dated per-layer count features.
     remove_outliers:
         If ``True``, calculate IQR bounds independently for each variable and
         monthly cube slice, then replace outlying pixels with ``NaN`` before

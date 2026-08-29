@@ -33,16 +33,28 @@ class ParcelStatisticsCalculator:
     # These values describe the parcel or extraction batch, so they remain unsuffixed after the temporal pivot.
     STATIC_RESULT_COLUMNS = (
         "batch_number",
-        "eligible_pixel_count",
+        "intersected_pixel_count",
         "meets_minimum_pixel_count",
-        "parcel_area_m2",
-        "approx_pixel_count",
+        "expected_pixel_count",
+        "temporal_filled_pixel_count",
+        "spatial_filled_pixel_count",
+        "temporal_filled_ratio",
+        "spatial_filled_ratio",
+        "data_reliability_score",
+        "pixel_area",
+        "geom_area",
+        "geom_interior_area_ratio",
+        "geom_compactness",
+        "geom_perimeter_area_ratio",
+        "geom_shape_index",
+        "geom_elongation",
+        "geom_shape_complexity_score",
     )
 
     def _cleaning_checkpoint_signature(self) -> str:
         """Fingerprint local operations without invalidating reusable raw downloads."""
         configuration = {
-            "checkpoint_format": "cleaned_plus_observed_mask_v2",
+            "checkpoint_format": "cleaned_plus_fill_provenance_v3",
             "remove_outliers": self.remove_outliers,
             "iqr_quantiles": self.iqr_quantiles,
             "iqr_multiplier": self.iqr_multiplier,
@@ -139,7 +151,7 @@ class ParcelStatisticsCalculator:
         periods: list[str],
         variables: list[str],
         expected_shape: tuple[int, ...],
-    ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame] | None:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, pd.DataFrame] | None:
         """Load final bands and indices when the post-index checkpoint is complete."""
         final_path = self._final_checkpoint_path(netcdf_path)
         _, report_path = self._cleaning_checkpoint_paths(netcdf_path)
@@ -153,13 +165,14 @@ class ParcelStatisticsCalculator:
             saved_variables = checkpoint["variable"].astype(str).values.tolist()
             cleaned = np.asarray(checkpoint["cleaned"].values, dtype="float32")
             observed_mask = np.asarray(checkpoint["observed_mask"].values, dtype=bool)
+            temporal_filled_mask = np.asarray(checkpoint["temporal_filled_mask"].values, dtype=bool)
             observed = np.where(observed_mask, cleaned, np.nan).astype("float32", copy=False)
         if saved_periods != periods or saved_variables != variables:
             raise ValueError(f"Final checkpoint metadata does not match the configured outputs: {final_path}")
-        if cleaned.shape != expected_shape or observed.shape != expected_shape:
+        if cleaned.shape != expected_shape or observed.shape != expected_shape or temporal_filled_mask.shape != expected_shape:
             raise ValueError(f"Final checkpoint shape does not match the raw cube: {final_path}")
         self.parcel_logger.info(f"Using completed post-index checkpoint {final_path}.")
-        return cleaned, observed, read_data(str(report_path))
+        return cleaned, observed, temporal_filled_mask, read_data(str(report_path))
 
     def _save_final_checkpoint(
         self,
@@ -168,15 +181,20 @@ class ParcelStatisticsCalculator:
         observed: np.ndarray,
         periods: list[str],
         variables: list[str],
+        temporally_filled: np.ndarray | None = None,
     ) -> None:
         """Atomically save final requested bands and locally calculated indices."""
         final_path = self._final_checkpoint_path(netcdf_path)
         temporary_path = final_path.with_suffix(".partial.nc")
         dimensions = ("period", "variable", "y", "x")
+        if temporally_filled is None:
+            temporally_filled = observed
+        temporal_filled_mask = ~np.isfinite(observed) & np.isfinite(temporally_filled)
         xr.Dataset(
             {
                 "cleaned": (dimensions, cleaned.astype("float32", copy=False)),
                 "observed_mask": (dimensions, np.isfinite(observed).astype("uint8")),
+                "temporal_filled_mask": (dimensions, temporal_filled_mask.astype("uint8")),
             },
             coords={"period": periods, "variable": variables},
             attrs={"cleaning_signature": self._cleaning_checkpoint_signature()},
@@ -292,6 +310,32 @@ class ParcelStatisticsCalculator:
                 reduced[statistic] = values
         return reduced
 
+    @staticmethod
+    def _summarize_parcel_filling(
+        observed: np.ndarray,
+        temporal_filled_mask: np.ndarray,
+        final: np.ndarray,
+        intersected_pixel_count: int,
+    ) -> dict[str, int | float]:
+        """Aggregate fill provenance over every requested period and band."""
+        expected_pixel_count = intersected_pixel_count * observed.shape[0] * observed.shape[1]
+        observed_mask = np.isfinite(observed)
+        temporal_mask = temporal_filled_mask.astype(bool, copy=False)
+        final_mask = np.isfinite(final)
+        observed_count = int(observed_mask.sum())
+        temporal_count = int(temporal_mask.sum())
+        # Any newly available value not attributed to the temporal stage was
+        # produced by a spatial-neighbor or interpolation stage.
+        spatial_count = int((~observed_mask & ~temporal_mask & final_mask).sum())
+        return {
+            "expected_pixel_count": expected_pixel_count,
+            "temporal_filled_pixel_count": temporal_count,
+            "spatial_filled_pixel_count": spatial_count,
+            "temporal_filled_ratio": temporal_count / expected_pixel_count if expected_pixel_count else np.nan,
+            "spatial_filled_ratio": spatial_count / expected_pixel_count if expected_pixel_count else np.nan,
+            "data_reliability_score": observed_count / expected_pixel_count if expected_pixel_count else np.nan,
+        }
+
     def _crop_values_to_parcel_mask(
         self, values: np.ndarray, parcel_mask: np.ndarray, transform
     ) -> tuple[np.ndarray, np.ndarray, object]:
@@ -327,12 +371,13 @@ class ParcelStatisticsCalculator:
         window = Window(col_off=column_start, row_off=row_start, width=column_stop - column_start, height=row_stop - row_start)
         parcel_transform = window_transform(window, transform)
         parcel_mask = geometry_mask(
-            # Pixel centers define membership consistently across all parcel reductions.
+            # Include every raster cell intersected by the parcel, including
+            # cells whose center lies just outside a parcel boundary.
             [mapping(geometry)],
             out_shape=(int(window.height), int(window.width)),
             transform=parcel_transform,
             invert=True,
-            all_touched=False,
+            all_touched=True,
         )
         return (values[:, :, row_start:row_stop, column_start:column_stop].copy(), parcel_mask, parcel_transform)
 
@@ -376,13 +421,13 @@ class ParcelStatisticsCalculator:
             variables = list(self._output_sensor_variables())
             projected = parcels.to_crs(cube_crs)
             final_shape = (values.shape[0], len(variables), *values.shape[-2:])
+            raster_mask = np.ones(values.shape[-2:], dtype=bool)
             final_checkpoint = self._load_final_checkpoint(netcdf_path, periods, variables, final_shape)
             if final_checkpoint is None:
                 checkpoint = self._load_cleaning_checkpoint(netcdf_path, periods, cube_variables, values.shape)
                 if checkpoint is None:
                     # Clean the complete batch so adjacent parcels can contribute valid fill sources.
                     iqr_bounds = self._calculate_iqr_bounds(values)
-                    raster_mask = np.ones(values.shape[-2:], dtype=bool)
                     cleaned_values, raster_observed, raster_report = self._clean_monthly_pixels(
                         values,
                         raster_mask,
@@ -399,14 +444,24 @@ class ParcelStatisticsCalculator:
                     cleaned_values, raster_observed, raster_report = checkpoint
 
                 # Ignore indices present in the raw cube and recalculate them from the cleaned physical bands.
+                temporally_filled_values = self._fill_temporal_cube_only(raster_observed, raster_mask)
                 cleaned_values = self._build_local_output_cube(cleaned_values, cube_variables)
                 raster_observed = self._build_local_output_cube(raster_observed, cube_variables)
-                self._save_final_checkpoint(netcdf_path, cleaned_values, raster_observed, periods, variables)
+                temporally_filled_values = self._build_local_output_cube(temporally_filled_values, cube_variables)
+                temporal_filled_mask = ~np.isfinite(raster_observed) & np.isfinite(temporally_filled_values)
+                self._save_final_checkpoint(
+                    netcdf_path,
+                    cleaned_values,
+                    raster_observed,
+                    periods,
+                    variables,
+                    temporally_filled=temporally_filled_values,
+                )
                 if not getattr(self, "keep_cleaned_checkpoint", False):
                     self._remove_cleaned_raster_checkpoint(netcdf_path)
             else:
                 # Resume directly at parcel aggregation when the post-index NetCDF is already complete.
-                cleaned_values, raster_observed, raster_report = final_checkpoint
+                cleaned_values, raster_observed, temporal_filled_mask, raster_report = final_checkpoint
 
             rows = []
             for (_, parcel), (_, projected_parcel) in zip(parcels.iterrows(), projected.iterrows()):
@@ -414,27 +469,36 @@ class ParcelStatisticsCalculator:
                 parcel_id = str(parcel[self.PARCEL_ID_FIELD])
                 cleaned, cleaned_mask, _ = self._mask_parcel_window(cleaned_values, projected_parcel.geometry, transform)
                 observed, observed_mask, _ = self._mask_parcel_window(raster_observed, projected_parcel.geometry, transform)
-                if not np.array_equal(observed_mask, cleaned_mask):
+                local_temporal_filled, temporal_mask, _ = self._mask_parcel_window(
+                    temporal_filled_mask, projected_parcel.geometry, transform
+                )
+                if not np.array_equal(observed_mask, cleaned_mask) or not np.array_equal(temporal_mask, cleaned_mask):
                     raise RuntimeError("Parcel masks changed between raster filling and aggregation.")
 
-                eligible_pixel_count = int(cleaned_mask.sum())
+                intersected_pixel_count = int(cleaned_mask.sum())
+                local_temporal_filled = local_temporal_filled[:, :, cleaned_mask].astype(bool, copy=False)
+                fill_metrics = self._summarize_parcel_filling(
+                    observed[:, :, cleaned_mask],
+                    local_temporal_filled,
+                    cleaned[:, :, cleaned_mask],
+                    intersected_pixel_count,
+                )
+                pixel_cell_area = abs(float(transform.a * transform.e - transform.b * transform.d))
                 stats = self._reduce_local_pixels(cleaned[:, :, cleaned_mask])
-                if "count" in stats:
-                    stats["count"] = np.isfinite(observed[:, :, cleaned_mask]).sum(axis=-1)
                 for time_index, period_start in enumerate(periods):
                     row = {
                         self.PARCEL_ID_FIELD: parcel_id,
                         "period_start": period_start,
                         "period_end": period_end_lookup[period_start],
-                        "eligible_pixel_count": eligible_pixel_count,
-                        "meets_minimum_pixel_count": eligible_pixel_count >= self.minimum_parcel_pixels,
+                        "intersected_pixel_count": intersected_pixel_count,
+                        "meets_minimum_pixel_count": intersected_pixel_count >= self.minimum_parcel_pixels,
+                        **fill_metrics,
+                        "pixel_area": intersected_pixel_count * pixel_cell_area,
                     }
                     for variable_index, variable in enumerate(variables):
                         for statistic in self.spatial_statistics:
                             value = stats[statistic][time_index, variable_index]
-                            row[f"{variable}_{statistic}"] = (
-                                int(value) if statistic == "count" and np.isfinite(value) else float(value)
-                            )
+                            row[f"{variable}_{statistic}"] = float(value)
                     rows.append(row)
 
         result = pd.DataFrame(rows)
@@ -446,15 +510,27 @@ class ParcelStatisticsCalculator:
     def _add_derived_stats(self, data: pd.DataFrame) -> pd.DataFrame:
         """Append deterministic parcel features in one non-fragmenting operation."""
         metric_parcels = self.parcels.to_crs(epsg=self.working_epsg)
-        # Calculate area in a projected metric CRS rather than geographic degrees.
+        # Calculate all geometry measures in a projected metric CRS rather than
+        # geographic degrees.
+        geom_area = metric_parcels.geometry.area.astype("float64")
+        geom_perimeter = metric_parcels.geometry.length.astype("float64")
+        positive_area = geom_area.where(geom_area > 0)
+        positive_perimeter = geom_perimeter.where(geom_perimeter > 0)
         parcel_metrics = pd.DataFrame(
             {
                 self.PARCEL_ID_FIELD: self.parcels[self.PARCEL_ID_FIELD].to_numpy(),
-                "parcel_area_m2": metric_parcels.geometry.area.to_numpy(),
+                "geom_area": geom_area.to_numpy(),
+                "geom_compactness": (4.0 * np.pi * geom_area / positive_perimeter.pow(2)).to_numpy(),
+                "geom_perimeter_area_ratio": (geom_perimeter / positive_area).to_numpy(),
+                "geom_shape_index": (geom_perimeter / (2.0 * np.sqrt(np.pi * positive_area))).to_numpy(),
+                "geom_elongation": metric_parcels.geometry.map(self._minimum_rotated_rectangle_elongation).to_numpy(),
             }
         )
-        parcel_metrics["approx_pixel_count"] = parcel_metrics["parcel_area_m2"] / self.TARGET_RESOLUTION_METRES**2
         enriched = data.merge(parcel_metrics, on=self.PARCEL_ID_FIELD, how="left", validate="many_to_one")
+        enriched["geom_interior_area_ratio"] = enriched["pixel_area"] / enriched["geom_area"].where(
+            enriched["geom_area"] > 0
+        )
+        enriched["geom_shape_complexity_score"] = self._calculate_geometry_complexity_score(enriched)
 
         derived_columns: dict[str, pd.Series] = {}
         # Accumulate derived series and concatenate once to avoid DataFrame fragmentation.
@@ -464,7 +540,6 @@ class ParcelStatisticsCalculator:
             standard_deviation = f"{variable}_sd"
             minimum = f"{variable}_min"
             maximum = f"{variable}_max"
-            count = f"{variable}_count"
             p10 = f"{variable}_p10"
             p25 = f"{variable}_p25"
             p75 = f"{variable}_p75"
@@ -488,18 +563,60 @@ class ParcelStatisticsCalculator:
                     ) / iqr.where(iqr.abs() > 1e-12)
             if p10 in enriched and p90 in enriched:
                 derived_columns[f"{variable}_p90_p10_spread"] = enriched[p90] - enriched[p10]
-            if count in enriched:
-                approximate_fraction = enriched[count] / enriched["approx_pixel_count"]
-                derived_columns[f"{variable}_valid_pixel_fraction_approx"] = approximate_fraction.clip(0.0, 1.0)
-                if "eligible_pixel_count" in enriched:
-                    exact_denominator = enriched["eligible_pixel_count"].where(enriched["eligible_pixel_count"] > 0)
-                    exact_fraction = enriched[count] / exact_denominator
-                    derived_columns[f"{variable}_valid_pixel_fraction"] = exact_fraction.clip(0.0, 1.0)
-
         if not derived_columns:
             return enriched
         derived = pd.DataFrame(derived_columns, index=enriched.index)
         return pd.concat([enriched, derived], axis=1)
+
+    @staticmethod
+    def _minimum_rotated_rectangle_elongation(geometry) -> float:
+        """Return the long/short side ratio of a geometry's rotated rectangle."""
+        if geometry is None or geometry.is_empty:
+            return np.nan
+        rectangle = geometry.minimum_rotated_rectangle
+        if rectangle.is_empty or rectangle.geom_type != "Polygon":
+            return np.nan
+        coordinates = list(rectangle.exterior.coords)
+        side_lengths = [
+            math.hypot(x2 - x1, y2 - y1)
+            for (x1, y1), (x2, y2) in zip(coordinates, coordinates[1:])
+        ]
+        positive_lengths = [length for length in side_lengths if length > 0]
+        if len(positive_lengths) < 2:
+            return np.nan
+        return float(max(positive_lengths) / min(positive_lengths))
+
+    @staticmethod
+    def _calculate_geometry_complexity_score(data: pd.DataFrame) -> pd.Series:
+        """Combine raster agreement, boundary irregularity, and elongation.
+
+        Log penalties make the score dimensionless and keep multiplicative
+        departures comparable. Compactness, normalized perimeter/area, and
+        shape index encode the same circularity relationship, so they are
+        averaged into one boundary term before the final three-part mean.
+        """
+        positive_area = data["geom_area"].where(data["geom_area"] > 0)
+        interior_ratio = data["geom_interior_area_ratio"].where(data["geom_interior_area_ratio"] > 0)
+        compactness = data["geom_compactness"].where(data["geom_compactness"] > 0)
+        shape_index = data["geom_shape_index"].where(data["geom_shape_index"] > 0)
+        elongation = data["geom_elongation"].where(data["geom_elongation"] > 0)
+
+        raster_agreement_penalty = np.log(interior_ratio).abs()
+        compactness_penalty = (-0.5 * np.log(compactness)).clip(lower=0.0)
+        equal_area_circle_perimeter_area_ratio = 2.0 * np.sqrt(np.pi / positive_area)
+        normalized_perimeter_area_ratio = (
+            data["geom_perimeter_area_ratio"] / equal_area_circle_perimeter_area_ratio
+        ).where(lambda values: values > 0)
+        perimeter_penalty = np.log(normalized_perimeter_area_ratio).clip(lower=0.0)
+        shape_index_penalty = np.log(shape_index).clip(lower=0.0)
+        elongation_penalty = np.log(elongation).clip(lower=0.0)
+
+        boundary_penalty = pd.concat(
+            [compactness_penalty, perimeter_penalty, shape_index_penalty], axis=1
+        ).mean(axis=1, skipna=False)
+        return pd.concat(
+            [raster_agreement_penalty, boundary_penalty, elongation_penalty], axis=1
+        ).mean(axis=1, skipna=False)
 
     def _reshape_time_series_for_ml(self, data: pd.DataFrame) -> gpd.GeoDataFrame:
         """Pivot parcel-period statistics into one ML-ready row per parcel."""

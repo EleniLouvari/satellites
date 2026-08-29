@@ -13,6 +13,7 @@ from .confidence_diagnostics import (
     prepare_class_risk_display_table,
 )
 from .html import write_html_report
+from .inspection_diagnostics import export_operational_inspection_diagnostics
 
 
 _SPECIAL_MODEL_DISPLAY_NAMES = {
@@ -734,6 +735,10 @@ def write_evaluate_report(
 
 def write_predict_report(config, final_df: pd.DataFrame, selection: dict[str, Any]) -> None:
     """Write the step-5 prediction report with final fill outputs."""
+    data_reliability_column = getattr(config, "inspection_data_reliability_column", "data_reliability_score")
+    geometry_complexity_column = getattr(
+        config, "inspection_geometry_complexity_column", "geom_shape_complexity_score"
+    )
     # Prepare preview columns and optional probability columns for display.
     preview_columns = [config.id_column, config.target_column, config.prediction_column, config.prediction_filled_column]
     confidence_columns = [
@@ -762,6 +767,17 @@ def write_predict_report(config, final_df: pd.DataFrame, selection: dict[str, An
         "prediction_rank_models_used",
         "prediction_rank_confidence_valid",
         "prediction_rank_confidence_reason",
+        data_reliability_column,
+        geometry_complexity_column,
+        "confidence_risk",
+        "data_risk",
+        "geometry_risk",
+        "inspection_score",
+        "inspection_need_base",
+        "inspection_need",
+        "inspection_check_type",
+        "label_prediction_status",
+        "inspection_reasons",
         config.prediction_review_column,
     ]
     preview_columns.extend(column for column in confidence_columns if column in final_df.columns)
@@ -778,6 +794,7 @@ def write_predict_report(config, final_df: pd.DataFrame, selection: dict[str, An
         config.predict_dir,
         probability_threshold=getattr(config, "prediction_confidence_threshold", 0.60),
     )
+    inspection_artifacts = export_operational_inspection_diagnostics(final_df, config, config.predict_dir)
     prediction_summary = {
         "selection_type": selection["selection_type"],
         "selected_models": selection["selected_models"],
@@ -791,6 +808,27 @@ def write_predict_report(config, final_df: pd.DataFrame, selection: dict[str, An
             if config.prediction_confidence_level_column in final_df
             else {}
         ),
+        "inspection_need_counts": (
+            final_df["inspection_need"].value_counts(dropna=False).to_dict()
+            if "inspection_need" in final_df
+            else {}
+        ),
+        # Summarize mutually exclusive operational outcomes for report readers.
+        "inspection_check_type_counts": (
+            final_df["inspection_check_type"].value_counts(dropna=False).to_dict()
+            if "inspection_check_type" in final_df
+            else {}
+        ),
+        "label_prediction_status_counts": (
+            final_df["label_prediction_status"].value_counts(dropna=False).to_dict()
+            if "label_prediction_status" in final_df
+            else {}
+        ),
+        "inspection_score_mean": (
+            None
+            if "inspection_score" not in final_df or pd.isna(final_df["inspection_score"].mean())
+            else float(final_df["inspection_score"].mean())
+        ),
     }
     if confidence_artifacts is not None:
         prediction_summary.update(confidence_artifacts.summary)
@@ -799,10 +837,179 @@ def write_predict_report(config, final_df: pd.DataFrame, selection: dict[str, An
         {"title": "Prediction Summary", "kv": prediction_summary},
         {"title": "Prediction Preview", "table": final_df[preview_columns + probability_columns].head(50)},
     ]
+    confidence_sections: list[dict[str, Any]] = []
+    inspection_sections: list[dict[str, Any]] = []
+    # Add the inspection section only when scoring produced its companion artifacts.
+    if inspection_artifacts is not None:
+        # Document the exact score formula next to the label-aware policy visualization.
+        inspection_formula = pd.DataFrame(
+            [
+                {
+                    "Component": "Model risk",
+                    "Definition": "HIGH=0, MEDIUM=0.5, LOW=1",
+                    "Weight": getattr(config, "inspection_model_weight", 0.60),
+                },
+                {
+                    "Component": "Data risk",
+                    "Definition": f"1 - {data_reliability_column}",
+                    "Weight": getattr(config, "inspection_data_weight", 0.25),
+                },
+                {
+                    "Component": "Geometry risk",
+                    "Definition": f"Percentile rank of {geometry_complexity_column}",
+                    "Weight": getattr(config, "inspection_geometry_weight", 0.15),
+                },
+            ]
+        )
+        relationship_path = inspection_artifacts.images.get("relationship")
+        relationship_section: dict[str, Any] = {
+            "title": "Inspection Priority: Confidence, Data Quality, and Geometry",
+            "text": (
+                "Inspection score combines three independent uncertainty signals on a 0-100 scale. The scatter "
+                "shows data reliability against the score, color identifies prediction confidence, point size "
+                "represents relative geometry risk, and marker shape distinguishes declaration agreement. The "
+                "numeric score remains label-independent; declaration agreement only refines inspection need and "
+                "check type. Geometry interior-area ratio is not added separately because it is already incorporated "
+                "in geom_shape_complexity_score."
+            ),
+            "table": inspection_formula,
+        }
+        if relationship_path is not None:
+            relationship_section["images"] = [
+                {"title": "Inspection Score Relationships", "path": relationship_path}
+            ]
+        inspection_sections.append(relationship_section)
+
+        confidence_data_path = inspection_artifacts.images.get("confidence_data_score")
+        confidence_data_section: dict[str, Any] = {
+            "title": "Inspection Score by Confidence and Data Reliability",
+            "text": (
+                "This enlarged matrix preserves the previous confidence-by-reliability view. Each cell is the median "
+                "label-independent inspection score for parcels in that combination; geometry risk still contributes "
+                "to every parcel score and therefore to the displayed median."
+            ),
+            "table": inspection_artifacts.tables["inspection_score_by_confidence_data"],
+        }
+        if confidence_data_path is not None:
+            confidence_data_section["images"] = [
+                {"title": "Median Inspection Score by Confidence and Reliability", "path": confidence_data_path}
+            ]
+        inspection_sections.append(confidence_data_section)
+
+        check_type_path = inspection_artifacts.images.get("check_types")
+        check_type_section: dict[str, Any] = {
+            "title": "Operational Check Types",
+            "text": (
+                "DECLARATION_CONFLICT identifies reliable EO evidence supporting a crop different from the farmer "
+                "declaration. INSUFFICIENT_EO_EVIDENCE identifies parcels where confidence, observation coverage, "
+                "or geometry does not support a reliable verification. These types are mutually exclusive."
+            ),
+            "table": inspection_artifacts.tables["inspection_check_type_summary"],
+        }
+        if check_type_path is not None:
+            check_type_section["images"] = [{"title": "Operational Check Types", "path": check_type_path}]
+        inspection_sections.append(check_type_section)
+
+        declaration_need_path = inspection_artifacts.images.get("declaration_need")
+        declaration_need_section: dict[str, Any] = {
+            "title": "Final Inspection Need by Declaration Agreement",
+            "text": (
+                "This matrix shows how agreement with the farmer declaration changes the operational priority. "
+                "The numeric inspection score is unchanged; only the final need category receives this transparent "
+                "policy overlay."
+            ),
+            "table": inspection_artifacts.tables["inspection_need_summary"],
+        }
+        if declaration_need_path is not None:
+            declaration_need_section["images"] = [
+                {"title": "Inspection Need by Declaration Status", "path": declaration_need_path}
+            ]
+        inspection_sections.append(declaration_need_section)
+
+        evidence_path = inspection_artifacts.images.get("evidence_quality")
+        evidence_section: dict[str, Any] = {
+            "title": "Data Reliability and Geometry Evidence",
+            "text": (
+                "The heatmap reports the operational inspection rate for each data-reliability and geometry-quality "
+                "combination. Cell support in the table should be considered before interpreting extreme rates."
+            ),
+            "table": inspection_artifacts.tables["inspection_evidence_quality_matrix"],
+        }
+        if evidence_path is not None:
+            evidence_section["images"] = [
+                {"title": "Inspection Rate by EO Evidence Quality", "path": evidence_path}
+            ]
+        inspection_sections.append(evidence_section)
+
+        class_path = inspection_artifacts.images.get("predicted_class")
+        class_section: dict[str, Any] = {
+            "title": "Operational Inspection Priority by Predicted Crop",
+            "text": (
+                "Rates use every parcel predicted as each crop. Counts distinguish high-priority cases, reliable "
+                "declaration conflicts, and parcels where EO evidence is insufficient. Small crop groups should be "
+                "interpreted together with their parcel denominators."
+            ),
+            "table": inspection_artifacts.tables["inspection_priority_by_predicted_class"],
+        }
+        if class_path is not None:
+            class_section["images"] = [
+                {"title": "Operational Inspection Rate by Predicted Crop", "path": class_path}
+            ]
+        inspection_sections.append(class_section)
+
+        conflict_path = inspection_artifacts.images.get("conflict_matrix")
+        conflict_section: dict[str, Any] = {
+            "title": "Reliable Declaration Conflicts",
+            "text": (
+                "Only DECLARATION_CONFLICT parcels are included. Rows are farmer-declared crops and columns are "
+                "model-predicted crops, allowing systematic, evidence-supported substitutions to be identified."
+            ),
+            "table": inspection_artifacts.tables["inspection_declaration_conflict_matrix"],
+        }
+        if conflict_path is not None:
+            conflict_section["images"] = [
+                {"title": "Farmer Declaration versus Predicted Crop", "path": conflict_path}
+            ]
+        inspection_sections.append(conflict_section)
+
+        comparison_path = inspection_artifacts.images.get("review_comparison")
+        comparison_section: dict[str, Any] = {
+            "title": "Confidence Review versus Operational Inspection Need",
+            "text": (
+                "This cross-check shows where the confidence-only review flag and the composite operational policy "
+                "agree or differ. Differences are expected because operational priority also uses data reliability, "
+                "geometry, and farmer-declaration agreement."
+            ),
+            "table": inspection_artifacts.tables["inspection_confidence_review_comparison"],
+        }
+        if comparison_path is not None:
+            comparison_section["images"] = [
+                {"title": "Confidence Review versus Inspection Need", "path": comparison_path}
+            ]
+        inspection_sections.append(comparison_section)
+
+        inspection_sections.append(
+            {
+                "title": "Top-Priority Parcel Inspection Queue",
+                "text": (
+                    "The queue is ordered first by final inspection need and then by inspection score. It preserves "
+                    "the declared and predicted crops, all evidence components, check type, and human-readable reason "
+                    "codes required for parcel-level follow-up."
+                ),
+                "table": inspection_artifacts.tables["inspection_top_priority_parcels"],
+            }
+        )
+    else:
+        inspection_sections.append(
+            {
+                "title": "Operational Inspection Priority Unavailable",
+                "text": "The required confidence, data-reliability, geometry-risk, or inspection fields were absent.",
+            }
+        )
     if confidence_artifacts is not None:
         overview_path = confidence_artifacts.images.get("overview")
         if overview_path is not None:
-            sections.append(
+            confidence_sections.append(
                 {
                     "title": "Borda Consensus and Prediction Correctness",
                     "text": (
@@ -820,7 +1027,7 @@ def write_predict_report(config, final_df: pd.DataFrame, selection: dict[str, An
                 median_summary[column] = median_summary[column].map(
                     lambda value: f"{value:.3f}" if pd.notna(value) else "n/a"
                 )
-            sections.append(
+            confidence_sections.append(
                 {
                     "title": "Confidence Metric Median Comparison",
                     "text": (
@@ -874,7 +1081,7 @@ def write_predict_report(config, final_df: pd.DataFrame, selection: dict[str, An
                     },
                 ]
             )
-            sections.append(
+            confidence_sections.append(
                 {
                     "title": "Distribution Comparison",
                     "text": (
@@ -898,7 +1105,7 @@ def write_predict_report(config, final_df: pd.DataFrame, selection: dict[str, An
             )
         joint_path = confidence_artifacts.images.get("joint_behavior")
         if joint_path is not None:
-            sections.append(
+            confidence_sections.append(
                 {
                     "title": "Joint Probability-Consensus Behavior",
                     "text": (
@@ -911,7 +1118,7 @@ def write_predict_report(config, final_df: pd.DataFrame, selection: dict[str, An
             )
         class_confidence_path = confidence_artifacts.images.get("class_confidence_risk")
         if class_confidence_path is not None:
-            sections.append(
+            confidence_sections.append(
                 {
                     "title": "Class-Level Confidence Risk",
                     "text": (
@@ -925,7 +1132,7 @@ def write_predict_report(config, final_df: pd.DataFrame, selection: dict[str, An
             )
         class_rate_path = confidence_artifacts.images.get("class_rate")
         if class_rate_path is not None:
-            sections.append(
+            confidence_sections.append(
                 {
                     "title": "Need-to-Check Rate by Predicted Class",
                     "text": (
@@ -960,10 +1167,10 @@ def write_predict_report(config, final_df: pd.DataFrame, selection: dict[str, An
                 reason_section["embeds"] = [
                     {"title": "Need-to-Check Confidence Flow", "path": reason_embed}
                 ]
-            sections.append(reason_section)
+            confidence_sections.append(reason_section)
         confusion_path = confidence_artifacts.images.get("confusion")
         if confusion_path is not None:
-            sections.append(
+            confidence_sections.append(
                 {
                     "title": "Need-to-Check Class Confusions",
                     "text": (
@@ -974,7 +1181,28 @@ def write_predict_report(config, final_df: pd.DataFrame, selection: dict[str, An
                     "images": [{"title": "True versus Predicted Class Confusions", "path": confusion_path}],
                 }
             )
+    else:
+        confidence_sections.append(
+            {
+                "title": "Confidence Diagnostics Unavailable",
+                "text": "Known declarations, predictions, or Borda diagnostics were unavailable for this run.",
+            }
+        )
 
+    # Keep model-confidence diagnostics and operational inspection evidence in separate reader-controlled tabs.
+    sections.append(
+        {
+            "title": "Prediction Diagnostics",
+            "text": (
+                "Use Confidence Levels to audit model agreement and prediction errors. Use Inspection Priority to "
+                "plan parcel checks using confidence, EO data reliability, geometry, and declaration agreement."
+            ),
+            "tabs": [
+                {"label": "Confidence Levels", "sections": confidence_sections},
+                {"label": "Inspection Priority", "sections": inspection_sections},
+            ],
+        }
+    )
     sections.append(
         {
             "title": "Prediction Output Plots",
@@ -1010,6 +1238,25 @@ def write_predict_report(config, final_df: pd.DataFrame, selection: dict[str, An
                     "path": config.predict_dir / "data" / "need_to_check_confusion.csv",
                 },
             ]
+        )
+    if inspection_artifacts is not None:
+        inspection_output_labels = {
+            "inspection_need_summary": "Inspection Need Summary",
+            "inspection_check_type_summary": "Inspection Check Type Summary",
+            "inspection_priority_by_predicted_class": "Inspection Priority by Predicted Crop",
+            "inspection_declaration_conflict_matrix": "Declaration Conflict Matrix",
+            "inspection_evidence_quality_matrix": "EO Evidence Quality Matrix",
+            "inspection_confidence_review_comparison": "Confidence Review Comparison",
+            "inspection_need_by_declaration_status": "Inspection Need by Declaration Status",
+            "inspection_score_by_confidence_data": "Inspection Score by Confidence and Data Reliability",
+            "inspection_top_priority_parcels": "Top-Priority Parcel Queue",
+        }
+        output_links.extend(
+            {
+                "label": label,
+                "path": config.predict_dir / "data" / f"{artifact_name}.csv",
+            }
+            for artifact_name, label in inspection_output_labels.items()
         )
     sections.append({"title": "Saved Outputs", "links": output_links})
 

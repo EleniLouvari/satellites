@@ -183,7 +183,11 @@ class ZonalStatsConfiguration:
         return normalized
 
     def _validate_spatial_statistics(self, statistics: list[str] | None) -> tuple[str, ...]:
-        """Normalize parcel reducers and guarantee that mean is calculated."""
+        """Normalize per-layer reducers and guarantee that mean is calculated.
+
+        ``count`` remains accepted for configuration compatibility, but pixel
+        counts are now emitted once per parcel instead of once per layer.
+        """
         if statistics is None:
             statistics = ["mean"]
         if not isinstance(statistics, list):
@@ -200,7 +204,7 @@ class ZonalStatsConfiguration:
             raise ValueError(
                 f"Unsupported spatial statistics: {unsupported}. Supported statistics: {list(self.SUPPORTED_SPATIAL_STATISTICS)}"
             )
-        return tuple(["mean", *[name for name in normalized if name != "mean"]])
+        return tuple(["mean", *[name for name in normalized if name not in {"mean", "count"}]])
 
     def _validate_sentinel1_bands(self, bands: list[str] | None) -> tuple[str, ...]:
         """Normalize the optional Sentinel-1 polarization list."""

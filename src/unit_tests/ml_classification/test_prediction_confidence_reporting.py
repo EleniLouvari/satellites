@@ -7,13 +7,16 @@ import shutil
 from types import SimpleNamespace
 from uuid import uuid4
 
+import matplotlib.image as mpimg
 import pandas as pd
 
 from ml_classification.ml_classification_pipeline.reporting.confidence_diagnostics import (
     export_prediction_confidence_diagnostics,
     prepare_confidence_diagnostics,
 )
+from ml_classification.ml_classification_pipeline.core.inspection import calculate_inspection_metrics
 from ml_classification.ml_classification_pipeline.reporting.reports import write_predict_report
+from ml_classification.ml_classification_pipeline.visuals.plots import save_inspection_relationship_plot
 
 
 def _prediction_rows() -> pd.DataFrame:
@@ -63,7 +66,36 @@ def test_prediction_report_exports_confidence_graphs_tables_and_sankey(request):
     output_dir = Path(__file__).parent / f"_prediction_report_{uuid4().hex}"
     request.addfinalizer(lambda: shutil.rmtree(output_dir, ignore_errors=True))
     output_dir.mkdir(parents=True)
-    predictions = _prediction_rows()
+    config = SimpleNamespace(
+        id_column="parcel_code",
+        target_column="label",
+        prediction_column="label_prediction",
+        prediction_filled_column="label_filled",
+        prediction_confidence_column="prediction_max_probability",
+        prediction_confidence_level_column="prediction_confidence_level",
+        prediction_review_column="prediction_needs_review",
+        probability_prefix="probability",
+        predict_dir=output_dir,
+        inspection_data_reliability_column="data_reliability_score",
+        inspection_geometry_complexity_column="geom_shape_complexity_score",
+        inspection_model_weight=0.60,
+        inspection_data_weight=0.25,
+        inspection_geometry_weight=0.15,
+        inspection_low_data_reliability_threshold=0.60,
+        inspection_medium_data_reliability_threshold=0.80,
+        inspection_medium_geometry_risk_threshold=0.50,
+        inspection_high_geometry_risk_threshold=0.75,
+        inspection_medium_score_threshold=25.0,
+        inspection_high_score_threshold=50.0,
+        random_state=42,
+    )
+    predictions = _prediction_rows().assign(
+        data_reliability_score=[0.95, 0.82, 0.74, 0.55, 0.91, 0.68, 0.42, 0.87],
+        geom_shape_complexity_score=[1.0, 1.4, 1.8, 2.5, 1.2, 2.1, 3.2, 1.1],
+    )
+    # Include one reliable disagreement so the declaration-conflict matrix is exercised.
+    predictions.loc[1, "prediction_confidence_level"] = "HIGH"
+    predictions = calculate_inspection_metrics(predictions, config)
 
     artifacts = export_prediction_confidence_diagnostics(
         predictions,
@@ -90,16 +122,10 @@ def test_prediction_report_exports_confidence_graphs_tables_and_sankey(request):
     assert (output_dir / "data" / "confidence_metric_median_summary.csv").exists()
     assert artifacts.tables["confidence_metric_median_summary"].shape == (6, 4)
 
-    config = SimpleNamespace(
-        id_column="parcel_code",
-        target_column="label",
-        prediction_column="label_prediction",
-        prediction_filled_column="label_filled",
-        prediction_confidence_column="prediction_max_probability",
-        prediction_confidence_level_column="prediction_confidence_level",
-        prediction_review_column="prediction_needs_review",
-        probability_prefix="probability",
-        predict_dir=output_dir,
+    assert save_inspection_relationship_plot(
+        predictions,
+        output_dir / "plots" / "inspection_risk_relationships.png",
+        config,
     )
     write_predict_report(
         config,
@@ -121,3 +147,44 @@ def test_prediction_report_exports_confidence_graphs_tables_and_sankey(request):
     assert "Need-to-Check Class Confusions" in report
     assert "need_to_check_confidence_flow.html" in report
     assert "Unlabeled fill rows are excluded" in report
+    assert "Inspection Priority: Confidence, Data Quality, and Geometry" in report
+    assert "inspection_risk_relationships.png" in report
+    assert "inspection_reasons" in report
+    assert "DECLARATION_CONFLICT" in report
+    assert "INSUFFICIENT_EO_EVIDENCE" in report
+    assert "role='tablist'" in report
+    assert ">Confidence Levels</button>" in report
+    assert ">Inspection Priority</button>" in report
+    assert "Operational Check Types" in report
+    assert "Inspection Score by Confidence and Data Reliability" in report
+    assert "Data Reliability and Geometry Evidence" in report
+    assert "Operational Inspection Priority by Predicted Crop" in report
+    assert "Confidence Review versus Operational Inspection Need" in report
+    assert "Top-Priority Parcel Inspection Queue" in report
+
+    expected_inspection_tables = {
+        "inspection_need_summary.csv",
+        "inspection_check_type_summary.csv",
+        "inspection_priority_by_predicted_class.csv",
+        "inspection_declaration_conflict_matrix.csv",
+        "inspection_evidence_quality_matrix.csv",
+        "inspection_confidence_review_comparison.csv",
+        "inspection_need_by_declaration_status.csv",
+        "inspection_score_by_confidence_data.csv",
+        "inspection_top_priority_parcels.csv",
+    }
+    assert all((output_dir / "data" / filename).exists() for filename in expected_inspection_tables)
+    expected_inspection_plots = {
+        "inspection_risk_relationships.png",
+        "inspection_check_type_distribution.png",
+        "inspection_priority_by_predicted_class.png",
+        "inspection_need_by_declaration_status.png",
+        "inspection_score_confidence_data_heatmap.png",
+        "inspection_declaration_conflicts.png",
+        "inspection_confidence_review_comparison.png",
+        "inspection_evidence_quality_heatmap.png",
+    }
+    assert all((output_dir / "plots" / filename).exists() for filename in expected_inspection_plots)
+    relationship_image = mpimg.imread(output_dir / "plots" / "inspection_risk_relationships.png")
+    assert relationship_image.shape[1] >= 2_000
+    assert relationship_image.shape[0] >= 1_000

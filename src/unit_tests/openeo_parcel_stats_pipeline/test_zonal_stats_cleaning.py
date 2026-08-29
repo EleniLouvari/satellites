@@ -116,10 +116,9 @@ def test_time_series_reshape_creates_one_ml_ready_geoparquet_row_per_parcel() ->
             "period_start": ["2024-01-01", "2024-02-01"] * 2,
             "period_end": ["2024-02-01", "2024-03-01"] * 2,
             "batch_number": [1, 1, 2, 2],
-            "eligible_pixel_count": [12, 12, 8, 8],
+            "intersected_pixel_count": [12, 12, 8, 8],
             "meets_minimum_pixel_count": [True, True, True, True],
-            "parcel_area_m2": [1200.0, 1200.0, 800.0, 800.0],
-            "approx_pixel_count": [12.0, 12.0, 8.0, 8.0],
+            "geom_area": [1200.0, 1200.0, 800.0, 800.0],
             "NDVI_median": [0.2, 0.4, 0.3, 0.5],
             "VV_mean": [-10.0, -9.0, -8.0, -7.0],
         }
@@ -136,7 +135,10 @@ def test_time_series_reshape_creates_one_ml_ready_geoparquet_row_per_parcel() ->
     assert result.loc[0, "NDVI_median__20240101"] == pytest.approx(0.2)
     assert result.loc[0, "NDVI_median__20240201"] == pytest.approx(0.4)
     assert result.loc[1, "VV_mean__20240201"] == pytest.approx(-7.0)
-    assert result.loc[0, "eligible_pixel_count"] == 12
+    assert result.loc[0, "intersected_pixel_count"] == 12
+    assert "eligible_pixel_count" not in result
+    assert "parcel_area_m2" not in result
+    assert "approx_pixel_count" not in result
 
     geoparquet = BytesIO()
     result.to_parquet(geoparquet, index=False)
@@ -144,6 +146,28 @@ def test_time_series_reshape_creates_one_ml_ready_geoparquet_row_per_parcel() ->
     restored = gpd.read_parquet(geoparquet)
     assert restored.crs == result.crs
     assert restored["label"].tolist() == [1, 2]
+
+
+def test_count_configuration_emits_no_per_layer_count_reducer() -> None:
+    extractor = _extractor()
+
+    statistics = extractor._validate_spatial_statistics(["mean", "count", "median"])
+
+    assert statistics == ("mean", "median")
+
+
+def test_parcel_mask_includes_every_intersected_raster_pixel() -> None:
+    extractor = _extractor()
+    values = np.ones((1, 1, 2, 2), dtype="float32")
+    # This small polygon crosses the junction of four 10x10 cells without
+    # containing any of their centers.
+    geometry = Polygon([(9, 9), (11, 9), (11, 11), (9, 11)])
+
+    _window, mask, _transform = extractor._mask_parcel_window(
+        values, geometry, from_origin(0, 20, 10, 10)
+    )
+
+    assert int(mask.sum()) == 4
 
 
 def test_past_only_fill_does_not_use_future_observation() -> None:
@@ -311,9 +335,113 @@ def test_final_checkpoint_round_trip_reuses_calculated_indices(tmp_path) -> None
     assert restored is not None
     np.testing.assert_array_equal(restored[0], final)
     np.testing.assert_array_equal(restored[1], observed)
-    pd.testing.assert_frame_equal(restored[2], report)
+    np.testing.assert_array_equal(restored[2], np.zeros_like(final, dtype=bool))
+    pd.testing.assert_frame_equal(restored[3], report)
     with xr.open_dataset(extractor._final_checkpoint_path(raw_path)) as checkpoint:
-        assert set(checkpoint.data_vars) == {"cleaned", "observed_mask"}
+        assert set(checkpoint.data_vars) == {"cleaned", "observed_mask", "temporal_filled_mask"}
+
+
+def test_temporal_cube_checkpoint_mask_distinguishes_temporal_fills(tmp_path) -> None:
+    extractor = _extractor()
+    extractor.parcel_logger = _SilentLogger()
+    raw_path = tmp_path / "batch_00001_monthly.nc"
+    final = np.array([[[[1.0, 2.0, 3.0]]]], dtype="float32")
+    observed = np.array([[[[1.0, np.nan, np.nan]]]], dtype="float32")
+    temporal = np.array([[[[1.0, 2.0, np.nan]]]], dtype="float32")
+    _, report_path = extractor._cleaning_checkpoint_paths(raw_path)
+    pd.DataFrame({"batch_number": [1]}).to_parquet(report_path, index=False)
+
+    extractor._save_final_checkpoint(
+        raw_path,
+        final,
+        observed,
+        ["2024-01-01"],
+        ["B02"],
+        temporally_filled=temporal,
+    )
+    restored = extractor._load_final_checkpoint(raw_path, ["2024-01-01"], ["B02"], final.shape)
+
+    assert restored is not None
+    np.testing.assert_array_equal(restored[2], [[[[False, True, False]]]])
+
+
+def test_parcel_fill_summary_sums_all_period_band_pixel_slots() -> None:
+    observed = np.array(
+        [
+            [[1.0, np.nan], [np.nan, 4.0]],
+            [[np.nan, 2.0], [3.0, np.nan]],
+        ]
+    )
+    temporal_mask = np.array(
+        [
+            [[False, True], [False, False]],
+            [[False, False], [False, True]],
+        ]
+    )
+    final = np.nan_to_num(observed, nan=9.0)
+
+    metrics = SatelliteZonalStats._summarize_parcel_filling(
+        observed, temporal_mask, final, intersected_pixel_count=2
+    )
+
+    assert metrics["expected_pixel_count"] == 8
+    assert metrics["temporal_filled_pixel_count"] == 2
+    assert metrics["spatial_filled_pixel_count"] == 2
+    assert metrics["temporal_filled_ratio"] == pytest.approx(0.25)
+    assert metrics["spatial_filled_ratio"] == pytest.approx(0.25)
+    assert metrics["data_reliability_score"] == pytest.approx(0.5)
+
+
+def test_geometry_metrics_use_projected_area_perimeter_and_rotated_rectangle() -> None:
+    extractor = _extractor()
+    extractor.PARCEL_ID_FIELD = "parcel_code"
+    extractor.parcels = gpd.GeoDataFrame(
+        {
+            "parcel_code": ["A"],
+            "geometry": [Polygon([(0, 0), (4, 0), (4, 2), (0, 2)])],
+        },
+        crs="EPSG:3857",
+    )
+    data = pd.DataFrame(
+        {
+            "parcel_code": ["A"],
+            "period_start": ["2024-01-01"],
+            "pixel_area": [10.0],
+            "B02_mean": [1.0],
+        }
+    )
+
+    result = extractor._add_derived_stats(data)
+
+    assert result.loc[0, "geom_area"] == pytest.approx(8.0)
+    assert result.loc[0, "geom_interior_area_ratio"] == pytest.approx(1.25)
+    assert result.loc[0, "geom_compactness"] == pytest.approx(2 * np.pi / 9)
+    assert result.loc[0, "geom_perimeter_area_ratio"] == pytest.approx(1.5)
+    assert result.loc[0, "geom_shape_index"] == pytest.approx(12 / (2 * np.sqrt(8 * np.pi)))
+    assert result.loc[0, "geom_elongation"] == pytest.approx(2.0)
+    area_penalty = abs(np.log(10 / 8))
+    boundary_penalty = np.log(result.loc[0, "geom_shape_index"])
+    elongation_penalty = np.log(2.0)
+    assert result.loc[0, "geom_shape_complexity_score"] == pytest.approx(
+        np.mean([area_penalty, boundary_penalty, elongation_penalty])
+    )
+
+
+def test_geometry_complexity_is_zero_for_ideal_simple_metrics() -> None:
+    metrics = pd.DataFrame(
+        {
+            "geom_area": [100.0],
+            "geom_interior_area_ratio": [1.0],
+            "geom_compactness": [1.0],
+            "geom_perimeter_area_ratio": [2.0 * np.sqrt(np.pi / 100.0)],
+            "geom_shape_index": [1.0],
+            "geom_elongation": [1.0],
+        }
+    )
+
+    score = SatelliteZonalStats._calculate_geometry_complexity_score(metrics)
+
+    assert score.iloc[0] == pytest.approx(0.0)
 
 
 def test_variable_fill_logs_each_stage_and_number_of_filled_pixels() -> None:

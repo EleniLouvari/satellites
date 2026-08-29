@@ -177,12 +177,13 @@ each derived index independently:
 - cleaned physical bands can support additional indices later without repeating
   the cleaning process.
 
-Filled reflectance values are imputed rather than directly observed. The
-pipeline therefore retains two parallel arrays. `cleaned` contains filled bands
-and provides the most complete index values. `observed` contains post-IQR bands
-before filling and is used to calculate observation-only indices and valid-pixel
-counts. Consequently, an index depending on any imputed source band is excluded
-from its observed count even though a filled index value may be available.
+Filled reflectance values are imputed rather than directly observed. The final
+checkpoint therefore retains `cleaned` values, an `observed_mask`, and a
+`temporal_filled_mask`. These distinguish original post-IQR observations from
+temporal fills and later spatial fills. Index provenance is calculated from the
+same intermediate source-band states, so an index is attributed to temporal
+filling only when all source values needed for that index are available after
+the temporal stage.
 
 ### Temporal and statistic parameters
 
@@ -190,7 +191,7 @@ from its observed count even though a filled index value may be available.
 |---|---:|---|
 | `temporal_period` | `"1M"` | Positive day, month, or year interval such as `15D`, `1M`, `2M`, `3M`, `1Y` |
 | `temporal_reducer` | `"median"` | `mean`, `median`, `min`, `max`, or `sum` |
-| `spatial_statistics` | `None` | `mean`, `median`, `sd`, `min`, `max`, `count`, `p10`, `p25`, `p75`, `p90`; `mean` is always added |
+| `spatial_statistics` | `None` | `mean`, `median`, `sd`, `min`, `max`, `p10`, `p25`, `p75`, `p90`; `mean` is always added. Legacy `count` is accepted but emits only the static parcel pixel count described below. |
 | `batch_workers` | `1` | Positive integer controlling base-class remote job waves and local statistics processes; for the manager it controls local statistics only |
 
 Temporal intervals start at `start_date`, are half-open internally, and the final
@@ -440,8 +441,33 @@ The final GeoDataFrame has exactly one row per parcel. Core columns include:
 
 - the parcel ID and every non-geometry attribute supplied with the input parcels,
   including a class/label column when present;
-- static fields such as `eligible_pixel_count`, `meets_minimum_pixel_count`,
-  `parcel_area_m2`, `approx_pixel_count`, and `batch_number`;
+- static pixel fields such as `intersected_pixel_count`,
+  `meets_minimum_pixel_count`, and `batch_number`; per-band/per-period
+  `*_count` columns are no longer emitted;
+- `expected_pixel_count`, calculated as intersected pixels x requested output
+  bands/indices x temporal periods, plus `temporal_filled_pixel_count` and
+  `spatial_filled_pixel_count` summed over those same slots. Spatial filling
+  includes every configured neighborhood pass and final interpolation;
+- `temporal_filled_ratio` and `spatial_filled_ratio`, each using
+  `expected_pixel_count` as its denominator;
+- `data_reliability_score`, the directly observed pixel-value count divided by
+  `expected_pixel_count`. It ranges from 0 to 1; higher values indicate less
+  dependence on temporal/spatial imputation and fewer unresolved gaps;
+- area fields `pixel_area` (intersected pixels x raster cell area), `geom_area`
+  (projected polygon area), and `geom_interior_area_ratio` (`pixel_area /
+  geom_area`). A ratio of 1 means the rasterized and vector areas agree;
+- shape fields `geom_compactness` (`4*pi*A/P^2`),
+  `geom_perimeter_area_ratio` (`P/A`), `geom_shape_index`
+  (`P/(2*sqrt(pi*A))`), and rotation-independent `geom_elongation`. Elongation
+  is the long/short side ratio of the minimum rotated rectangle, so 1 is roughly
+  square and larger values are longer and narrower;
+- `geom_shape_complexity_score`, a non-negative composite of raster/vector area
+  disagreement, boundary irregularity, and elongation. Zero is the theoretical
+  simplest case; larger values indicate more complex parcel shapes. The score
+  uses absolute/log penalties, normalizes perimeter-area ratio against an
+  equal-area circle, and averages compactness, normalized perimeter-area ratio,
+  and shape index into one boundary term so equivalent circularity signals are
+  not triple-counted;
 - dated temporal features such as `VV_mean__20240101`,
   `NDVI_median__20240201`, or `B04_p90__20240301`;
 - derived fields when their source statistics exist: range, variance,
