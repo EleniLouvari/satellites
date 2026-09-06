@@ -176,10 +176,21 @@ class ZonalStatsConfiguration:
             raise ValueError(
                 f"Unsupported Sentinel-2 indices: {unsupported}. Supported indices: {sorted(self.SUPPORTED_SENTINEL2_INDICES)}"
             )
-        if self.calculate_sentinel2_indices and not normalized:
-            raise ValueError("sentinel2_indices must contain at least one name when calculate_sentinel2_indices=True.")
-        if not self.calculate_sentinel2_indices and normalized:
-            raise ValueError("Set calculate_sentinel2_indices=True when providing sentinel2_indices.")
+        return normalized
+
+    def _validate_sentinel1_indices(self, indices: list[str] | None) -> tuple[str, ...]:
+        """Validate and normalize optional indices derived from Sentinel-1 linear power."""
+        if indices is None:
+            indices = []
+        if not isinstance(indices, list):
+            raise TypeError("sentinel1_indices must be a list of index names.")
+        normalized = tuple(dict.fromkeys(str(name).strip().upper() for name in indices))
+        unsupported = sorted(set(normalized).difference(self.SUPPORTED_SENTINEL1_INDICES))
+        if unsupported:
+            raise ValueError(
+                f"Unsupported Sentinel-1 indices: {unsupported}. "
+                f"Supported indices: {sorted(self.SUPPORTED_SENTINEL1_INDICES)}"
+            )
         return normalized
 
     def _validate_spatial_statistics(self, statistics: list[str] | None) -> tuple[str, ...]:
@@ -220,6 +231,28 @@ class ZonalStatsConfiguration:
             )
         return normalized
 
+    def _validate_sentinel1_orbit_direction(self, direction: str) -> str:
+        """Normalize the Sentinel-1 orbit-direction selection."""
+        if not isinstance(direction, str):
+            raise TypeError("sentinel1_orbit_direction must be a string.")
+        normalized = direction.strip().upper()
+        if normalized not in self.SUPPORTED_SENTINEL1_ORBIT_DIRECTIONS:
+            raise ValueError(
+                "sentinel1_orbit_direction must be ASCENDING, DESCENDING, or BOTH."
+            )
+        return normalized
+
+    def _sentinel1_load_options(self) -> dict:
+        """Return the optional openEO collection-property orbit filter."""
+        if self.sentinel1_orbit_direction == "BOTH":
+            return {}
+        orbit_direction = self.sentinel1_orbit_direction
+        return {
+            "properties": {
+                "sat:orbit_state": lambda value: value == orbit_direction,
+            }
+        }
+
     def _validate_sentinel2_bands(self, bands: list[str] | None) -> tuple[str, ...]:
         """Normalize Sentinel-2 outputs, allowing an explicit empty selection."""
         if bands is None:
@@ -237,7 +270,7 @@ class ZonalStatsConfiguration:
     def _validate_sensor_selection(self) -> None:
         """Require at least one output from Sentinel-1 or Sentinel-2."""
         if not self._output_sensor_variables():
-            raise ValueError("Select at least one Sentinel-2 band, Sentinel-2 index, or Sentinel-1 band.")
+            raise ValueError("Select at least one Sentinel-2 band/index or Sentinel-1 band/index.")
 
     def _validate_cleaning_options(
         self,
@@ -303,13 +336,20 @@ class ZonalStatsConfiguration:
             bands.extend(self.SUPPORTED_SENTINEL2_INDICES[index_name])
         return tuple(dict.fromkeys(bands))
 
+    def _required_sentinel1_bands(self) -> tuple[str, ...]:
+        """Return selected and index-source Sentinel-1 bands without duplicates."""
+        bands = list(self.sentinel1_bands)
+        for index_name in self.sentinel1_indices:
+            bands.extend(self.SUPPORTED_SENTINEL1_INDICES[index_name])
+        return tuple(dict.fromkeys(bands))
+
     def _output_sensor_variables(self) -> tuple[str, ...]:
-        """Return ordered Sentinel-2, index, and Sentinel-1 output labels."""
-        return (*self.sentinel2_bands, *self.sentinel2_indices, *self.sentinel1_bands)
+        """Return ordered physical-band and pixel-index output labels."""
+        return (*self.sentinel2_bands, *self.sentinel2_indices, *self.sentinel1_bands, *self.sentinel1_indices)
 
     def _cube_sensor_variables(self) -> tuple[str, ...]:
         """Return physical bands that must be cleaned before local index calculation."""
-        return (*self._required_sentinel2_bands(), *self.sentinel1_bands)
+        return (*self._required_sentinel2_bands(), *self._required_sentinel1_bands())
 
     def _run_signature(self) -> str:
         """Create a cache key from processing options, parcel IDs and geometry."""
@@ -327,7 +367,10 @@ class ZonalStatsConfiguration:
             "sentinel2_indices": self.sentinel2_indices,
             "sentinel1_collection": self.SENTINEL1_COLLECTION,
             "sentinel1_bands": self.sentinel1_bands,
+            "sentinel1_indices": self.sentinel1_indices,
+            "sentinel1_orbit_direction": self.sentinel1_orbit_direction,
             "sentinel1_backscatter_coefficient": self.SENTINEL1_BACKSCATTER_COEFFICIENT,
+            "sentinel1_backscatter_scale": self.SENTINEL1_BACKSCATTER_SCALE,
             "sentinel1_elevation_model": self.SENTINEL1_ELEVATION_MODEL,
             "target_resolution_metres": self.TARGET_RESOLUTION_METRES,
             "sentinel2_scene_classification_band": self.SENTINEL2_SCENE_CLASSIFICATION_BAND,

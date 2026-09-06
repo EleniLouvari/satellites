@@ -91,13 +91,15 @@ class OpenEOCubePipeline:
                 self._build_sentinel2_output_cube(reflectance.mask(invalid | cloud_buffer))
             )
 
-        if not self.sentinel1_bands:
+        required_sentinel1_bands = self._required_sentinel1_bands()
+        if not required_sentinel1_bands:
             return sentinel2_temporal
 
         sentinel1 = connection.load_collection(
             self.SENTINEL1_COLLECTION,
             temporal_extent=[self.start_date.strftime("%Y-%m-%d"), self.end_date.strftime("%Y-%m-%d")],
-            bands=list(self.sentinel1_bands),
+            bands=list(required_sentinel1_bands),
+            **self._sentinel1_load_options(),
         ).filter_spatial(feature_collection)
         sentinel1 = sentinel1.sar_backscatter(
             coefficient=self.SENTINEL1_BACKSCATTER_COEFFICIENT,

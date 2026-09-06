@@ -57,6 +57,24 @@ def test_openeo_credentials_must_be_supplied_together() -> None:
         extractor._validate_openeo_credentials("user@example.com", None)
 
 
+def test_sentinel1_orbit_direction_is_normalized_and_validated() -> None:
+    extractor = object.__new__(SatelliteZonalStats)
+
+    assert extractor._validate_sentinel1_orbit_direction(" ascending ") == "ASCENDING"
+    assert extractor._validate_sentinel1_orbit_direction("descending") == "DESCENDING"
+    assert extractor._validate_sentinel1_orbit_direction("both") == "BOTH"
+
+    with pytest.raises(ValueError, match="ASCENDING, DESCENDING, or BOTH"):
+        extractor._validate_sentinel1_orbit_direction("eastbound")
+
+
+def test_sentinel1_both_orbits_does_not_add_a_collection_filter() -> None:
+    extractor = object.__new__(SatelliteZonalStats)
+    extractor.sentinel1_orbit_direction = "BOTH"
+
+    assert extractor._sentinel1_load_options() == {}
+
+
 def _extractor(**overrides) -> SatelliteZonalStats:
     """Build a lightweight instance for testing pure array operations."""
     extractor = object.__new__(SatelliteZonalStats)
@@ -64,6 +82,10 @@ def _extractor(**overrides) -> SatelliteZonalStats:
         "sentinel2_bands": ("B02",),
         "sentinel2_indices": (),
         "sentinel1_bands": (),
+        "sentinel1_indices": (),
+        "start_date": pd.Timestamp("2024-01-01"),
+        "end_date": pd.Timestamp("2024-02-29"),
+        "temporal_period": "1M",
         "temporal_fill_mode": "past_only",
         "remove_outliers": True,
         "iqr_quantiles": (0.25, 0.75),
@@ -427,6 +449,40 @@ def test_geometry_metrics_use_projected_area_perimeter_and_rotated_rectangle() -
     )
 
 
+def test_requested_range_statistic_does_not_create_duplicate_columns_before_pivot() -> None:
+    extractor = _extractor(sentinel2_bands=("B02",))
+    extractor.PARCEL_ID_FIELD = "parcel_code"
+    extractor.parcel_logger = _SilentLogger()
+    extractor.parcels = gpd.GeoDataFrame(
+        {
+            "parcel_code": ["A", "B"],
+            "geometry": [Point(0, 0), Point(1, 1)],
+        },
+        crs="EPSG:4326",
+    )
+    long_data = pd.DataFrame(
+        {
+            "parcel_code": ["A", "A", "B", "B"],
+            "period_start": ["2024-01-01", "2024-02-01"] * 2,
+            "period_end": ["2024-02-01", "2024-03-01"] * 2,
+            "pixel_area": [10.0, 10.0, 10.0, 10.0],
+            "B02_mean": [1.0, 2.0, 3.0, 4.0],
+            "B02_min": [0.5, 1.5, 2.5, 3.5],
+            "B02_max": [1.5, 2.5, 3.5, 4.5],
+            "B02_range": [1.0, 1.0, 1.0, 1.0],
+        }
+    )
+
+    enriched = extractor._add_derived_stats(long_data)
+
+    assert list(enriched.columns).count("B02_range") == 1
+
+    reshaped = extractor._reshape_time_series_for_ml(enriched)
+
+    assert reshaped.loc[0, "B02_range__20240101"] == pytest.approx(1.0)
+    assert reshaped.loc[1, "B02_range__20240201"] == pytest.approx(1.0)
+
+
 def test_geometry_complexity_is_zero_for_ideal_simple_metrics() -> None:
     metrics = pd.DataFrame(
         {
@@ -645,6 +701,56 @@ def test_ndvi_is_calculated_from_filled_source_band_values() -> None:
     np.testing.assert_allclose(output[0, 0, 0], [0.6, 0.5], atol=1e-7)
 
 
+def test_sentinel1_indices_use_linear_power_pixels_before_spatial_reduction() -> None:
+    extractor = _extractor()
+    extractor.sentinel2_bands = ()
+    extractor.sentinel2_indices = ()
+    extractor.sentinel1_bands = ()
+    extractor.sentinel1_indices = ("R", "RVI")
+    extractor.spatial_statistics = ("mean",)
+    cube_variables = ["VV", "VH"]
+    linear_power = np.array([[[[4.0, 1.0]], [[1.0, 2.0]]]], dtype="float32")
+
+    pixel_indices = extractor._build_local_output_cube(linear_power, cube_variables)
+    reduced = extractor._reduce_local_pixels(pixel_indices.reshape(1, 2, -1))
+
+    np.testing.assert_allclose(pixel_indices[0, 0, 0], [4.0, 0.5])
+    np.testing.assert_allclose(pixel_indices[0, 1, 0], [0.8, 8.0 / 3.0])
+    np.testing.assert_allclose(reduced["mean"][0], [2.25, 26.0 / 15.0])
+    assert reduced["mean"][0, 0] != pytest.approx(linear_power[:, 0].mean() / linear_power[:, 1].mean())
+
+
+def test_sentinel1_indices_reject_db_or_other_negative_inputs() -> None:
+    extractor = _extractor(sentinel2_bands=(), sentinel1_indices=("R",))
+    db_values = np.array([[[[-8.0]], [[-14.0]]]], dtype="float32")
+
+    with pytest.raises(ValueError, match="linear-power sigma0"):
+        extractor._build_local_output_cube(db_values, ["VV", "VH"])
+
+
+def test_sentinel1_indices_require_and_load_both_polarizations() -> None:
+    extractor = _extractor()
+
+    assert extractor._validate_sentinel1_indices(None) == ()
+    assert extractor._validate_sentinel1_indices([]) == ()
+    assert extractor._validate_sentinel1_indices(["r", "RVI", "r"]) == ("R", "RVI")
+
+    extractor.sentinel2_bands = ()
+    extractor.sentinel1_bands = ()
+    extractor.sentinel1_indices = ("R", "RVI")
+    assert extractor._required_sentinel1_bands() == ("VV", "VH")
+    assert extractor._cube_sensor_variables() == ("VV", "VH")
+    assert extractor._output_sensor_variables() == ("R", "RVI")
+
+
+def test_sentinel2_indices_are_enabled_only_by_a_non_empty_list() -> None:
+    extractor = _extractor()
+
+    assert extractor._validate_sentinel2_indices(None) == ()
+    assert extractor._validate_sentinel2_indices([]) == ()
+    assert extractor._validate_sentinel2_indices(["ndvi", "NDMI"]) == ("NDVI", "NDMI")
+
+
 def test_explicit_empty_sentinel2_bands_supports_sentinel1_only_runs() -> None:
     extractor = _extractor()
 
@@ -653,6 +759,7 @@ def test_explicit_empty_sentinel2_bands_supports_sentinel1_only_runs() -> None:
     extractor.sentinel2_bands = ()
     extractor.sentinel2_indices = ()
     extractor.sentinel1_bands = ("VV", "VH")
+    extractor.sentinel1_indices = ()
     extractor._validate_sensor_selection()
     assert extractor._output_sensor_variables() == ("VV", "VH")
 

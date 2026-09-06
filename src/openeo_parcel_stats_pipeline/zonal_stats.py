@@ -53,18 +53,23 @@ class SatelliteZonalStats(
         :attr:`DEFAULT_SENTINEL2_BANDS` is used. Extra bands required by indices
         are loaded automatically without being added as standalone outputs.
         Pass an empty list to disable standalone Sentinel-2 bands.
-    calculate_sentinel2_indices:
-        If ``True``, calculate requested spectral indices locally after their
-        physical source bands complete outlier removal and null filling.
     sentinel2_indices:
-        List of index names. Supported values are NDVI, NDWI, MNDWI, NDMI,
-        NBR, GNDVI, EVI, SAVI, MSAVI, NDRE, PSRI and CI. Required when
-        ``calculate_sentinel2_indices`` is ``True``.
+        Optional list of index names. Supported values are NDVI, NDWI, MNDWI,
+        NDMI, NBR, GNDVI, EVI, SAVI, MSAVI, NDRE, PSRI and CI. ``None`` or an
+        empty list disables Sentinel-2 indices; a non-empty list enables them.
     sentinel1_bands:
         Optional Sentinel-1 GRD polarizations to add to the monthly cube.
         Supported values are ``VV`` and ``VH``. Backscatter is calculated as
-        linear-power sigma0 over the ellipsoid. At least one Sentinel-1 band,
-        Sentinel-2 band, or Sentinel-2 index must be selected overall.
+        linear-power sigma0 over the ellipsoid; no dB conversion is applied.
+        At least one Sentinel-1 or Sentinel-2 band/index must be selected.
+    sentinel1_indices:
+        Optional Sentinel-1 indices. ``R`` is ``VV / VH`` and ``RVI`` is
+        ``4 * VH / (VV + VH)``. Both automatically load VV and VH. ``None``
+        or an empty list disables Sentinel-1 indices.
+    sentinel1_orbit_direction:
+        Sentinel-1 orbit direction to load. Use ``'ASCENDING'``,
+        ``'DESCENDING'``, or ``'BOTH'``. The default ``'BOTH'`` applies no
+        orbit filter and preserves the existing behavior.
     spatial_statistics:
         Optional parcel statistics calculated locally from the monthly cube.
         ``mean`` is always included; supported additions are median, sd, min,
@@ -125,7 +130,9 @@ class SatelliteZonalStats(
         flow. Both values must be supplied together. When omitted, the normal
         cached/interactive OIDC authentication flow is used.
     """
-
+    # =========================================================================
+    # Sentinel-2 configuration constants
+    # =========================================================================
     SENTINEL2_COLLECTION = "SENTINEL2_L2A"
     SUPPORTED_SENTINEL2_BANDS = ("B01", "B02", "B03", "B04", "B05", "B06", "B07", "B08", "B8A", "B09", "B11", "B12")
     DEFAULT_SENTINEL2_BANDS = ("B02", "B03", "B04", "B05", "B08")
@@ -134,25 +141,6 @@ class SatelliteZonalStats(
     SENTINEL2_MAX_SCENE_CLOUD_COVER = 70
     SENTINEL2_INVALID_SCL_CLASSES = (0, 1, 3, 8, 9, 10, 11)
     SENTINEL2_BUFFERED_SCL_CLASSES = (3, 8, 9, 10, 11)
-
-    SENTINEL1_COLLECTION = "SENTINEL1_GRD"
-    SUPPORTED_SENTINEL1_BANDS = ("VV", "VH")
-    SENTINEL1_BACKSCATTER_COEFFICIENT = "sigma0-ellipsoid"
-    SENTINEL1_ELEVATION_MODEL = "COPERNICUS_30"
-
-    TARGET_RESOLUTION_METRES = 10
-    MAX_FEATURES_PER_JOB = 5_000
-    GRID_SIZE_METRES = 50_000
-    PARCEL_ID_FIELD = "parcel_id"
-    OPENEO_URL = "https://openeo.dataspace.copernicus.eu"
-    OPENEO_OIDC_PASSWORD_CLIENT_ID = "cdse-public"
-    LOG_FILE_NAME = "satellite_zonal_stats.log"
-    OPENEO_LOG_FILE_NAME = "satellite_openeo.log"
-    FILLING_LOG_FILE_NAME = "satellite_raster_filling.log"
-    PARCEL_LOG_FILE_NAME = "satellite_parcel_statistics.log"
-    PARCEL_OUTPUT_FILE_NAME = "satellite_parcel_time_stats.geoparquet"
-    REDUCED_PARCEL_OUTPUT_FILE_NAME = "satellite_parcel_annual_stats.geoparquet"
-
     # Band definitions use Sentinel-2 collection band names. NDWI follows the
     # McFeeters green/NIR convention; NDMI represents the NIR/SWIR moisture index.
     SUPPORTED_SENTINEL2_INDICES = {
@@ -169,7 +157,38 @@ class SatelliteZonalStats(
         "PSRI": ("B04", "B02", "B06"),
         "CI": ("B08", "B05"),
     }
-    SUPPORTED_SPATIAL_STATISTICS = ("mean", "median", "sd", "min", "max", "count", "p10", "p25", "p75", "p90")
+
+    # =========================================================================
+    # Sentinel-1 configuration constants
+    # =========================================================================
+    SENTINEL1_COLLECTION = "SENTINEL1_GRD"
+    SUPPORTED_SENTINEL1_BANDS = ("VV", "VH")
+    SUPPORTED_SENTINEL1_INDICES = {"R": ("VV", "VH"), "RVI": ("VV", "VH")}
+    SUPPORTED_SENTINEL1_ORBIT_DIRECTIONS = ("ASCENDING", "DESCENDING", "BOTH")
+    SENTINEL1_BACKSCATTER_COEFFICIENT = "sigma0-ellipsoid"
+    SENTINEL1_BACKSCATTER_SCALE = "linear_power"
+    SENTINEL1_ELEVATION_MODEL = "COPERNICUS_30"
+
+    # =========================================================================
+    # General configuration constants
+    # =========================================================================
+    TARGET_RESOLUTION_METRES = 10
+    MAX_FEATURES_PER_JOB = 5_000
+    GRID_SIZE_METRES = 50_000
+    PARCEL_ID_FIELD = "parcel_id"
+    OPENEO_URL = "https://openeo.dataspace.copernicus.eu"
+    OPENEO_OIDC_PASSWORD_CLIENT_ID = "cdse-public"
+    LOG_FILE_NAME = "satellite_zonal_stats.log"
+    OPENEO_LOG_FILE_NAME = "satellite_openeo.log"
+    FILLING_LOG_FILE_NAME = "satellite_raster_filling.log"
+    PARCEL_LOG_FILE_NAME = "satellite_parcel_statistics.log"
+    PARCEL_OUTPUT_FILE_NAME = "satellite_parcel_time_stats.geoparquet"
+    REDUCED_PARCEL_OUTPUT_FILE_NAME = "satellite_parcel_annual_stats.geoparquet"
+
+    # =========================================================================
+    # Spatial statistics configuration constants
+    # =========================================================================
+    SUPPORTED_SPATIAL_STATISTICS = ("mean", "median", "sd", "min", "max", "range", "count", "p10", "p25", "p75", "p90")
     QUANTILE_PROBABILITIES = {"p10": 0.10, "p25": 0.25, "p75": 0.75, "p90": 0.90}
     SPATIAL_STATISTIC_ALIASES = {"average": "mean", "std": "sd", "stdev": "sd", "standard_deviation": "sd"}
 
@@ -186,9 +205,10 @@ class SatelliteZonalStats(
         working_epsg: int,
         parcel_id_field: str = "parcel_id",
         sentinel2_bands: list[str] | None = None,
-        calculate_sentinel2_indices: bool = False,
-        sentinel2_indices: list[str] | None = None,
+        sentinel2_indices: list[str] | None = [],
         sentinel1_bands: list[str] | None = None,
+        sentinel1_indices: list[str] | None = [],
+        sentinel1_orbit_direction: str = "BOTH",
         spatial_statistics: list[str] | None = None,
         remove_outliers: bool = False,
         iqr_quantiles: tuple[float, float] = (0.25, 0.75),
@@ -240,11 +260,10 @@ class SatelliteZonalStats(
             raise TypeError("keep_cleaned_checkpoint must be a bool.")
         self.keep_cleaned_checkpoint = keep_cleaned_checkpoint
         self.sentinel2_bands = self._validate_sentinel2_bands(sentinel2_bands)
-        if not isinstance(calculate_sentinel2_indices, bool):
-            raise TypeError("calculate_sentinel2_indices must be a bool.")
-        self.calculate_sentinel2_indices = calculate_sentinel2_indices
         self.sentinel2_indices = self._validate_sentinel2_indices(sentinel2_indices)
         self.sentinel1_bands = self._validate_sentinel1_bands(sentinel1_bands)
+        self.sentinel1_indices = self._validate_sentinel1_indices(sentinel1_indices)
+        self.sentinel1_orbit_direction = self._validate_sentinel1_orbit_direction(sentinel1_orbit_direction)
         self._validate_sensor_selection()
         self.spatial_statistics = self._validate_spatial_statistics(spatial_statistics)
         (
@@ -284,6 +303,8 @@ class SatelliteZonalStats(
             f"Configured Sentinel-2 bands={list(self.sentinel2_bands)}, "
             f"Sentinel-2 indices={list(self.sentinel2_indices)}, "
             f"Sentinel-1 bands={list(self.sentinel1_bands)}, "
+            f"Sentinel-1 indices={list(self.sentinel1_indices)}, "
+            f"Sentinel-1 orbit direction={self.sentinel1_orbit_direction}, "
             f"parcel statistics={list(self.spatial_statistics)}, "
             f"remove_outliers={self.remove_outliers}, "
             f"iqr_quantiles={self.iqr_quantiles}, "
@@ -425,7 +446,12 @@ class SatelliteZonalStats(
         write_data(final, str(parquet_output))
         # Create a compact sibling dataset for ML. The period count is inferred
         # from this run, while all configured Sentinel-2 sources must share it.
-        reduction_sources = (*self.sentinel2_bands, *self.sentinel2_indices, *self.sentinel1_bands)
+        reduction_sources = (
+            *self.sentinel2_bands,
+            *self.sentinel2_indices,
+            *self.sentinel1_bands,
+            *self.sentinel1_indices,
+        )
         reduced = reduce_annual_median_features(
             final,
             temporal_sources=reduction_sources,

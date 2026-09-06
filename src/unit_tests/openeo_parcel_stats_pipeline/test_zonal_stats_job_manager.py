@@ -9,7 +9,26 @@ import pandas as pd
 import pytest
 from shapely.geometry import box
 
-from openeo_parcel_stats_pipeline.zonal_stats_job_manager import JobManagerSatelliteZonalStats, compute_tile_buffer_metres
+from openeo_parcel_stats_pipeline.zonal_stats_job_manager import (
+    JobManagerSatelliteZonalStats,
+    compute_tile_buffer_metres,
+    compute_tile_width,
+)
+
+
+class _MemoryJobDatabase:
+    """Small job-database double covering retry state persistence."""
+
+    def __init__(self, dataframe: pd.DataFrame):
+        self.df = dataframe.copy()
+
+    def get_by_status(self, statuses, max=None):
+        selected = self.df.loc[self.df["status"].isin(statuses)]
+        return selected.head(max) if max is not None else selected
+
+    def persist(self, dataframe):
+        for column in dataframe.columns:
+            self.df.loc[dataframe.index, column] = dataframe[column]
 
 
 def test_tile_buffer_uses_parcel_dimensions_not_square_root_area() -> None:
@@ -18,6 +37,32 @@ def test_tile_buffer_uses_parcel_dimensions_not_square_root_area() -> None:
     buffer_metres = compute_tile_buffer_metres(parcels, working_epsg=3857, safety_factor=1.0, round_up_to_metres=1)
 
     assert buffer_metres == 501
+
+
+def test_tile_width_fills_two_remote_slots_in_every_user_partition() -> None:
+    first = gpd.GeoDataFrame(
+        {"parcel_id": ["a", "b", "c"]},
+        geometry=[box(0, 0, 100, 100), box(9_000, 0, 9_100, 100), box(18_000, 0, 18_100, 100)],
+        crs="EPSG:3857",
+    )
+    second = gpd.GeoDataFrame(
+        {"parcel_id": ["d", "e", "f"]},
+        geometry=[box(0, 1_000, 100, 1_100), box(9_000, 1_000, 9_100, 1_100), box(18_000, 1_000, 18_100, 1_100)],
+        crs="EPSG:3857",
+    )
+    parcels = gpd.GeoDataFrame(pd.concat([first, second], ignore_index=True), crs="EPSG:3857")
+
+    width = compute_tile_width(
+        parcels,
+        "parcel_id",
+        3857,
+        spatial_parts=[first, second],
+        user_count=2,
+        jobs_per_user=2,
+        candidate_widths=(5_000, 10_000, 20_000),
+    )
+
+    assert width == 10_000
 
 
 def _planner(parcels: gpd.GeoDataFrame) -> JobManagerSatelliteZonalStats:
@@ -41,10 +86,106 @@ def test_job_title_contains_the_run_identifier() -> None:
     assert title == "Zonal statistics [kozani autumn 2026] tile_00003 batch 4"
 
 
+def test_default_job_retry_limit_is_three() -> None:
+    assert JobManagerSatelliteZonalStats.DEFAULT_MAX_JOB_RETRIES == 3
+
+
 def test_run_identifier_rejects_empty_labels() -> None:
     planner = object.__new__(JobManagerSatelliteZonalStats)
     with pytest.raises(ValueError, match="must not be empty"):
         planner._validate_run_identifier("   ")
+
+
+def test_error_job_is_reset_and_retry_is_persisted() -> None:
+    planner = object.__new__(JobManagerSatelliteZonalStats)
+    planner.max_job_retries = 2
+    planner.openeo_logger = logging.getLogger("test_job_manager_retry")
+    job_db = _MemoryJobDatabase(
+        pd.DataFrame(
+            {
+                "batch_number": [5, 6],
+                "id": ["failed-5", "finished-6"],
+                "status": ["error", "finished"],
+            }
+        )
+    )
+
+    reset_count = planner._reset_retryable_failed_jobs(job_db)
+
+    assert reset_count == 1
+    assert job_db.df.loc[0, "status"] == "not_started"
+    assert job_db.df.loc[0, "retry_count"] == 1
+    assert job_db.df.loc[0, "failed_job_ids"] == "failed-5"
+    assert job_db.df.loc[0, "retry_mode"] == "replace"
+    assert job_db.df.loc[1, "status"] == "finished"
+    assert job_db.df.loc[1, "retry_count"] == 0
+
+
+def test_start_failure_retries_the_existing_job() -> None:
+    planner = object.__new__(JobManagerSatelliteZonalStats)
+    planner.max_job_retries = 2
+    planner.openeo_logger = logging.getLogger("test_job_manager_start_retry")
+    job_db = _MemoryJobDatabase(
+        pd.DataFrame(
+            {
+                "batch_number": [6],
+                "id": ["created-but-not-started"],
+                "status": ["start_failed"],
+            }
+        )
+    )
+
+    reset_count = planner._reset_retryable_failed_jobs(job_db)
+
+    assert reset_count == 1
+    assert job_db.df.loc[0, "status"] == "not_started"
+    assert job_db.df.loc[0, "retry_mode"] == "restart"
+    assert job_db.df.loc[0, "id"] == "created-but-not-started"
+    assert job_db.df.loc[0, "failed_job_ids"] == ""
+
+
+def test_restart_retry_reuses_remote_job_without_building_a_replacement() -> None:
+    planner = object.__new__(JobManagerSatelliteZonalStats)
+    expected_job = object()
+
+    class RecordingConnection:
+        def job(self, job_id):
+            assert job_id == "existing-job"
+            return expected_job
+
+    planner._build_tile_cube = lambda *_args, **_kwargs: pytest.fail("A replacement cube must not be built.")
+
+    job, reused = planner._build_or_reuse_tile_job(
+        pd.Series({"id": "existing-job", "retry_mode": "restart"}),
+        RecordingConnection(),
+        {"spatial_extent": {}},
+    )
+
+    assert job is expected_job
+    assert reused is True
+
+
+def test_failed_job_is_not_reset_after_retry_limit() -> None:
+    planner = object.__new__(JobManagerSatelliteZonalStats)
+    planner.max_job_retries = 2
+    planner.openeo_logger = logging.getLogger("test_job_manager_retry_limit")
+    job_db = _MemoryJobDatabase(
+        pd.DataFrame(
+            {
+                "batch_number": [5],
+                "id": ["third-failure"],
+                "status": ["error"],
+                "retry_count": [2],
+                "failed_job_ids": ["first-failure;second-failure"],
+            }
+        )
+    )
+
+    reset_count = planner._reset_retryable_failed_jobs(job_db)
+
+    assert reset_count == 0
+    assert job_db.df.loc[0, "status"] == "error"
+    assert job_db.df.loc[0, "retry_count"] == 2
 
 
 def test_sentinel1_only_tile_graph_does_not_load_sentinel2() -> None:
@@ -72,6 +213,8 @@ def test_sentinel1_only_tile_graph_does_not_load_sentinel2() -> None:
     extractor.sentinel2_bands = ()
     extractor.sentinel2_indices = ()
     extractor.sentinel1_bands = ("VV", "VH")
+    extractor.sentinel1_indices = ()
+    extractor.sentinel1_orbit_direction = "ASCENDING"
     extractor.start_date = pd.Timestamp("2024-01-01")
     extractor.end_date = pd.Timestamp("2024-03-31")
     extractor.temporal_period = "1M"
@@ -82,6 +225,10 @@ def test_sentinel1_only_tile_graph_does_not_load_sentinel2() -> None:
 
     loaded_collections = [call[1] for call in calls if call[0] == "load_collection"]
     assert loaded_collections == [extractor.SENTINEL1_COLLECTION]
+    sentinel1_options = next(call[2] for call in calls if call[:2] == ("load_collection", extractor.SENTINEL1_COLLECTION))
+    orbit_filter = sentinel1_options["properties"]["sat:orbit_state"]
+    assert orbit_filter("ASCENDING") is True
+    assert orbit_filter("DESCENDING") is False
     assert any(call[0] == "resample_spatial" and call[1]["projection"] == "EPSG:32634" for call in calls)
 
 

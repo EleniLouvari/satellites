@@ -11,8 +11,10 @@ while ownership prevents duplicate parcel results in overlapping tile rasters.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 import hashlib
 import math
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -77,55 +79,113 @@ def compute_tile_buffer_metres(
     return tile_buffer_metres
 
 
-def compute_tile_width(parcels: gpd.GeoDataFrame, parcel_id_col: str, working_epsg: int) -> int:
-    """Test candidate tile sizes and return the smallest that avoids crossing parcels."""
-    # Evaluate candidate square tile sizes and return the smallest size that
-    # avoids splitting parcels across tiles (which would create duplicate work).
-    from openeo.extra.job_management import split_area
+def _non_empty_tile_job_count(partition: gpd.GeoDataFrame, tile_width: int, working_epsg: int) -> tuple[int, int]:
+    """Count representative-point-owned jobs and their maximum parcel load."""
+    metric = partition.to_crs(epsg=working_epsg)
+    west, south, east, north = metric.total_bounds
+    tiles = split_area(
+        aoi={
+            "west": float(west),
+            "south": float(south),
+            "east": float(east),
+            "north": float(north),
+            "crs": f"EPSG:{working_epsg}",
+        },
+        tile_size=tile_width,
+        projection=f"EPSG:{working_epsg}",
+    ).to_crs(epsg=working_epsg)
+    points = metric[["geometry"]].reset_index(drop=True)
+    points["parcel_row"] = np.arange(len(points))
+    points.geometry = metric.geometry.representative_point().reset_index(drop=True)
+    assignments = gpd.sjoin(points, tiles[["geometry"]], how="left", predicate="intersects")
+    assignments = assignments.loc[assignments["index_right"].notna()]
+    # A point on a shared edge may intersect two tiles; deterministically own only one.
+    assignments = assignments.sort_values("index_right").drop_duplicates("parcel_row")
+    if len(assignments) != len(metric):
+        raise RuntimeError(f"Tile planning assigned {len(assignments)} of {len(metric)} parcels.")
+    counts = assignments.groupby("index_right").size()
+    return len(counts), int(counts.max())
 
-    west, south, east, north = parcels.total_bounds
-    aoi_extent = {
-        "west": float(west),
-        "south": float(south),
-        "east": float(east),
-        "north": float(north),
-        "crs": f"EPSG:{working_epsg}",
-    }
-    # Test candidate tile sizes and report the number of non-empty jobs, parcels
+
+def compute_tile_width(
+    parcels: gpd.GeoDataFrame,
+    parcel_id_col: str,
+    working_epsg: int,
+    *,
+    spatial_parts: Sequence[gpd.GeoDataFrame] | None = None,
+    user_count: int = 1,
+    jobs_per_user: int = 2,
+    candidate_widths: Sequence[int] = (5_000, 10_000, 20_000, 30_000, 40_000, 50_000, 60_000),
+) -> int:
+    """Choose the largest tile width that fills every active user's job slots.
+
+    Counts are calculated independently inside each spatial partition because
+    each partition creates its own job manager. Core-tile ownership follows the
+    real planner's representative-point rule; boundary-crossing geometries are
+    handled by ``tile_buffer_metres`` rather than forcing oversized core tiles.
+    """
+    if not isinstance(parcels, gpd.GeoDataFrame) or parcels.empty:
+        raise ValueError("parcels must be a non-empty GeoDataFrame.")
+    if parcels.crs is None:
+        raise ValueError("parcels must have a CRS.")
+    if parcel_id_col not in parcels.columns:
+        raise ValueError(f"Parcel ID column does not exist: {parcel_id_col!r}.")
+    if parcels[parcel_id_col].isna().any() or parcels[parcel_id_col].duplicated().any():
+        raise ValueError(f"{parcel_id_col!r} must contain unique non-null values.")
+    if isinstance(user_count, bool) or int(user_count) < 1:
+        raise ValueError("user_count must be a positive integer.")
+    if isinstance(jobs_per_user, bool) or int(jobs_per_user) < 1:
+        raise ValueError("jobs_per_user must be a positive integer.")
+    users, slots = int(user_count), int(jobs_per_user)
+
+    parts = list(spatial_parts) if spatial_parts is not None else [parcels]
+    if not parts or any(not isinstance(part, gpd.GeoDataFrame) or part.empty or part.crs is None for part in parts):
+        raise ValueError("spatial_parts must contain non-empty GeoDataFrames.")
+    combined_ids = [parcel_id for part in parts for parcel_id in part[parcel_id_col].tolist()]
+    if len(combined_ids) != len(set(combined_ids)) or set(combined_ids) != set(parcels[parcel_id_col]):
+        raise ValueError("spatial_parts must contain every input parcel exactly once.")
+
+    widths = tuple(int(width) for width in candidate_widths)
+    if not widths or any(width <= 0 for width in widths) or len(set(widths)) != len(widths):
+        raise ValueError("candidate_widths must contain unique positive integers.")
+    widths = tuple(sorted(widths))
+
     comparison_rows = []
-    for candidate_metres in (5_000, 10_000, 20_000, 30_000, 40_000, 50_000, 60_000):
-        tiles = (
-            split_area(aoi=aoi_extent, tile_size=candidate_metres, projection=f"EPSG:{working_epsg}")
-            .to_crs(parcels.crs)
-            .reset_index(drop=True)
+    for width in widths:
+        job_counts, maximum_loads = zip(
+            *(_non_empty_tile_job_count(part, width, int(working_epsg)) for part in parts)
         )
-        # Assign parcels to tiles by checking which tile contains the parcel geometry.
-        joined = gpd.sjoin(parcels[[parcel_id_col, "geometry"]], tiles[["geometry"]], how="left", predicate="within")
-        assigned = joined.loc[joined["index_right"].notna()].drop_duplicates(parcel_id_col)
-        counts = assigned.groupby("index_right").size()
-        used_tiles = counts.index.astype(int).tolist()
         comparison_rows.append(
             {
-                "tile_size_km": candidate_metres // 1_000,
-                "non_empty_jobs": len(counts),
-                "crossing_parcels": len(parcels) - assigned[parcel_id_col].nunique(),
-                "median_parcels_per_job": float(counts.median()) if len(counts) else 0,
-                "max_parcels_per_job": int(counts.max()) if len(counts) else 0,
-                "loaded_area_km2": float(tiles.loc[used_tiles].geometry.area.sum() / 1_000_000),
+                "tile_size_km": width / 1_000,
+                "total_jobs": sum(job_counts),
+                "min_jobs_per_partition": min(job_counts),
+                "median_jobs_per_partition": float(np.median(job_counts)),
+                "max_jobs_per_partition": max(job_counts),
+                "max_parcels_per_job": max(maximum_loads),
+                "fills_user_slots": min(job_counts) >= slots,
             }
         )
-    # Display the comparison table and return the smallest tile size that avoids crossing parcels.
+
     tile_comparison = pd.DataFrame(comparison_rows)
-    safe = tile_comparison.loc[tile_comparison["crossing_parcels"] == 0]
-    tile_size_meters = int(safe.iloc[0]["tile_size_km"] * 1_000) if not safe.empty else 50_000
-    print(f"AOI extent: {(east - west) / 1_000:.2f} x {(north - south) / 1_000:.2f} km; parcels: {len(parcels):,}")
-    print(tile_comparison.to_string(index=False))
+    eligible = tile_comparison.loc[tile_comparison["fills_user_slots"]]
+    selected = int((eligible.iloc[-1] if not eligible.empty else tile_comparison.iloc[0])["tile_size_km"] * 1_000)
+    active_users = min(users, len(parts))
     print(
-        f"Recommended tile size: {tile_size_meters / 1_000:g} km"
-        if not safe.empty
-        else "No tested tile size avoids crossing parcels; use a custom grid."
+        f"Concurrency target: {users} users x {slots} jobs = {users * slots} remote slots; "
+        f"{len(parts)} spatial partitions ({active_users} initially active users)."
     )
-    return tile_size_meters
+    print(tile_comparison.to_string(index=False))
+    if len(parts) < users:
+        print(f"Warning: {users - len(parts)} users will be idle because there are fewer non-empty partitions than users.")
+    if eligible.empty:
+        print(
+            f"No candidate provides {slots} jobs in every partition; using the smallest tile width "
+            f"({selected / 1_000:g} km) for maximum available concurrency."
+        )
+    else:
+        print(f"Recommended tile size: {selected / 1_000:g} km (largest candidate that fills every user's slots).")
+    return selected
 
 
 class _NetCDFTileJobManager(MultiBackendJobManager):
@@ -157,6 +217,13 @@ class JobManagerSatelliteZonalStats(SatelliteZonalStats):
         Jobs kept active on CDSE.  The general-user limit is currently two.
     ``job_poll_seconds``
         Delay between manager status polls.
+    ``max_job_retries``
+        Maximum retries after a tile reaches ``error`` or its start request
+        fails. Retry counts are stored in the job database, so the limit is
+        preserved across notebook restarts.
+    ``job_retry_delay_seconds``
+        Cooldown before retrying a failed job. This delay is useful for
+        transient CDSE Kubernetes/API failures and is separate from polling.
     ``run_identifier``
         Short label included in every openEO job title for this run. When
         omitted, a local timestamp such as ``run-20260811-143025`` is created
@@ -168,6 +235,9 @@ class JobManagerSatelliteZonalStats(SatelliteZonalStats):
 
     DEFAULT_TILE_SIZE_METRES = 50_000
     DEFAULT_OPENEO_PARALLEL_JOBS = 2
+    DEFAULT_MAX_JOB_RETRIES = 3
+    DEFAULT_JOB_RETRY_DELAY_SECONDS = 60
+    RETRYABLE_JOB_FAILURE_STATUSES = ("error", "start_failed", "queued_for_start_failed")
 
     def __init__(
         self,
@@ -176,6 +246,8 @@ class JobManagerSatelliteZonalStats(SatelliteZonalStats):
         tile_buffer_metres: int = 500,
         openeo_parallel_jobs: int = DEFAULT_OPENEO_PARALLEL_JOBS,
         job_poll_seconds: int = 30,
+        max_job_retries: int = DEFAULT_MAX_JOB_RETRIES,
+        job_retry_delay_seconds: int = DEFAULT_JOB_RETRY_DELAY_SECONDS,
         run_identifier: str | None = None,
         **kwargs,
     ) -> None:
@@ -183,6 +255,10 @@ class JobManagerSatelliteZonalStats(SatelliteZonalStats):
         self.tile_buffer_metres = self._non_negative_integer(tile_buffer_metres, "tile_buffer_metres")
         self.openeo_parallel_jobs = self._positive_integer(openeo_parallel_jobs, "openeo_parallel_jobs")
         self.job_poll_seconds = self._positive_integer(job_poll_seconds, "job_poll_seconds")
+        self.max_job_retries = self._non_negative_integer(max_job_retries, "max_job_retries")
+        self.job_retry_delay_seconds = self._non_negative_integer(
+            job_retry_delay_seconds, "job_retry_delay_seconds"
+        )
         self.run_identifier = self._validate_run_identifier(run_identifier)
         super().__init__(*args, **kwargs)
 
@@ -231,6 +307,112 @@ class JobManagerSatelliteZonalStats(SatelliteZonalStats):
         if result < 0:
             raise ValueError(f"{name} must not be negative.")
         return result
+
+    def _ensure_job_retry_tracking(self, job_db) -> None:
+        """Add persistent retry metadata to new or pre-retry job databases."""
+
+        jobs = job_db.df
+        changed = False
+        if "retry_count" not in jobs.columns:
+            jobs["retry_count"] = 0
+            changed = True
+        else:
+            normalized = pd.to_numeric(jobs["retry_count"], errors="coerce").fillna(0).astype(int)
+            if not normalized.equals(jobs["retry_count"]):
+                jobs["retry_count"] = normalized
+                changed = True
+        if "failed_job_ids" not in jobs.columns:
+            jobs["failed_job_ids"] = ""
+            changed = True
+        else:
+            normalized = jobs["failed_job_ids"].fillna("").astype(str)
+            if not normalized.equals(jobs["failed_job_ids"]):
+                jobs["failed_job_ids"] = normalized
+                changed = True
+        if "retry_mode" not in jobs.columns:
+            jobs["retry_mode"] = ""
+            changed = True
+        else:
+            normalized = jobs["retry_mode"].fillna("").astype(str)
+            if not normalized.equals(jobs["retry_mode"]):
+                jobs["retry_mode"] = normalized
+                changed = True
+        if changed:
+            job_db.persist(jobs.copy())
+
+    @staticmethod
+    def _clean_job_id(value) -> str:
+        """Return a usable persisted job ID, excluding null-like values."""
+
+        if value is None or pd.isna(value):
+            return ""
+        return str(value).strip()
+
+    def _reset_retryable_failed_jobs(self, job_db) -> int:
+        """Reset eligible terminal failures for a bounded retry."""
+
+        self._ensure_job_retry_tracking(job_db)
+        failed = job_db.get_by_status(statuses=self.RETRYABLE_JOB_FAILURE_STATUSES).copy()
+        if failed.empty:
+            return 0
+
+        retry_counts = pd.to_numeric(failed["retry_count"], errors="coerce").fillna(0).astype(int)
+        retryable = failed.loc[retry_counts < self.max_job_retries].copy()
+        exhausted = failed.loc[retry_counts >= self.max_job_retries]
+        if not exhausted.empty:
+            self.openeo_logger.error(
+                "%s tile job(s) exhausted the limit of %s retries: batches %s.",
+                len(exhausted),
+                self.max_job_retries,
+                exhausted["batch_number"].astype(int).tolist(),
+            )
+        if retryable.empty:
+            return 0
+
+        for index, row in retryable.iterrows():
+            failure_status = str(row["status"])
+            failed_id = self._clean_job_id(row.get("id"))
+            history = [job_id for job_id in str(row.get("failed_job_ids") or "").split(";") if job_id]
+            restart_existing = failure_status in {"start_failed", "queued_for_start_failed"} and bool(failed_id)
+            if not restart_existing and failed_id and failed_id not in history:
+                history.append(failed_id)
+            next_retry = int(retry_counts.loc[index]) + 1
+            retryable.at[index, "failed_job_ids"] = ";".join(history)
+            retryable.at[index, "retry_count"] = next_retry
+            retryable.at[index, "retry_mode"] = "restart" if restart_existing else "replace"
+            retryable.at[index, "status"] = "not_started"
+            self.openeo_logger.warning(
+                "Retrying batch %s after status %s for openEO job %s (retry %s/%s; mode=%s).",
+                int(row["batch_number"]),
+                failure_status,
+                failed_id or "<unknown>",
+                next_retry,
+                self.max_job_retries,
+                retryable.at[index, "retry_mode"],
+            )
+
+        job_db.persist(retryable)
+        return len(retryable)
+
+    def _wait_before_job_retry(self, retry_count: int) -> None:
+        """Apply the configured backend cooldown before a retry wave."""
+
+        if retry_count > 0 and self.job_retry_delay_seconds > 0:
+            self.openeo_logger.warning(
+                "Waiting %s seconds before retrying %s failed tile job(s).",
+                self.job_retry_delay_seconds,
+                retry_count,
+            )
+            time.sleep(self.job_retry_delay_seconds)
+
+    def _build_or_reuse_tile_job(self, row, connection, plan):
+        """Reuse a job whose start failed, or build a replacement job."""
+
+        existing_job_id = self._clean_job_id(row.get("id"))
+        if row.get("retry_mode") == "restart" and existing_job_id:
+            return connection.job(existing_job_id), True
+        cube = self._build_tile_cube(connection, plan["spatial_extent"])
+        return cube.create_job(out_format="netCDF", title=self._job_title(plan)), False
 
     def _run_signature(self) -> str:
         """Keep tile caches separate from original and differently sized runs."""
@@ -370,7 +552,8 @@ class JobManagerSatelliteZonalStats(SatelliteZonalStats):
             sentinel2_temporal = self._aggregate_temporal_cube(
                 self._build_sentinel2_output_cube(reflectance.mask(invalid | cloud_buffer))
             )
-        if not self.sentinel1_bands:
+        required_sentinel1_bands = self._required_sentinel1_bands()
+        if not required_sentinel1_bands:
             return sentinel2_temporal
 
         # 2. SENTINEL1: load, filter bands, resample, apply backscatter coefficient
@@ -378,7 +561,8 @@ class JobManagerSatelliteZonalStats(SatelliteZonalStats):
             self.SENTINEL1_COLLECTION,
             spatial_extent=spatial_extent,
             temporal_extent=[self.start_date.strftime("%Y-%m-%d"), self.end_date.strftime("%Y-%m-%d")],
-            bands=list(self.sentinel1_bands),
+            bands=list(required_sentinel1_bands),
+            **self._sentinel1_load_options(),
         )
         sentinel1 = sentinel1.sar_backscatter(
             coefficient=self.SENTINEL1_BACKSCATTER_COEFFICIENT,
@@ -439,6 +623,9 @@ class JobManagerSatelliteZonalStats(SatelliteZonalStats):
                     "north": plan["spatial_extent"]["north"],
                     "crs": plan["spatial_extent"]["crs"],
                     "target_path": plan["target_path"],
+                    "retry_count": 0,
+                    "failed_job_ids": "",
+                    "retry_mode": "",
                 }
                 for plan in uncached
             ]
@@ -451,12 +638,11 @@ class JobManagerSatelliteZonalStats(SatelliteZonalStats):
 
         def start_job(row, connection, **_kwargs):
             plan = plan_lookup[int(row["batch_number"])]
-            cube = self._build_tile_cube(connection, plan["spatial_extent"])
-            job = cube.create_job(out_format="netCDF", title=self._job_title(plan))
+            job, reused = self._build_or_reuse_tile_job(row, connection, plan)
+            action = "Retrying start of existing" if reused else "Created"
             message = (
-                f"Created openEO job {job.job_id} for run {self.run_identifier!r}, "
-                f"batch {plan['batch_number']} "
-                f"({plan['tile_id']}, {len(plan['parcels'])} parcels)."
+                f"{action} openEO job {job.job_id} for run {self.run_identifier!r}, "
+                f"batch {plan['batch_number']} ({plan['tile_id']}, {len(plan['parcels'])} parcels)."
             )
             print(message, flush=True)
             self.openeo_logger.info(message)
@@ -466,12 +652,29 @@ class JobManagerSatelliteZonalStats(SatelliteZonalStats):
             poll_sleep=self.job_poll_seconds, root_dir=cube_dir / "job_manager", download_results=False
         )
         manager.add_backend("cdse", connection=connection, parallel_jobs=self.openeo_parallel_jobs)
-        manager.run_jobs(job_db=job_db, start_job=start_job)
+        retry_count = self._reset_retryable_failed_jobs(job_db)
+        self._wait_before_job_retry(retry_count)
+        while True:
+            manager.run_jobs(job_db=job_db, start_job=start_job)
+            retry_count = self._reset_retryable_failed_jobs(job_db)
+            if retry_count == 0:
+                break
+            self._wait_before_job_retry(retry_count)
 
         missing = [Path(plan["target_path"]) for plan in plans if not Path(plan["target_path"]).exists()]
         if missing:
+            failed = job_db.get_by_status(statuses=self.RETRYABLE_JOB_FAILURE_STATUSES)
+            failure_details = ""
+            if not failed.empty:
+                descriptions = [
+                    f"batch {int(row['batch_number'])} job {row['id']} with status {row['status']} "
+                    f"after {int(row['retry_count'])} retries"
+                    for _, row in failed.iterrows()
+                ]
+                failure_details = f" Failed jobs: {', '.join(descriptions)}."
             raise RuntimeError(
                 f"MultiBackendJobManager finished without {len(missing)} expected NetCDF files. "
                 f"Inspect {database_path} and {cube_dir / 'job_manager'} for statuses and error logs."
+                f"{failure_details}"
             )
         return pending_batches

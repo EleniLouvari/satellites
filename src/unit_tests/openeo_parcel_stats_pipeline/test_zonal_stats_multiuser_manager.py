@@ -1,4 +1,6 @@
 from pathlib import Path
+import threading
+import time
 
 import geopandas as gpd
 import pytest
@@ -134,3 +136,66 @@ def test_run_parallel_extractions_returns_none_after_all_partitions_complete(mon
 
     assert result is None
     assert sorted(completed_partitions) == [1, 2]
+
+
+def test_partition_count_builds_one_grid_cell_per_user() -> None:
+    parcels = gpd.GeoDataFrame(
+        {"parcel_id": [1, 2, 3, 4]},
+        geometry=[Point(0, 0), Point(10, 0), Point(0, 10), Point(10, 10)],
+        crs="EPSG:3857",
+    )
+
+    parts = manager.split_geodataframe_by_grid(parcels, partition_count=4)
+
+    assert len(parts) == 4
+    assert sorted(parcel_id for part in parts for parcel_id in part["parcel_id"]) == [1, 2, 3, 4]
+
+
+def test_load_users_rejects_duplicate_accounts(monkeypatch) -> None:
+    monkeypatch.setenv("OPENEO_USERS", "same,password1;same,password2")
+
+    with pytest.raises(ValueError, match="duplicate usernames"):
+        manager.load_openeo_users_from_env()
+
+
+def test_parallel_extractions_rejects_more_than_two_jobs_per_user() -> None:
+    with pytest.raises(ValueError, match="cannot exceed 2"):
+        manager.run_parallel_extractions(
+            spatial_parts=[_result(1, 0)],
+            users_list=[("user", "password")],
+            config={"openeo_parallel_jobs": 3},
+        )
+
+
+def test_parallel_extractions_never_reuses_one_user_concurrently(monkeypatch):
+    users = [("first", "password"), ("second", "password")]
+    lock = threading.Lock()
+    active_by_user = {user: 0 for user, _ in users}
+    maximum_by_user = {user: 0 for user, _ in users}
+    active_total = 0
+    maximum_total = 0
+
+    def fake_run_partition_extractor(part_idx, gdf_part, users_list, total_partitions, config):
+        nonlocal active_total, maximum_total
+        user = users_list[(part_idx - 1) % len(users_list)][0]
+        with lock:
+            active_by_user[user] += 1
+            active_total += 1
+            maximum_by_user[user] = max(maximum_by_user[user], active_by_user[user])
+            maximum_total = max(maximum_total, active_total)
+        time.sleep(0.03)
+        with lock:
+            active_by_user[user] -= 1
+            active_total -= 1
+        return part_idx, _result(part_idx, 0)
+
+    monkeypatch.setattr(manager, "run_partition_extractor", fake_run_partition_extractor)
+
+    manager.run_parallel_extractions(
+        spatial_parts=[_result(index, index) for index in range(1, 5)],
+        users_list=users,
+        config={"openeo_parallel_jobs": 2},
+    )
+
+    assert maximum_by_user == {"first": 1, "second": 1}
+    assert maximum_total == 2

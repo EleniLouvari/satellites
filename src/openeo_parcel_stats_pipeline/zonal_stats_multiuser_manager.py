@@ -1,12 +1,13 @@
 """Multi-user spatial partitioning for parallel openEO extraction.
 
 This module orchestrates splitting large parcel GeoDataFrames into spatial
-partitions and running independent extractors in parallel, each using a different
-openEO user account to bypass per-user concurrent job limits (2 jobs max on CDSE).
+partitions and running one extractor queue per openEO user account. User queues
+run in parallel, and each active extractor uses at most two CDSE jobs.
 """
 
 from __future__ import annotations
 
+import math
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -19,9 +20,30 @@ from common_libraries.io_library import write_data
 from .zonal_stats_job_manager import JobManagerSatelliteZonalStats
 
 PARTITION_RESULT_FILE_NAME = "satellite_parcel_time_stats.geoparquet"
+MAX_OPENEO_JOBS_PER_USER = 2
 
 
-def split_geodataframe_by_grid(gdf: gpd.GeoDataFrame, rows: int = 1, cols: int = 2) -> list[gpd.GeoDataFrame]:
+def _grid_shape_for_partition_count(gdf: gpd.GeoDataFrame, partition_count: int) -> tuple[int, int]:
+    """Choose an exact factor grid whose cells best match the AOI aspect ratio."""
+    if isinstance(partition_count, bool) or int(partition_count) < 1:
+        raise ValueError("partition_count must be a positive integer.")
+    count = int(partition_count)
+    minx, miny, maxx, maxy = gdf.total_bounds
+    width = float(maxx - minx)
+    height = float(maxy - miny)
+    if not all(math.isfinite(value) for value in (width, height)) or width <= 0 or height <= 0:
+        raise ValueError("Parcel bounds must have positive finite width and height.")
+    factor_pairs = [(rows, count // rows) for rows in range(1, math.isqrt(count) + 1) if count % rows == 0]
+    # Prefer cells that are as close to square as the exact factorization allows.
+    return min(factor_pairs, key=lambda shape: abs(math.log((width / shape[1]) / (height / shape[0]))))
+
+
+def split_geodataframe_by_grid(
+    gdf: gpd.GeoDataFrame,
+    rows: int | None = None,
+    cols: int | None = None,
+    partition_count: int | None = None,
+) -> list[gpd.GeoDataFrame]:
     """
     Split a GeoDataFrame spatially into a grid of N parts (no duplicate parcels).
 
@@ -33,10 +55,13 @@ def split_geodataframe_by_grid(gdf: gpd.GeoDataFrame, rows: int = 1, cols: int =
     ----------
     gdf : GeoDataFrame
         Input parcels GeoDataFrame
-    rows : int
-        Number of grid rows (default 1)
-    cols : int
-        Number of grid columns (default 2)
+    rows, cols : int, optional
+        Explicit grid shape. When all grid arguments are omitted, the legacy
+        1x2 default is used.
+    partition_count : int, optional
+        Exact number of grid cells. The rows and columns are selected from its
+        factor pairs to suit the AOI aspect ratio. Use this with the number of
+        openEO users so each account receives one initial spatial partition.
 
     Returns
     -------
@@ -44,6 +69,22 @@ def split_geodataframe_by_grid(gdf: gpd.GeoDataFrame, rows: int = 1, cols: int =
         List of GeoDataFrames, one per grid cell, maintaining original columns and CRS.
         Each parcel appears in exactly one partition (no duplicates).
     """
+    if not isinstance(gdf, gpd.GeoDataFrame) or gdf.empty:
+        raise ValueError("gdf must be a non-empty GeoDataFrame.")
+    if gdf.crs is None:
+        raise ValueError("gdf must have a CRS.")
+    if partition_count is not None:
+        if rows is not None or cols is not None:
+            raise ValueError("Use either partition_count or rows/cols, not both.")
+        rows, cols = _grid_shape_for_partition_count(gdf, partition_count)
+    elif rows is None and cols is None:
+        rows, cols = 1, 2
+    elif rows is None or cols is None:
+        raise ValueError("rows and cols must be supplied together.")
+    if isinstance(rows, bool) or isinstance(cols, bool) or int(rows) < 1 or int(cols) < 1:
+        raise ValueError("rows and cols must be positive integers.")
+    rows, cols = int(rows), int(cols)
+
     # Get bounds of all parcels
     minx, miny, maxx, maxy = gdf.total_bounds
 
@@ -62,7 +103,7 @@ def split_geodataframe_by_grid(gdf: gpd.GeoDataFrame, rows: int = 1, cols: int =
     cell_parcels = {(row, col): [] for row in range(rows) for col in range(cols)}
 
     # Assign each parcel to exactly one cell based on its centroid
-    for idx, (parcel_idx, centroid) in enumerate(zip(gdf.index, centroids)):
+    for parcel_idx, centroid in zip(gdf.index, centroids):
         # Determine which cell this centroid falls into
         col_idx = min(int((centroid.x - minx) / cell_width), cols - 1)
         row_idx = min(int((centroid.y - miny) / cell_height), rows - 1)
@@ -97,6 +138,7 @@ def split_geodataframe_by_grid(gdf: gpd.GeoDataFrame, rows: int = 1, cols: int =
 
     return [gdf for _, _, gdf in grid_parts]
 
+
 def load_openeo_users_from_env() -> list[tuple[str, str]]:
     """Parse openEO user credentials from OPENEO_USERS environment variable.
 
@@ -125,8 +167,10 @@ def load_openeo_users_from_env() -> list[tuple[str, str]]:
         raise ValueError("OPENEO_USERS must contain one or more username,password pairs separated by semicolons.")
 
     user_names = [user for user, _ in credentials]
+    if len({user.casefold() for user in user_names}) != len(user_names):
+        raise ValueError("OPENEO_USERS contains duplicate usernames; each account may be listed only once.")
     print(f"Loaded {len(credentials)} openEO user(s): {user_names}")
-    print("Each spatial partition will use one user (round-robin assignment)")
+    print(f"Remote capacity: {len(credentials)} users x {MAX_OPENEO_JOBS_PER_USER} jobs")
     return credentials
 
 def run_partition_extractor(
@@ -156,8 +200,7 @@ def run_partition_extractor(
         - start_date, end_date: date range
         - working_epsg: projected EPSG code
         - sentinel2_bands, sentinel2_indices: Sentinel-2 config
-        - calculate_sentinel2_indices: whether to calculate indices
-        - sentinel1_bands: Sentinel-1 config
+        - sentinel1_bands, sentinel1_indices, sentinel1_orbit_direction: Sentinel-1 config
         - spatial_statistics: statistics to calculate
         - tile_size_metres, tile_buffer_metres: tiling parameters
         - Plus any additional kwargs (IQR, fill, interpolation, etc.)
@@ -175,10 +218,12 @@ def run_partition_extractor(
         Projected EPSG code
     sentinel2_bands, sentinel2_indices : list[str]
         Sentinel-2 bands and indices
-    calculate_sentinel2_indices : bool
-        Whether to calculate indices
     sentinel1_bands : list[str]
         Sentinel-1 bands
+    sentinel1_indices : list[str]
+        Sentinel-1 indices (R and/or RVI)
+    sentinel1_orbit_direction : str
+        Sentinel-1 orbit selection: ASCENDING, DESCENDING, or BOTH
     spatial_statistics : list[str]
         Statistics to calculate
     tile_size_metres, tile_buffer_metres : int
@@ -203,16 +248,16 @@ def run_partition_extractor(
     end_date = config["end_date"]
     working_epsg = config["working_epsg"]
     sentinel2_bands = config["sentinel2_bands"]
-    calculate_sentinel2_indices = config["calculate_sentinel2_indices"]
-    sentinel2_indices = config["sentinel2_indices"]
+    sentinel2_indices = config.get("sentinel2_indices", [])
     sentinel1_bands = config["sentinel1_bands"]
+    sentinel1_indices = config.get("sentinel1_indices", [])
     spatial_statistics = config["spatial_statistics"]
     tile_size_metres = config["tile_size_metres"]
     tile_buffer_metres = config["tile_buffer_metres"]
     known_keys = {
         "output_dir", "run_identifier", "parcel_id_field", "start_date", "end_date",
-        "working_epsg", "sentinel2_bands", "calculate_sentinel2_indices", "sentinel2_indices",
-        "sentinel1_bands", "spatial_statistics", "tile_size_metres", "tile_buffer_metres",
+        "working_epsg", "sentinel2_bands", "sentinel2_indices",
+        "sentinel1_bands", "sentinel1_indices", "spatial_statistics", "tile_size_metres", "tile_buffer_metres",
     }
     kwargs = {k: v for k, v in config.items() if k not in known_keys}
 
@@ -234,9 +279,9 @@ def run_partition_extractor(
         openeo_username=selected_user[0],
         openeo_password=selected_user[1],
         sentinel2_bands=sentinel2_bands,
-        calculate_sentinel2_indices=calculate_sentinel2_indices,
         sentinel2_indices=sentinel2_indices,
         sentinel1_bands=sentinel1_bands,
+        sentinel1_indices=sentinel1_indices,
         spatial_statistics=spatial_statistics,
         tile_size_metres=tile_size_metres,
         tile_buffer_metres=tile_buffer_metres,
@@ -356,9 +401,25 @@ def merge_and_save_results(
 
     # Partition outputs each have their own RangeIndex, so their indexes must not
     # be used for de-duplication after concatenation.
-    merged_results = pd.concat(
-        [all_results[i] for i in sorted(all_results)],
-        ignore_index=True,
+    # Pre-align column sets across all partitions to avoid a pandas BlockManager
+    # shape mismatch (ValueError: Shape of passed values …) that occurs when
+    # different tiles produced different numbers of dated feature columns (e.g.
+    # due to cloud cover leaving some calendar months with no valid pixels).
+    ordered_parts = [all_results[i] for i in sorted(all_results)]
+    all_columns = list(dict.fromkeys(col for part in ordered_parts for col in part.columns))
+    geometry_col = next(
+        (part.geometry.name for part in ordered_parts if hasattr(part, "geometry")),
+        "geometry",
+    )
+    crs = next((part.crs for part in ordered_parts if hasattr(part, "crs") and part.crs is not None), None)
+    aligned_parts = [
+        gpd.GeoDataFrame(part.reindex(columns=all_columns), geometry=geometry_col, crs=part.crs)
+        for part in ordered_parts
+    ]
+    merged_results = gpd.GeoDataFrame(
+        pd.concat(aligned_parts, ignore_index=True),
+        geometry=geometry_col,
+        crs=crs,
     )
     if parcel_id_column is not None:
         if parcel_id_column not in merged_results.columns:
@@ -401,8 +462,10 @@ def run_parallel_extractions(
 ) -> None:
     """Run parallel openEO extractions for multiple spatial partitions.
 
-    Each partition is extracted independently using a different user account
-    (round-robin assignment) to bypass CDSE per-user job limits.
+    Partitions are assigned round-robin to one sequential queue per account.
+    User queues run in parallel, while each account has at most one active job
+    manager. The manager's ``openeo_parallel_jobs`` setting controls the remote
+    jobs for that account (normally two).
 
     Parameters
     ----------
@@ -418,8 +481,7 @@ def run_parallel_extractions(
         - start_date, end_date: date range
         - working_epsg: projected EPSG code
         - sentinel2_bands, sentinel2_indices: Sentinel-2 config
-        - calculate_sentinel2_indices: whether to calculate indices
-        - sentinel1_bands: Sentinel-1 bands
+        - sentinel1_bands, sentinel1_indices, sentinel1_orbit_direction: Sentinel-1 config
         - spatial_statistics: statistics to calculate
         - tile_size_metres, tile_buffer_metres: tiling parameters
         - Plus all additional options: IQR parameters, fill nulls,
@@ -431,29 +493,42 @@ def run_parallel_extractions(
         Each partition writes its results to its own output directory.
     """
     print(f"\n{'='*70}")
-    print(f"Running extraction on {len(spatial_parts)} spatial partition(s) IN PARALLEL")
+    if not spatial_parts:
+        raise ValueError("spatial_parts must contain at least one partition.")
+    if not users_list:
+        raise ValueError("users_list must contain at least one openEO account.")
+    jobs_per_user = int(config.get("openeo_parallel_jobs", 2))
+    if jobs_per_user < 1:
+        raise ValueError("openeo_parallel_jobs must be positive.")
+    if jobs_per_user > MAX_OPENEO_JOBS_PER_USER:
+        raise ValueError(
+            f"openeo_parallel_jobs cannot exceed {MAX_OPENEO_JOBS_PER_USER}; "
+            "add openEO users to increase total concurrency."
+        )
+
+    print(f"Running extraction on {len(spatial_parts)} spatial partition(s) across {len(users_list)} user queue(s)")
+    print(f"Remote concurrency capacity: {len(users_list)} users x {jobs_per_user} jobs = {len(users_list) * jobs_per_user}")
     print(f"{'='*70}\n")
 
     start_time = time.time()
 
-    with ThreadPoolExecutor(max_workers=len(spatial_parts)) as executor:
-        # Submit all partition jobs
-        futures = {
-            executor.submit(
-                run_partition_extractor,
-                part_idx,
-                gdf_part,
-                users_list,
-                len(spatial_parts),
-                config,
-            ): part_idx
-            for part_idx, gdf_part in enumerate(spatial_parts, start=1)
-        }
+    user_queues: list[list[tuple[int, gpd.GeoDataFrame]]] = [[] for _ in users_list]
+    for part_idx, gdf_part in enumerate(spatial_parts, start=1):
+        user_queues[(part_idx - 1) % len(users_list)].append((part_idx, gdf_part))
 
-        # Collect results as they complete
+    def run_user_queue(queue: list[tuple[int, gpd.GeoDataFrame]]) -> list[int]:
+        completed = []
+        for part_idx, gdf_part in queue:
+            returned_idx, _ = run_partition_extractor(part_idx, gdf_part, users_list, len(spatial_parts), config)
+            completed.append(returned_idx)
+            print(f"[Completed] Partition {returned_idx} result stored")
+        return completed
+
+    active_queues = [queue for queue in user_queues if queue]
+    with ThreadPoolExecutor(max_workers=len(active_queues)) as executor:
+        futures = [executor.submit(run_user_queue, queue) for queue in active_queues]
         for future in as_completed(futures):
-            part_idx, _ = future.result()
-            print(f"[Completed] Partition {part_idx} result stored")
+            future.result()
 
     elapsed = time.time() - start_time
     print(f"\n✓ All {len(spatial_parts)} partition(s) completed in {elapsed:.1f}s")

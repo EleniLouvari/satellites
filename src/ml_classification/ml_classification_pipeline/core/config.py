@@ -14,10 +14,18 @@ def _default_tune_params() -> dict[str, dict[str, list]]:
         {
             "logistic_regression": {
                 "model__C": [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0],
+                'model__solver': ['liblinear'],
+                'model__penalty': ['l1', 'l2'],
             },
             "linear_sgd_classifier": {
                 "model__alpha": [1e-4, 1e-3, 1e-2, 1e-1],
                 "model__l1_ratio": [0.0, 0.15, 0.5, 0.8, 1.0],
+            },
+            "support_vector_machine": {
+                "model__C": [0.1, 1.0, 10.0, 20.0],
+                "model__kernel": ["linear", "rbf", "poly"],
+                "model__gamma": ["scale", "auto"],
+                'model__probability': [True],
             },
             "random_forest": {
                 "model__n_estimators": [300, 500, 800],
@@ -27,6 +35,8 @@ def _default_tune_params() -> dict[str, dict[str, list]]:
                 "model__max_features": ["sqrt", "log2", 0.3, 0.5],
                 "model__max_samples": [0.6, 0.8, None],
                 "model__ccp_alpha": [0.0, 0.0001, 0.001, 0.005],
+                'model__class_weight': [None],
+                'model__criterion': ['gini', 'entropy'],
             },
             "extra_trees": {
                 "model__n_estimators": [300, 500, 800],
@@ -44,17 +54,20 @@ def _default_tune_params() -> dict[str, dict[str, list]]:
                 "model__criterion": ["gini", "entropy", "log_loss"],
                 "model__max_features": [None, "sqrt", 0.5],
                 "model__ccp_alpha": [0.0, 0.0001, 0.001, 0.005, 0.01],
+                'model__splitter': ['best', 'random'],
             },
             "knn": {
                 "model__n_neighbors": [5, 9, 15, 25, 40],
                 "model__weights": ["uniform", "distance"],
                 "model__p": [1, 2],
                 "model__leaf_size": [20, 30, 50],
+                'model__algorithm': ['auto', 'ball_tree', 'kd_tree', 'brute'],
             },
             "neural_network": {
                 "model__hidden_layer_sizes": [(32,), (64,), (64, 32)],
                 "model__alpha": [0.0001, 0.001, 0.01, 0.1],
                 "model__learning_rate_init": [0.0001, 0.0005, 0.001],
+                'model__activation': ['relu', 'tanh'],
             },
             "tensorflow_neural_network": {
                 "model__hidden_layer_sizes": [(32,), (64,), (64, 32)],
@@ -64,6 +77,7 @@ def _default_tune_params() -> dict[str, dict[str, list]]:
                 "model__learning_rate": [0.0001, 0.0005, 0.001],
                 "model__batch_size": [32, 64],
                 "model__l2_regularization": [0.0, 0.0001, 0.001],
+                'model__activation': ['relu', 'tanh'],
             },
             "bayesian": {
                 "model__var_smoothing": [1e-9, 1e-8, 1e-7, 1e-6],

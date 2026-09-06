@@ -80,7 +80,7 @@ class ParcelStatisticsCalculator:
         np.divide(numerator, denominator, out=result, where=valid)
         return result
 
-    def _calculate_local_index(
+    def _calculate_local_sentinel2_index(
         self, values_by_band: dict[str, np.ndarray], index_name: str
     ) -> np.ndarray:
         """Calculate one Sentinel-2 index from already-cleaned physical bands."""
@@ -121,12 +121,31 @@ class ParcelStatisticsCalculator:
             return np.where(np.isfinite(ratio), ratio - 1.0, np.nan).astype("float32")
         raise ValueError(f"Unsupported index: {index_name}")
 
+    def _calculate_local_sentinel1_index(
+        self, values_by_band: dict[str, np.ndarray], index_name: str
+    ) -> np.ndarray:
+        """Calculate one Sentinel-1 index per pixel from linear-power sigma0."""
+        vv = values_by_band["VV"]
+        vh = values_by_band["VH"]
+        finite_negative = (np.isfinite(vv) & (vv < 0)) | (np.isfinite(vh) & (vh < 0))
+        if np.any(finite_negative):
+            raise ValueError(
+                "Sentinel-1 R and RVI require non-negative linear-power sigma0 values; "
+                "negative values suggest dB-scaled or physically invalid input."
+            )
+        if index_name == "R":
+            return self._safe_ratio(vv, vh)
+        if index_name == "RVI":
+            return self._safe_ratio(4.0 * vh, vv + vh)
+        raise ValueError(f"Unsupported Sentinel-1 index: {index_name}")
+
     def _build_local_output_cube(self, values: np.ndarray, cube_variables: list[str]) -> np.ndarray:
         """Select requested bands and append indices derived from cleaned source bands."""
         values_by_band = {name: values[:, index] for index, name in enumerate(cube_variables)}
         output_layers = [values_by_band[name] for name in self.sentinel2_bands]
-        output_layers.extend(self._calculate_local_index(values_by_band, name) for name in self.sentinel2_indices)
+        output_layers.extend(self._calculate_local_sentinel2_index(values_by_band, name) for name in self.sentinel2_indices)
         output_layers.extend(values_by_band[name] for name in self.sentinel1_bands)
+        output_layers.extend(self._calculate_local_sentinel1_index(values_by_band, name) for name in self.sentinel1_indices)
         return np.stack(output_layers, axis=1).astype("float32", copy=False)
 
     def _cleaning_checkpoint_paths(self, netcdf_path) -> tuple[Path, Path]:
@@ -305,6 +324,8 @@ class ParcelStatisticsCalculator:
                     values = np.nanmax(pixel_values, axis=-1)
                 elif statistic == "count":
                     values = valid_count
+                elif statistic == "range":
+                    values = np.nanmax(pixel_values, axis=-1) - np.nanmin(pixel_values, axis=-1)
                 else:
                     values = np.nanquantile(pixel_values, self.QUANTILE_PROBABILITIES[statistic], axis=-1, method="linear")
                 reduced[statistic] = values
@@ -533,6 +554,13 @@ class ParcelStatisticsCalculator:
         enriched["geom_shape_complexity_score"] = self._calculate_geometry_complexity_score(enriched)
 
         derived_columns: dict[str, pd.Series] = {}
+
+        def add_derived_column(column_name: str, values: pd.Series) -> None:
+            """Keep configured reducers authoritative when a derived name already exists."""
+            if column_name in enriched.columns or column_name in derived_columns:
+                return
+            derived_columns[column_name] = values
+
         # Accumulate derived series and concatenate once to avoid DataFrame fragmentation.
         for variable in self._output_sensor_variables():
             mean = f"{variable}_mean"
@@ -546,23 +574,25 @@ class ParcelStatisticsCalculator:
             p90 = f"{variable}_p90"
 
             if minimum in enriched and maximum in enriched:
-                derived_columns[f"{variable}_range"] = enriched[maximum] - enriched[minimum]
+                add_derived_column(f"{variable}_range", enriched[maximum] - enriched[minimum])
             if standard_deviation in enriched:
-                derived_columns[f"{variable}_variance"] = enriched[standard_deviation] ** 2
+                add_derived_column(f"{variable}_variance", enriched[standard_deviation] ** 2)
                 if mean in enriched:
                     absolute_mean = enriched[mean].abs()
-                    derived_columns[f"{variable}_coefficient_of_variation"] = enriched[standard_deviation] / absolute_mean.where(
-                        absolute_mean > 1e-12
+                    add_derived_column(
+                        f"{variable}_coefficient_of_variation",
+                        enriched[standard_deviation] / absolute_mean.where(absolute_mean > 1e-12),
                     )
             if p25 in enriched and p75 in enriched:
                 iqr = enriched[p75] - enriched[p25]
-                derived_columns[f"{variable}_iqr"] = iqr
+                add_derived_column(f"{variable}_iqr", iqr)
                 if median in enriched:
-                    derived_columns[f"{variable}_bowley_skewness"] = (
-                        enriched[p75] + enriched[p25] - 2 * enriched[median]
-                    ) / iqr.where(iqr.abs() > 1e-12)
+                    add_derived_column(
+                        f"{variable}_bowley_skewness",
+                        (enriched[p75] + enriched[p25] - 2 * enriched[median]) / iqr.where(iqr.abs() > 1e-12),
+                    )
             if p10 in enriched and p90 in enriched:
-                derived_columns[f"{variable}_p90_p10_spread"] = enriched[p90] - enriched[p10]
+                add_derived_column(f"{variable}_p90_p10_spread", enriched[p90] - enriched[p10])
         if not derived_columns:
             return enriched
         derived = pd.DataFrame(derived_columns, index=enriched.index)
@@ -665,6 +695,29 @@ class ParcelStatisticsCalculator:
         # Pivot all variables and statistics together to guarantee one row per parcel.
         pivoted = working.pivot(index=self.PARCEL_ID_FIELD, columns="_period_label", values=temporal_features)
         pivoted.columns = [f"{feature}__{period_label}" for feature, period_label in pivoted.columns]
+
+        # Ensure every configured calendar period produces a column, even when a period is
+        # 100% cloud-covered and has no observations in this partition's area.  Without this
+        # padding, different partitions produce different column counts (the missing-period
+        # features are simply absent rather than NaN), which causes a BlockManager shape
+        # mismatch when the in-memory partition results are later merged.
+        _, expected_labels = self._temporal_intervals()
+        expected_columns = sorted(
+            f"{feature}__{period_label}"
+            for feature in temporal_features
+            for period_label in [label.replace("-", "") for label in expected_labels]
+        )
+        missing_columns = [col for col in expected_columns if col not in pivoted.columns]
+        if missing_columns:
+            self.parcel_logger.warning(
+                "Adding %s all-NaN column(s) for calendar period(s) with no valid observations in this partition "
+                "(likely 100%% cloud cover). First missing: %s.",
+                len(missing_columns),
+                missing_columns[0],
+            )
+            for col in missing_columns:
+                pivoted[col] = np.nan
+
         pivoted = pivoted.sort_index(axis=1).reset_index()
 
         if static_columns:

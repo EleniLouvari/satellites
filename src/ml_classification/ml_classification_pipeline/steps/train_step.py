@@ -133,9 +133,7 @@ class TrainStep(PipelineStepBase):
         if candidate.name == "knn":
             min_fold_train_size = min(len(train_idx) for train_idx, _ in cv)
             max_neighbors = max(1, min_fold_train_size)
-            safe_neighbors = [
-                value for value in param_distributions["model__n_neighbors"] if value <= max_neighbors
-            ]
+            safe_neighbors = [value for value in param_distributions["model__n_neighbors"] if value <= max_neighbors]
             param_distributions["model__n_neighbors"] = safe_neighbors or [1]
         return param_distributions, effective_candidates
 

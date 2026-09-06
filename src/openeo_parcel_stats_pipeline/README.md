@@ -52,15 +52,17 @@ compatible while each implementation has a single scope.
    mask invalid/cloud SCL classes, and retain all physical bands required by the
    requested outputs and indices.
 7. For Sentinel-1, calculate linear-power `sigma0-ellipsoid` backscatter using the
-   `COPERNICUS_30` elevation model and resample to 10 m.
+   `COPERNICUS_30` elevation model and resample to 10 m. No logarithmic/dB
+   conversion is applied.
 8. Aggregate acquisitions into the configured temporal periods.
 9. Download each raster cube as NetCDF and cache it locally.
 10. For every physical band and time slice, remove IQR outliers once across the
     complete raster, then fill nulls with the temporal, 3x3, 5x5, and final
     interpolation passes.
-11. Calculate requested Sentinel-2 indices from the filled physical bands. An
-    observation-only copy is calculated separately so count statistics exclude
-    indices that depend on an imputed source band.
+11. Calculate every requested Sentinel-2 and Sentinel-1 index independently at
+    each filled raster pixel. An observation-only copy is calculated separately
+    so statistics and provenance distinguish indices that depend on an imputed
+    source pixel.
 12. Mask the filled raster by parcel and calculate parcel statistics. Spatial
     filling may use neighboring pixels that fall inside an adjacent parcel.
 13. Add parcel metrics and derived statistics.
@@ -118,6 +120,16 @@ the local UTM zone. It is used for metre-based grids, parcel area, tile buffers,
 local interpolation, the requested NetCDF raster grid, and output GeoParquet
 geometry. A geographic CRS such as EPSG:4326 is not accepted as `working_epsg`.
 
+Select the WGS84 UTM CRS containing the dissolved parcel centroid when the
+working CRS should be chosen automatically:
+
+```python
+from openeo_parcel_stats_pipeline import estimate_utm_epsg_from_parcels
+
+working_epsg = estimate_utm_epsg_from_parcels(parcels)
+parcels = parcels.to_crs(working_epsg)
+```
+
 Example input:
 
 ```python
@@ -147,11 +159,12 @@ These parameters apply to both classes.
 |---|---:|---|
 | `parcel_id_field` | `"parcel_id"` | Unique parcel ID column name |
 | `sentinel2_bands` | `None` | `None` selects `B02`, `B03`, `B04`, `B05`, `B08`; `[]` disables standalone S2 bands; supported bands are `B01`, `B02`, `B03`, `B04`, `B05`, `B06`, `B07`, `B08`, `B8A`, `B09`, `B11`, `B12` |
-| `calculate_sentinel2_indices` | `False` | Must be `True` when indices are requested |
-| `sentinel2_indices` | `None` | Any of `NDVI`, `NDWI`, `MNDWI`, `NDMI`, `NBR`, `GNDVI`, `EVI`, `SAVI`, `MSAVI`, `NDRE`, `PSRI`, `CI` |
-| `sentinel1_bands` | `None` | Any of `VV`, `VH`; `None` or `[]` disables Sentinel-1 |
+| `sentinel2_indices` | `[]` | Any of `NDVI`, `NDWI`, `MNDWI`, `NDMI`, `NBR`, `GNDVI`, `EVI`, `SAVI`, `MSAVI`, `NDRE`, `PSRI`, `CI`; `None` or `[]` disables indices |
+| `sentinel1_bands` | `None` | Any of `VV`, `VH`; `None` or `[]` disables standalone Sentinel-1 band outputs unless an index requires them as sources |
+| `sentinel1_indices` | `[]` | `R` = `VV / VH`; `RVI` = `4 * VH / (VV + VH)`; `None` or `[]` disables indices and source bands VV/VH are loaded automatically otherwise |
+| `sentinel1_orbit_direction` | `"BOTH"` | `ASCENDING`, `DESCENDING`, or `BOTH`; `BOTH` loads both directions without an orbit filter |
 
-At least one Sentinel-2 band, Sentinel-2 index, or Sentinel-1 band must be
+At least one Sentinel-2 band/index or Sentinel-1 band/index must be
 selected. Source bands required to calculate an index are loaded automatically
 and cleaned even when they are not emitted as standalone output variables.
 Indices already present in a reused raw NetCDF are ignored and recalculated
@@ -162,10 +175,10 @@ locally from these cleaned source bands.
 The pipeline deliberately applies the following order:
 
 ```text
-physical bands -> IQR outlier removal -> null filling -> spectral indices -> parcel statistics
+physical bands -> IQR outlier removal -> null filling -> pixel-level indices -> parcel statistics
 ```
 
-Cleaning the physical reflectance bands first is more defensible than filling
+Cleaning the physical source bands first is more defensible than filling
 each derived index independently:
 
 - one missing or anomalous source-band value is handled consistently for every
@@ -247,9 +260,10 @@ extractor = SatelliteZonalStats(
     working_epsg=32634,
     parcel_id_field="parcel_id",
     sentinel2_bands=[],
-    calculate_sentinel2_indices=False,
     sentinel2_indices=[],
     sentinel1_bands=["VV", "VH"],
+    sentinel1_indices=["R", "RVI"],
+    sentinel1_orbit_direction="ASCENDING",
     spatial_statistics=[
         "mean", "median", "sd", "min", "max",
         "p10", "p25", "p75", "p90",
@@ -279,7 +293,6 @@ extractor = SatelliteZonalStats(
     output_dir=r"C:\work_dir\kozani_s2",
     working_epsg=32634,
     sentinel2_bands=["B02", "B03", "B04", "B08"],
-    calculate_sentinel2_indices=True,
     sentinel2_indices=["NDVI", "NDMI"],
     sentinel1_bands=[],
     spatial_statistics=["mean", "median", "sd", "count"],
@@ -300,6 +313,8 @@ result = extractor.run()
 | `tile_buffer_metres` | `500` | Non-negative buffer around every remote raster extent |
 | `openeo_parallel_jobs` | `2` | Maximum active CDSE jobs managed remotely |
 | `job_poll_seconds` | `30` | Positive number of seconds between status polls |
+| `max_job_retries` | `3` | Bounded retries after terminal `error` or a failed start request; persisted across restarts |
+| `job_retry_delay_seconds` | `60` | Cooldown before retry waves for transient backend/API failures |
 | `run_identifier` | generated timestamp | Readable label, at most 80 characters, included in openEO job titles |
 
 ### How parcel ownership works
@@ -331,14 +346,13 @@ from openeo_parcel_stats_pipeline.zonal_stats_job_manager import (
     compute_tile_width,
 )
 
-# compute_tile_width currently expects coordinates already expressed in the
-# supplied projected CRS.
-metric_parcels = parcels.to_crs(epsg=32634)
-
 tile_size = compute_tile_width(
-    metric_parcels,
+    parcels,
     parcel_id_col="parcel_id",
     working_epsg=32634,
+    spatial_parts=spatial_parts,
+    user_count=len(users_list),
+    jobs_per_user=2,
 )
 tile_buffer = compute_tile_buffer_metres(
     parcels,
@@ -346,10 +360,16 @@ tile_buffer = compute_tile_buffer_metres(
 )
 ```
 
-`compute_tile_width` tests 5, 10, 20, 30, 40, 50, and 60 km candidates and
-returns the smallest size for which every parcel lies completely within a core
-tile. This helper optimizes containment, **not** equal job workload. Always pass a
-GeoDataFrame reprojected to `working_epsg`, as shown above.
+`compute_tile_width` tests 5, 10, 20, 30, 40, 50, and 60 km candidates inside
+each actual spatial partition. It returns the **largest** candidate that still
+creates at least `jobs_per_user` non-empty tile jobs in every partition. With
+one initial partition per user and `jobs_per_user=2`, all accounts can start two
+remote jobs while avoiding an unnecessarily large number of tiny jobs. Parcels
+may be supplied in any defined CRS; the helper reprojects internally.
+
+Core-tile crossings do not control this recommendation. Ownership uses each
+parcel's representative point, while `compute_tile_buffer_metres` ensures the
+full parcel is present in the downloaded buffered extent.
 
 `compute_tile_buffer_metres` measures the largest parcel radius from its
 representative point to its bounding-box corners, multiplies it by a safety
@@ -370,8 +390,14 @@ from openeo_parcel_stats_pipeline.zonal_stats_job_manager import (
 )
 
 working_epsg = 32634
-metric_parcels = parcels.to_crs(epsg=working_epsg)
-tile_size = compute_tile_width(metric_parcels, "parcel_id", working_epsg)
+tile_size = compute_tile_width(
+    parcels,
+    "parcel_id",
+    working_epsg,
+    spatial_parts=spatial_parts,
+    user_count=len(users_list),
+    jobs_per_user=2,
+)
 tile_buffer = compute_tile_buffer_metres(parcels, working_epsg)
 
 extractor = JobManagerSatelliteZonalStats(
@@ -561,7 +587,7 @@ logged but accepted.
 - **No sensor output selected:** select at least one S1 band, S2 band, or S2
   index.
 - **Indices supplied while calculation is disabled:** set
-  `calculate_sentinel2_indices=True`.
+  a non-empty `sentinel2_indices` list.
 - **IDW or kriging distance missing:** provide the corresponding required
   distance parameter.
 - **Parcel exceeds buffered tile:** increase `tile_buffer_metres` using the CSV
