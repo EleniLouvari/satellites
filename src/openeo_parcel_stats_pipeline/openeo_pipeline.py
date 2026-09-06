@@ -131,7 +131,7 @@ class OpenEOCubePipeline:
         if not remote_jobs:
             return
         batch_numbers = [number for number, *_rest in remote_jobs]
-        self.openeo_logger.info(f"Starting openEO job wave for batches {batch_numbers}.")
+        self.source_logger.info(f"Starting openEO job wave for batches {batch_numbers}.")
         workers = min(self.batch_workers, len(remote_jobs))
         with ThreadPoolExecutor(max_workers=workers) as executor:
             # Network-bound downloads can share threads without copying the full pipeline into processes.
@@ -144,7 +144,7 @@ class OpenEOCubePipeline:
                 number, path = future.result()
                 if number != expected:
                     raise RuntimeError(f"openEO job returned batch {number}; expected {expected}.")
-                self.openeo_logger.info(f"Cached completed batch {number} temporal cube at {path}.")
+                self.source_logger.info(f"Cached completed batch {number} temporal cube at {path}.")
 
     def _run_openeo_jobs(self, cube_dir):
         """Create, run and download uncached batches in bounded job waves."""
@@ -154,10 +154,10 @@ class OpenEOCubePipeline:
             netcdf_path = cube_dir / f"batch_{batch_number:05d}_monthly.nc"
             # Existing final files are complete cache entries; partial files are never reused.
             if netcdf_path.exists():
-                self.openeo_logger.info(f"Using existing batch {batch_number} monthly cube {netcdf_path}.")
+                self.source_logger.info(f"Using existing batch {batch_number} temporal cube {netcdf_path}.")
             else:
                 if connection is None:
-                    self.openeo_logger.info(f"Connecting to openEO backend {self.OPENEO_URL}.")
+                    self.source_logger.info(f"Connecting to openEO backend {self.OPENEO_URL}.")
                     connection = openeo.connect(self.OPENEO_URL, auto_validate=False)
                     self._authenticate_openeo_connection(connection)
                 print(f"Creating openEO job for batch {batch_number} with {len(batch)} parcels.")

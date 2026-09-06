@@ -1,7 +1,7 @@
 """openEO extraction and parcel-level satellite statistics pipeline."""
 
-from .zonal_stats import SatelliteZonalStats
-from .zonal_stats_job_manager import JobManagerSatelliteZonalStats
+from .zonal_stats import OpenEOZonalStats, SatelliteZonalStats
+from .zonal_stats_job_manager import JobManagerSatelliteZonalStats, OpenEOJobManagerZonalStats
 from .crs import estimate_utm_epsg_from_parcels
 from .feature_reduction import (
     DEFAULT_REDUCED_FILENAME,
@@ -15,6 +15,8 @@ __all__ = [
     "DEFAULT_TEMPORAL_SOURCES",
     "JobManagerSatelliteZonalStats",
     "SatelliteZonalStats",
+    "OpenEOZonalStats",
+    "OpenEOJobManagerZonalStats",
     "estimate_utm_epsg_from_parcels",
     "reduce_annual_median_features",
     "save_reduced_annual_parcel_features",

@@ -20,6 +20,18 @@ from pyproj import CRS
 class ZonalStatsConfiguration:
     """Validate configuration consumed by the zonal-statistics components."""
 
+    # The original constructor and cache schema use Sentinel-specific fields.
+    # Properties keep one source of truth while shared code uses optical names.
+    @property
+    def optical_bands(self) -> tuple[str, ...]:
+        """Selected optical reflectance bands in their native source naming."""
+        return self.sentinel2_bands
+
+    @property
+    def optical_indices(self) -> tuple[str, ...]:
+        """Selected indices derived from cleaned optical reflectance."""
+        return self.sentinel2_indices
+
     def _validate_openeo_credentials(self, username: str | None, password: str | None) -> tuple[str | None, str | None]:
         """Validate openEO credentials: username and password pair."""
         if (username is None) != (password is None):
@@ -188,8 +200,7 @@ class ZonalStatsConfiguration:
         unsupported = sorted(set(normalized).difference(self.SUPPORTED_SENTINEL1_INDICES))
         if unsupported:
             raise ValueError(
-                f"Unsupported Sentinel-1 indices: {unsupported}. "
-                f"Supported indices: {sorted(self.SUPPORTED_SENTINEL1_INDICES)}"
+                f"Unsupported Sentinel-1 indices: {unsupported}. Supported indices: {sorted(self.SUPPORTED_SENTINEL1_INDICES)}"
             )
         return normalized
 
@@ -237,9 +248,7 @@ class ZonalStatsConfiguration:
             raise TypeError("sentinel1_orbit_direction must be a string.")
         normalized = direction.strip().upper()
         if normalized not in self.SUPPORTED_SENTINEL1_ORBIT_DIRECTIONS:
-            raise ValueError(
-                "sentinel1_orbit_direction must be ASCENDING, DESCENDING, or BOTH."
-            )
+            raise ValueError("sentinel1_orbit_direction must be ASCENDING, DESCENDING, or BOTH.")
         return normalized
 
     def _sentinel1_load_options(self) -> dict:
@@ -247,11 +256,7 @@ class ZonalStatsConfiguration:
         if self.sentinel1_orbit_direction == "BOTH":
             return {}
         orbit_direction = self.sentinel1_orbit_direction
-        return {
-            "properties": {
-                "sat:orbit_state": lambda value: value == orbit_direction,
-            }
-        }
+        return {"properties": {"sat:orbit_state": lambda value: value == orbit_direction}}
 
     def _validate_sentinel2_bands(self, bands: list[str] | None) -> tuple[str, ...]:
         """Normalize Sentinel-2 outputs, allowing an explicit empty selection."""
@@ -345,7 +350,7 @@ class ZonalStatsConfiguration:
 
     def _output_sensor_variables(self) -> tuple[str, ...]:
         """Return ordered physical-band and pixel-index output labels."""
-        return (*self.sentinel2_bands, *self.sentinel2_indices, *self.sentinel1_bands, *self.sentinel1_indices)
+        return (*self.optical_bands, *self.optical_indices, *self.sentinel1_bands, *self.sentinel1_indices)
 
     def _cube_sensor_variables(self) -> tuple[str, ...]:
         """Return physical bands that must be cleaned before local index calculation."""

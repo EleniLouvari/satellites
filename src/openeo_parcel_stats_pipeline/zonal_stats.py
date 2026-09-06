@@ -130,7 +130,20 @@ class SatelliteZonalStats(
         flow. Both values must be supplied together. When omitted, the normal
         cached/interactive OIDC authentication flow is used.
     """
+
     # =========================================================================
+    # Source band IDs stay unchanged in outputs; shared algebra uses these roles.
+    OPTICAL_BAND_ROLES = {
+        "blue": "B02",
+        "green": "B03",
+        "red": "B04",
+        "red_edge": "B05",
+        "red_edge_2": "B06",
+        "nir": "B08",
+        "swir_1": "B11",
+        "swir_2": "B12",
+    }
+
     # Sentinel-2 configuration constants
     # =========================================================================
     SENTINEL2_COLLECTION = "SENTINEL2_L2A"
@@ -178,7 +191,12 @@ class SatelliteZonalStats(
     PARCEL_ID_FIELD = "parcel_id"
     OPENEO_URL = "https://openeo.dataspace.copernicus.eu"
     OPENEO_OIDC_PASSWORD_CLIENT_ID = "cdse-public"
+    # Logger namespaces describe the public pipeline, independent of module layout.
+    LOGGER_NAMESPACE = "parcel_stats_pipeline"
+    SOURCE_NAME = "openEO"
+    SOURCE_LOG_FILE_NAME = "satellite_source.log"
     LOG_FILE_NAME = "satellite_zonal_stats.log"
+    # Historical filename constant retained for callers inspecting old runs.
     OPENEO_LOG_FILE_NAME = "satellite_openeo.log"
     FILLING_LOG_FILE_NAME = "satellite_raster_filling.log"
     PARCEL_LOG_FILE_NAME = "satellite_parcel_statistics.log"
@@ -288,23 +306,20 @@ class SatelliteZonalStats(
         # Start file logging only after non-spatial configuration is valid.
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.logger = self._create_logger("orchestrator", self.LOG_FILE_NAME)
-        self.openeo_logger = self._create_logger("openeo", self.OPENEO_LOG_FILE_NAME)
+        self.source_logger = self._create_logger("source", self.SOURCE_LOG_FILE_NAME)
         self.filling_logger = self._create_logger("filling", self.FILLING_LOG_FILE_NAME)
         self.parcel_logger = self._create_logger("parcels", self.PARCEL_LOG_FILE_NAME)
         self.parcels = self._prepare_parcels(parcels)
         self.logger.info(
-            "Log files: orchestration=%s, openEO=%s, raster filling=%s, parcel statistics=%s.",
+            "Log files: orchestration=%s, source=%s, raster filling=%s, parcel statistics=%s.",
             self.output_dir / self.LOG_FILE_NAME,
-            self.output_dir / self.OPENEO_LOG_FILE_NAME,
+            self.output_dir / self.SOURCE_LOG_FILE_NAME,
             self.output_dir / self.FILLING_LOG_FILE_NAME,
             self.output_dir / self.PARCEL_LOG_FILE_NAME,
         )
         self.logger.info(
-            f"Configured Sentinel-2 bands={list(self.sentinel2_bands)}, "
-            f"Sentinel-2 indices={list(self.sentinel2_indices)}, "
-            f"Sentinel-1 bands={list(self.sentinel1_bands)}, "
-            f"Sentinel-1 indices={list(self.sentinel1_indices)}, "
-            f"Sentinel-1 orbit direction={self.sentinel1_orbit_direction}, "
+            f"Source={self.SOURCE_NAME}, optical bands={list(self.optical_bands)}, "
+            f"optical indices={list(self.optical_indices)}, "
             f"parcel statistics={list(self.spatial_statistics)}, "
             f"remove_outliers={self.remove_outliers}, "
             f"iqr_quantiles={self.iqr_quantiles}, "
@@ -315,11 +330,28 @@ class SatelliteZonalStats(
             f"batch_workers={self.batch_workers}."
         )
 
+        if self.sentinel1_bands or self.sentinel1_indices:
+            self.logger.info(
+                "Radar source=Sentinel-1, bands=%s, indices=%s, orbit direction=%s.",
+                list(self.sentinel1_bands),
+                list(self.sentinel1_indices),
+                self.sentinel1_orbit_direction,
+            )
+
+    @property
+    def openeo_logger(self):
+        """Legacy alias for openEO integrations; new source code uses source_logger."""
+        return self.source_logger
+
+    @openeo_logger.setter
+    def openeo_logger(self, logger):
+        self.source_logger = logger
+
     def __getstate__(self) -> dict:
         """Exclude non-picklable logging handlers from worker payloads."""
 
         state = self.__dict__.copy()
-        for attribute in ("logger", "openeo_logger", "filling_logger", "parcel_logger"):
+        for attribute in ("logger", "source_logger", "openeo_logger", "filling_logger", "parcel_logger"):
             state.pop(attribute, None)
         return state
 
@@ -328,7 +360,7 @@ class SatelliteZonalStats(
 
         self.__dict__.update(state)
         self.logger = self._create_worker_console_logger("orchestrator")
-        self.openeo_logger = self._create_worker_console_logger("openeo")
+        self.source_logger = self._create_worker_console_logger("source")
         self.filling_logger = self._create_worker_logger("filling", self.FILLING_LOG_FILE_NAME)
         self.parcel_logger = self._create_worker_logger("parcels", self.PARCEL_LOG_FILE_NAME)
 
@@ -347,7 +379,10 @@ class SatelliteZonalStats(
     def _create_logger(self, scope: str, file_name: str) -> logging.Logger:
         """Create one main-process logger for a pipeline scope."""
 
-        logger = logging.getLogger(f"{__name__}.{id(self)}.{scope}")
+        # Object IDs can be reused after an extractor is collected while logging
+        # retains its handlers. Include the output path to avoid cross-run writes.
+        output_key = hashlib.sha1(str(self.output_dir.resolve()).encode("utf-8")).hexdigest()[:10]
+        logger = logging.getLogger(f"{self.LOGGER_NAMESPACE}.{output_key}.{id(self)}.{scope}")
         return self._configure_logger_handlers(logger, self.output_dir / file_name)
 
     def _create_worker_logger(self, scope: str, file_name: str) -> logging.Logger:
@@ -355,7 +390,7 @@ class SatelliteZonalStats(
 
         output_key = hashlib.sha1(str(self.output_dir.resolve()).encode("utf-8")).hexdigest()[:10]
         process_id = os.getpid()
-        logger = logging.getLogger(f"{__name__}.worker.{process_id}.{output_key}.{scope}")
+        logger = logging.getLogger(f"{self.LOGGER_NAMESPACE}.worker.{process_id}.{output_key}.{scope}")
         base_path = Path(file_name)
         worker_name = f"{base_path.stem}.worker-{process_id}{base_path.suffix}"
         return self._configure_logger_handlers(logger, self.output_dir / worker_name)
@@ -364,7 +399,7 @@ class SatelliteZonalStats(
         """Create a console-only worker logger for scopes unused by local jobs."""
 
         output_key = hashlib.sha1(str(self.output_dir.resolve()).encode("utf-8")).hexdigest()[:10]
-        logger = logging.getLogger(f"{__name__}.worker.{os.getpid()}.{output_key}.{scope}")
+        logger = logging.getLogger(f"{self.LOGGER_NAMESPACE}.worker.{os.getpid()}.{output_key}.{scope}")
         if not logger.handlers:
             handler = logging.StreamHandler()
             handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s"))
@@ -430,7 +465,7 @@ class SatelliteZonalStats(
         # 3) concatenate, derive additional features and persist outputs
         cube_dir = self.output_dir / "monthly_cubes" / self._run_signature()
         cube_dir.mkdir(parents=True, exist_ok=True)
-        self.logger.info(f"Monthly cube cache: {cube_dir}.")
+        self.logger.info(f"Temporal cube cache: {cube_dir}.")
         # Run openEO jobs for each uncached parcel batch, downloading the monthly NetCDF cubes.
         batches = self._run_openeo_jobs(cube_dir)
         # Run local statistics for each batch in parallel, returning a list of DataFrames and cleaning reports.
@@ -446,17 +481,8 @@ class SatelliteZonalStats(
         write_data(final, str(parquet_output))
         # Create a compact sibling dataset for ML. The period count is inferred
         # from this run, while all configured Sentinel-2 sources must share it.
-        reduction_sources = (
-            *self.sentinel2_bands,
-            *self.sentinel2_indices,
-            *self.sentinel1_bands,
-            *self.sentinel1_indices,
-        )
-        reduced = reduce_annual_median_features(
-            final,
-            temporal_sources=reduction_sources,
-            expected_periods=None,
-        )
+        reduction_sources = (*self.sentinel2_bands, *self.sentinel2_indices, *self.sentinel1_bands, *self.sentinel1_indices)
+        reduced = reduce_annual_median_features(final, temporal_sources=reduction_sources, expected_periods=None)
         reduced_output = self.output_dir / self.REDUCED_PARCEL_OUTPUT_FILE_NAME
         temporary_reduced_output = reduced_output.with_name(f".{reduced_output.stem}.tmp{reduced_output.suffix}")
         try:
@@ -478,3 +504,7 @@ class SatelliteZonalStats(
             len(final),
         )
         return final
+
+
+# Explicit source name for new callers; the legacy class identity is preserved.
+OpenEOZonalStats = SatelliteZonalStats

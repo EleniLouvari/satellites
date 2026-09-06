@@ -80,50 +80,55 @@ class ParcelStatisticsCalculator:
         np.divide(numerator, denominator, out=result, where=valid)
         return result
 
-    def _calculate_local_sentinel2_index(
-        self, values_by_band: dict[str, np.ndarray], index_name: str
-    ) -> np.ndarray:
-        """Calculate one Sentinel-2 index from already-cleaned physical bands."""
+    def _calculate_local_optical_index(self, values_by_band, index_name):
+        """Translate source band identifiers to spectral roles before shared algebra."""
+        values_by_role = {role: values_by_band[name] for role, name in self.OPTICAL_BAND_ROLES.items() if name in values_by_band}
+        return self._calculate_optical_index(values_by_role, index_name)
+
+    def _calculate_local_sentinel2_index(self, values_by_band, index_name):
+        """Compatibility wrapper for callers using the original method name."""
+        return self._calculate_local_optical_index(values_by_band, index_name)
+
+    def _calculate_optical_index(self, values_by_role: dict[str, np.ndarray], index_name: str) -> np.ndarray:
+        """Calculate an optical index from cleaned reflectance arrays keyed by spectral role."""
         # Use a simple mapping of index names to numpy operations that
         # operate on pre-cleaned band arrays. Results use NaN for invalid
         # pixels to keep downstream reducers consistent.
-        band = values_by_band.__getitem__
+        band = values_by_role.__getitem__
         if index_name == "NDVI":
-            return self._safe_ratio(band("B08") - band("B04"), band("B08") + band("B04"))
+            return self._safe_ratio(band("nir") - band("red"), band("nir") + band("red"))
         if index_name == "NDWI":
-            return self._safe_ratio(band("B03") - band("B08"), band("B03") + band("B08"))
+            return self._safe_ratio(band("green") - band("nir"), band("green") + band("nir"))
         if index_name == "MNDWI":
-            return self._safe_ratio(band("B03") - band("B11"), band("B03") + band("B11"))
+            return self._safe_ratio(band("green") - band("swir_1"), band("green") + band("swir_1"))
         if index_name == "NDMI":
-            return self._safe_ratio(band("B08") - band("B11"), band("B08") + band("B11"))
+            return self._safe_ratio(band("nir") - band("swir_1"), band("nir") + band("swir_1"))
         if index_name == "NBR":
-            return self._safe_ratio(band("B08") - band("B12"), band("B08") + band("B12"))
+            return self._safe_ratio(band("nir") - band("swir_2"), band("nir") + band("swir_2"))
         if index_name == "GNDVI":
-            return self._safe_ratio(band("B08") - band("B03"), band("B08") + band("B03"))
+            return self._safe_ratio(band("nir") - band("green"), band("nir") + band("green"))
         if index_name == "EVI":
-            denominator = band("B08") + 6.0 * band("B04") - 7.5 * band("B02") + 1.0
-            return self._safe_ratio(2.5 * (band("B08") - band("B04")), denominator)
+            denominator = band("nir") + 6.0 * band("red") - 7.5 * band("blue") + 1.0
+            return self._safe_ratio(2.5 * (band("nir") - band("red")), denominator)
         if index_name == "SAVI":
-            return self._safe_ratio(1.5 * (band("B08") - band("B04")), band("B08") + band("B04") + 0.5)
+            return self._safe_ratio(1.5 * (band("nir") - band("red")), band("nir") + band("red") + 0.5)
         if index_name == "MSAVI":
-            doubled_nir_plus_one = 2.0 * band("B08") + 1.0
-            discriminant = doubled_nir_plus_one**2 - 8.0 * (band("B08") - band("B04"))
+            doubled_nir_plus_one = 2.0 * band("nir") + 1.0
+            discriminant = doubled_nir_plus_one**2 - 8.0 * (band("nir") - band("red"))
             result = np.full(discriminant.shape, np.nan, dtype="float32")
             valid = np.isfinite(discriminant) & (discriminant >= 0)
             result[valid] = (doubled_nir_plus_one[valid] - np.sqrt(discriminant[valid])) / 2.0
             return result
         if index_name == "NDRE":
-            return self._safe_ratio(band("B08") - band("B05"), band("B08") + band("B05"))
+            return self._safe_ratio(band("nir") - band("red_edge"), band("nir") + band("red_edge"))
         if index_name == "PSRI":
-            return self._safe_ratio(band("B04") - band("B02"), band("B06"))
+            return self._safe_ratio(band("red") - band("blue"), band("red_edge_2"))
         if index_name == "CI":
-            ratio = self._safe_ratio(band("B08"), band("B05"))
+            ratio = self._safe_ratio(band("nir"), band("red_edge"))
             return np.where(np.isfinite(ratio), ratio - 1.0, np.nan).astype("float32")
         raise ValueError(f"Unsupported index: {index_name}")
 
-    def _calculate_local_sentinel1_index(
-        self, values_by_band: dict[str, np.ndarray], index_name: str
-    ) -> np.ndarray:
+    def _calculate_local_sentinel1_index(self, values_by_band: dict[str, np.ndarray], index_name: str) -> np.ndarray:
         """Calculate one Sentinel-1 index per pixel from linear-power sigma0."""
         vv = values_by_band["VV"]
         vh = values_by_band["VH"]
@@ -142,8 +147,8 @@ class ParcelStatisticsCalculator:
     def _build_local_output_cube(self, values: np.ndarray, cube_variables: list[str]) -> np.ndarray:
         """Select requested bands and append indices derived from cleaned source bands."""
         values_by_band = {name: values[:, index] for index, name in enumerate(cube_variables)}
-        output_layers = [values_by_band[name] for name in self.sentinel2_bands]
-        output_layers.extend(self._calculate_local_sentinel2_index(values_by_band, name) for name in self.sentinel2_indices)
+        output_layers = [values_by_band[name] for name in self.optical_bands]
+        output_layers.extend(self._calculate_local_optical_index(values_by_band, name) for name in self.optical_indices)
         output_layers.extend(values_by_band[name] for name in self.sentinel1_bands)
         output_layers.extend(self._calculate_local_sentinel1_index(values_by_band, name) for name in self.sentinel1_indices)
         return np.stack(output_layers, axis=1).astype("float32", copy=False)
@@ -153,10 +158,7 @@ class ParcelStatisticsCalculator:
         source = Path(netcdf_path)
         # Derive sibling paths from the raw stem so batch and tile-manager naming both work.
         base_stem = source.stem
-        return (
-            source.with_name(f"{base_stem}_cleaned.nc"),
-            source.with_name(f"{base_stem}_cleaning_report.parquet"),
-        )
+        return (source.with_name(f"{base_stem}_cleaned.nc"), source.with_name(f"{base_stem}_cleaning_report.parquet"))
 
     def _final_checkpoint_path(self, netcdf_path) -> Path:
         """Return the final post-index NetCDF path for one raw cube."""
@@ -165,11 +167,7 @@ class ParcelStatisticsCalculator:
         return source.with_name(f"{base_stem}_final.nc")
 
     def _load_final_checkpoint(
-        self,
-        netcdf_path,
-        periods: list[str],
-        variables: list[str],
-        expected_shape: tuple[int, ...],
+        self, netcdf_path, periods: list[str], variables: list[str], expected_shape: tuple[int, ...]
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, pd.DataFrame] | None:
         """Load final bands and indices when the post-index checkpoint is complete."""
         final_path = self._final_checkpoint_path(netcdf_path)
@@ -222,11 +220,7 @@ class ParcelStatisticsCalculator:
         self.parcel_logger.info(f"Saved completed post-index checkpoint {final_path}.")
 
     def _load_cleaning_checkpoint(
-        self,
-        netcdf_path,
-        periods: list[str],
-        variables: list[str],
-        expected_shape: tuple[int, ...],
+        self, netcdf_path, periods: list[str], variables: list[str], expected_shape: tuple[int, ...]
     ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame] | None:
         """Load a complete and compatible cleaning checkpoint when available."""
         cleaned_path, report_path = self._cleaning_checkpoint_paths(netcdf_path)
@@ -290,9 +284,7 @@ class ParcelStatisticsCalculator:
         cleaned_path, _ = self._cleaning_checkpoint_paths(netcdf_path)
         if cleaned_path.exists():
             cleaned_path.unlink()
-            self.parcel_logger.info(
-                f"Removed intermediate cleaning raster {cleaned_path}; raw data and audit remain available."
-            )
+            self.parcel_logger.info(f"Removed intermediate cleaning raster {cleaned_path}; raw data and audit remain available.")
 
     def _reduce_local_pixels(self, pixel_values: np.ndarray) -> dict[str, np.ndarray]:
         """Calculate requested statistics across the final pixel axis."""
@@ -333,10 +325,7 @@ class ParcelStatisticsCalculator:
 
     @staticmethod
     def _summarize_parcel_filling(
-        observed: np.ndarray,
-        temporal_filled_mask: np.ndarray,
-        final: np.ndarray,
-        intersected_pixel_count: int,
+        observed: np.ndarray, temporal_filled_mask: np.ndarray, final: np.ndarray, intersected_pixel_count: int
     ) -> dict[str, int | float]:
         """Aggregate fill provenance over every requested period and band."""
         expected_pixel_count = intersected_pixel_count * observed.shape[0] * observed.shape[1]
@@ -404,7 +393,7 @@ class ParcelStatisticsCalculator:
 
     def _calculate_local_statistics(self, netcdf_path, parcels, batch_number):
         """Clean the complete raster first, then calculate parcel statistics."""
-        self.parcel_logger.info(f"Reading monthly pixel cube {netcdf_path}.")
+        self.parcel_logger.info(f"Reading temporal pixel cube {netcdf_path}.")
         with xr.open_dataset(netcdf_path, decode_coords="all", mask_and_scale=True) as dataset:
             time_dimension = self._find_cube_dimension(dataset, ("t", "time", "temporal"), "temporal")
             x_dimension = self._find_cube_dimension(dataset, ("x", "longitude", "lon"), "x")
@@ -459,7 +448,9 @@ class ParcelStatisticsCalculator:
                         iqr_bounds=iqr_bounds,
                         variable_names=cube_variables,
                     )
-                    self._save_cleaning_checkpoint(netcdf_path, cleaned_values, raster_observed, raster_report, periods, cube_variables)
+                    self._save_cleaning_checkpoint(
+                        netcdf_path, cleaned_values, raster_observed, raster_report, periods, cube_variables
+                    )
                 else:
                     # Resume index calculation from a completed physical-band cleaning checkpoint.
                     cleaned_values, raster_observed, raster_report = checkpoint
@@ -471,12 +462,7 @@ class ParcelStatisticsCalculator:
                 temporally_filled_values = self._build_local_output_cube(temporally_filled_values, cube_variables)
                 temporal_filled_mask = ~np.isfinite(raster_observed) & np.isfinite(temporally_filled_values)
                 self._save_final_checkpoint(
-                    netcdf_path,
-                    cleaned_values,
-                    raster_observed,
-                    periods,
-                    variables,
-                    temporally_filled=temporally_filled_values,
+                    netcdf_path, cleaned_values, raster_observed, periods, variables, temporally_filled=temporally_filled_values
                 )
                 if not getattr(self, "keep_cleaned_checkpoint", False):
                     self._remove_cleaned_raster_checkpoint(netcdf_path)
@@ -499,10 +485,7 @@ class ParcelStatisticsCalculator:
                 intersected_pixel_count = int(cleaned_mask.sum())
                 local_temporal_filled = local_temporal_filled[:, :, cleaned_mask].astype(bool, copy=False)
                 fill_metrics = self._summarize_parcel_filling(
-                    observed[:, :, cleaned_mask],
-                    local_temporal_filled,
-                    cleaned[:, :, cleaned_mask],
-                    intersected_pixel_count,
+                    observed[:, :, cleaned_mask], local_temporal_filled, cleaned[:, :, cleaned_mask], intersected_pixel_count
                 )
                 pixel_cell_area = abs(float(transform.a * transform.e - transform.b * transform.d))
                 stats = self._reduce_local_pixels(cleaned[:, :, cleaned_mask])
@@ -548,9 +531,7 @@ class ParcelStatisticsCalculator:
             }
         )
         enriched = data.merge(parcel_metrics, on=self.PARCEL_ID_FIELD, how="left", validate="many_to_one")
-        enriched["geom_interior_area_ratio"] = enriched["pixel_area"] / enriched["geom_area"].where(
-            enriched["geom_area"] > 0
-        )
+        enriched["geom_interior_area_ratio"] = enriched["pixel_area"] / enriched["geom_area"].where(enriched["geom_area"] > 0)
         enriched["geom_shape_complexity_score"] = self._calculate_geometry_complexity_score(enriched)
 
         derived_columns: dict[str, pd.Series] = {}
@@ -607,10 +588,7 @@ class ParcelStatisticsCalculator:
         if rectangle.is_empty or rectangle.geom_type != "Polygon":
             return np.nan
         coordinates = list(rectangle.exterior.coords)
-        side_lengths = [
-            math.hypot(x2 - x1, y2 - y1)
-            for (x1, y1), (x2, y2) in zip(coordinates, coordinates[1:])
-        ]
+        side_lengths = [math.hypot(x2 - x1, y2 - y1) for (x1, y1), (x2, y2) in zip(coordinates, coordinates[1:])]
         positive_lengths = [length for length in side_lengths if length > 0]
         if len(positive_lengths) < 2:
             return np.nan
@@ -634,19 +612,17 @@ class ParcelStatisticsCalculator:
         raster_agreement_penalty = np.log(interior_ratio).abs()
         compactness_penalty = (-0.5 * np.log(compactness)).clip(lower=0.0)
         equal_area_circle_perimeter_area_ratio = 2.0 * np.sqrt(np.pi / positive_area)
-        normalized_perimeter_area_ratio = (
-            data["geom_perimeter_area_ratio"] / equal_area_circle_perimeter_area_ratio
-        ).where(lambda values: values > 0)
+        normalized_perimeter_area_ratio = (data["geom_perimeter_area_ratio"] / equal_area_circle_perimeter_area_ratio).where(
+            lambda values: values > 0
+        )
         perimeter_penalty = np.log(normalized_perimeter_area_ratio).clip(lower=0.0)
         shape_index_penalty = np.log(shape_index).clip(lower=0.0)
         elongation_penalty = np.log(elongation).clip(lower=0.0)
 
-        boundary_penalty = pd.concat(
-            [compactness_penalty, perimeter_penalty, shape_index_penalty], axis=1
-        ).mean(axis=1, skipna=False)
-        return pd.concat(
-            [raster_agreement_penalty, boundary_penalty, elongation_penalty], axis=1
-        ).mean(axis=1, skipna=False)
+        boundary_penalty = pd.concat([compactness_penalty, perimeter_penalty, shape_index_penalty], axis=1).mean(
+            axis=1, skipna=False
+        )
+        return pd.concat([raster_agreement_penalty, boundary_penalty, elongation_penalty], axis=1).mean(axis=1, skipna=False)
 
     def _reshape_time_series_for_ml(self, data: pd.DataFrame) -> gpd.GeoDataFrame:
         """Pivot parcel-period statistics into one ML-ready row per parcel."""

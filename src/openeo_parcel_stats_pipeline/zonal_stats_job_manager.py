@@ -152,9 +152,7 @@ def compute_tile_width(
 
     comparison_rows = []
     for width in widths:
-        job_counts, maximum_loads = zip(
-            *(_non_empty_tile_job_count(part, width, int(working_epsg)) for part in parts)
-        )
+        job_counts, maximum_loads = zip(*(_non_empty_tile_job_count(part, width, int(working_epsg)) for part in parts))
         comparison_rows.append(
             {
                 "tile_size_km": width / 1_000,
@@ -256,9 +254,7 @@ class JobManagerSatelliteZonalStats(SatelliteZonalStats):
         self.openeo_parallel_jobs = self._positive_integer(openeo_parallel_jobs, "openeo_parallel_jobs")
         self.job_poll_seconds = self._positive_integer(job_poll_seconds, "job_poll_seconds")
         self.max_job_retries = self._non_negative_integer(max_job_retries, "max_job_retries")
-        self.job_retry_delay_seconds = self._non_negative_integer(
-            job_retry_delay_seconds, "job_retry_delay_seconds"
-        )
+        self.job_retry_delay_seconds = self._non_negative_integer(job_retry_delay_seconds, "job_retry_delay_seconds")
         self.run_identifier = self._validate_run_identifier(run_identifier)
         super().__init__(*args, **kwargs)
 
@@ -360,7 +356,7 @@ class JobManagerSatelliteZonalStats(SatelliteZonalStats):
         retryable = failed.loc[retry_counts < self.max_job_retries].copy()
         exhausted = failed.loc[retry_counts >= self.max_job_retries]
         if not exhausted.empty:
-            self.openeo_logger.error(
+            self.source_logger.error(
                 "%s tile job(s) exhausted the limit of %s retries: batches %s.",
                 len(exhausted),
                 self.max_job_retries,
@@ -381,7 +377,7 @@ class JobManagerSatelliteZonalStats(SatelliteZonalStats):
             retryable.at[index, "retry_count"] = next_retry
             retryable.at[index, "retry_mode"] = "restart" if restart_existing else "replace"
             retryable.at[index, "status"] = "not_started"
-            self.openeo_logger.warning(
+            self.source_logger.warning(
                 "Retrying batch %s after status %s for openEO job %s (retry %s/%s; mode=%s).",
                 int(row["batch_number"]),
                 failure_status,
@@ -398,10 +394,8 @@ class JobManagerSatelliteZonalStats(SatelliteZonalStats):
         """Apply the configured backend cooldown before a retry wave."""
 
         if retry_count > 0 and self.job_retry_delay_seconds > 0:
-            self.openeo_logger.warning(
-                "Waiting %s seconds before retrying %s failed tile job(s).",
-                self.job_retry_delay_seconds,
-                retry_count,
+            self.source_logger.warning(
+                "Waiting %s seconds before retrying %s failed tile job(s).", self.job_retry_delay_seconds, retry_count
             )
             time.sleep(self.job_retry_delay_seconds)
 
@@ -584,7 +578,7 @@ class JobManagerSatelliteZonalStats(SatelliteZonalStats):
         plans = self._build_tile_plan(cube_dir)
         parcel_counts = [len(plan["parcels"]) for plan in plans]
         singleton_jobs = sum(count == 1 for count in parcel_counts)
-        self.openeo_logger.info(
+        self.source_logger.info(
             "Tile plan: %s parcels in %s remote jobs; parcels/job min=%s, median=%.1f, max=%s; singleton jobs=%s.",
             sum(parcel_counts),
             len(plans),
@@ -603,10 +597,10 @@ class JobManagerSatelliteZonalStats(SatelliteZonalStats):
         pending_batches = [(plan["batch_number"], plan["parcels"], Path(plan["target_path"])) for plan in plans]
         uncached = [plan for plan in plans if not Path(plan["target_path"]).exists()]
         if not uncached:
-            self.openeo_logger.info("All %s tile cubes are already cached.", len(plans))
+            self.source_logger.info("All %s tile cubes are already cached.", len(plans))
             return pending_batches
 
-        self.openeo_logger.info("Connecting to openEO backend %s.", self.OPENEO_URL)
+        self.source_logger.info("Connecting to openEO backend %s.", self.OPENEO_URL)
         connection = openeo.connect(self.OPENEO_URL, auto_validate=False)
         self._authenticate_openeo_connection(connection)
         plan_lookup = {plan["batch_number"]: plan for plan in plans}
@@ -645,7 +639,7 @@ class JobManagerSatelliteZonalStats(SatelliteZonalStats):
                 f"batch {plan['batch_number']} ({plan['tile_id']}, {len(plan['parcels'])} parcels)."
             )
             print(message, flush=True)
-            self.openeo_logger.info(message)
+            self.source_logger.info(message)
             return job
 
         manager = _NetCDFTileJobManager(
@@ -678,3 +672,7 @@ class JobManagerSatelliteZonalStats(SatelliteZonalStats):
                 f"{failure_details}"
             )
         return pending_batches
+
+
+# Source-explicit public name, retaining the original class identity.
+OpenEOJobManagerZonalStats = JobManagerSatelliteZonalStats
