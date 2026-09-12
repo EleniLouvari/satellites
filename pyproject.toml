@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "satellites"
+version = "0.1.0"
+description = "Satellite parcel statistics, exploratory analysis, and geospatial classification"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy", "pandas", "geopandas", "pyarrow", "shapely", "pyproj",
+    "scipy", "scikit-learn", "matplotlib", "seaborn", "joblib",
+    "rasterio", "rioxarray", "xarray", "requests", "psutil", "tqdm",
+]
+
+[project.optional-dependencies]
+acquisition = ["openeo", "boto3", "pystac-client", "h5netcdf", "netCDF4", "dask[array]", "openpyxl"]
+ml = ["xgboost", "lightgbm", "imbalanced-learn", "shap"]
+neural = ["tensorflow"]
+interpolation = ["pykrige"]
+notebooks = ["jupyterlab", "ipykernel"]
+gis-utilities = ["ipython", "networkx", "dill", "fiona", "skimpy", "libpysal", "esda", "splot", "statsmodels", "ruptures"]
+dev = ["pytest", "pytest-cov", "ruff", "radon", "pydocstyle", "bandit"]
+
+[tool.setuptools]
+py-modules = ["import_libraries", "global_variables"]
+
+[tool.setuptools.package-dir]
+"" = "src"
+common_libraries = "src/_compat/common_libraries"
+eda_pipeline = "src/_compat/eda_pipeline"
+hub_catalog = "src/_compat/hub_catalog"
+ml_classification = "src/_compat/ml_classification"
+ml_classification_pipeline = "src/_compat/ml_classification_pipeline"
+ml_classification_sensitivity = "src/_compat/ml_classification_sensitivity"
+openeo_parcel_stats_pipeline = "src/_compat/openeo_parcel_stats_pipeline"
+parcel_stats_pipeline = "src/_compat/parcel_stats_pipeline"
+
+[tool.setuptools.packages.find]
+where = ["src", "src/_compat"]
+namespaces = false
+
+[tool.coverage.run]
+source = ["satellites"]
+data_file = "outputs/quality/.coverage"
+
+[tool.coverage.xml]
+output = "outputs/quality/coverage.xml"
+
+[tool.coverage.html]
+directory = "outputs/quality/htmlcov"

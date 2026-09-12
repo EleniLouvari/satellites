@@ -7,21 +7,21 @@ agricultural parcels.
 
 ### Three Core Pipelines
 
-1. **Satellite Zonal Statistics** (`src/openeo_parcel_stats_pipeline/`)
+1. **Satellite Zonal Statistics** (`src/satellites/data_preparation/parcel_stats/`)
    - Extracts Sentinel-1/2 observations from Copernicus Data Space via openEO
    - Computes temporal statistics for parcel geometries
    - Outputs: one ML-ready row per parcel, dated feature columns (e.g., `NDVI_median__20240701`)
    - Two implementations: `SatelliteZonalStats` (batch-grouped), `JobManagerSatelliteZonalStats` (tile-based)
    - Processing: IQR cleaning → null filling (temporal, 3x3, 5x5) → index calculation → zonal masking → persistence as GeoParquet
 
-2. **ML Classification Pipeline** (`src/ml_classification/ml_classification_pipeline/`)
+2. **ML Classification Pipeline** (`src/satellites/ml_classification/`)
    - Five-step restartable workflow: Check → Prepare → Train → Evaluate → Predict
    - Each step writes outputs to numbered folders (`01_check/` through `05_predict/`) and HTML reports
    - Input: one row per entity (DataFrame or GeoDataFrame); output: class predictions with probabilities
    - Handles spatial splitting, class balancing, soft-voting ensembles, probability optimization
    - Supports hyperparameter tuning with configurable model candidates
 
-3. **EDA Pipeline** (`src/eda_pipeline/`)
+3. **EDA Pipeline** (`src/satellites/eda/`)
    - Exploratory data analysis reports; mostly used in notebooks
 
 ### Key Integration Point
@@ -38,20 +38,19 @@ Zonal stats pipeline output → ML classification pipeline input. Features must 
 ```bash
 # Windows: run_code_checks.bat
 # Includes: ruff (lint/fix), pydocstyle, bandit (security), pytest with coverage
-# Output: reports/ folder with junit.xml, pydocstyle.txt, bandit.txt
+# Output: outputs/quality/ folder with junit.xml, pydocstyle.txt, bandit.txt
 # Coverage HTML: htmlcov/index.html
 ```
 
 ### Notebook Environment Setup
-```python
-# Notebooks assume src/ is on PYTHONPATH and import:
-from import_libraries import *  # NOSONAR # All common packages + visualization
-from global_variables import *  # SEED_NUMBER=42, null value lists, color palettes
-```
 
-### Pipeline Usage Pattern (See `4_kozani_ml_classification.ipynb`)
+Install the repository into the active kernel environment with `python -m pip install --no-deps --no-build-isolation -e .`.
+Use explicit `satellites.*` imports; do not add `sys.path` edits or wildcard imports.
+Compatibility modules in `src/_compat/` are only for existing consumers.
+
+### Pipeline Usage Pattern (See `notebooks/projects/volvi/4_ml_classification.ipynb`)
 ```python
-from ml_classification.ml_classification_pipeline import (
+from satellites.ml_classification import (
     GeospatialClassificationPipeline, ClassificationPipelineConfig
 )
 
@@ -95,10 +94,10 @@ pipeline.run_predict()  # Refit + predict all rows
 - Full predictions in `05_predict/final_predictions.joblib`; CSV preview in `05_predict/final_predictions_preview.csv`
 
 ### Random Seed Control
-- Set globally in `global_variables.py` (`SEED_NUMBER = 42`)
+- Default seed in `satellites.shared.constants`; notebook setup is explicit (`SEED_NUMBER = 42`)
 - TensorFlow, NumPy, random, hash all seeded; CUDA disabled
 - OMP/threading limited to 4 intra-op threads for reproducibility
-- `ml_classification_sensitivity/` reruns full pipeline over multiple seeds
+- `satellites/ml_classification/sensitivity/` reruns full pipeline over multiple seeds
 
 ### Spatial Splitting (GeoDataFrame Projects)
 - `spatial_split=True` + `spatial_split_method="by_group"`: hold out complete grid cells
@@ -114,19 +113,19 @@ pipeline.run_predict()  # Refit + predict all rows
 
 ## Common Libraries
 
-All reusable utilities live in `src/common_libraries/`:
-- `io_library.py`: read/write GeoParquet, CSV, NetCDF
-- `geom_library.py`: geometry repair, CRS transforms
-- `raster_library.py`: IQR cleaning, spatial interpolation (nearest, IDW, kriging)
-- `logging_library.py`: formatted console/file logging
-- `generic_library.py`: dataframe utilities, null value mapping
+All reusable utilities live in `src/satellites/shared/`:
+- `io.py`: read/write GeoParquet, CSV, NetCDF
+- `geometry.py`: geometry repair, CRS transforms
+- `raster.py`: IQR cleaning, spatial interpolation (nearest, IDW, kriging)
+- `logging.py`: formatted console/file logging
+- `tabular.py`: dataframe utilities, null value mapping
 
 ## Testing & Validation
 
-- Unit tests: `src/unit_tests/` (pytest)
+- Unit tests: `tests/` (pytest)
 - Test markers: `@pytest.mark.slow`, `@pytest.mark.e2e` (integration tests)
 - Config: `pytest.ini` (testpaths, python_files, python_classes patterns)
-- Coverage: stored as `coverage.xml` and `htmlcov/`
+- Coverage: stored as `outputs/quality/coverage.xml` and `outputs/quality/htmlcov/`
 - Linting: `.pylintrc` for docstring/style rules
 
 ## Cross-Component Data Flow
@@ -153,15 +152,15 @@ Predictions + probabilities + review flags (confidence < threshold)
 
 ## Key Files to Know
 
-- **Entry config**: `src/global_variables.py` (seed, null lists, plot themes)
-- **Pipeline core**: `src/ml_classification/ml_classification_pipeline/pipeline.py`
-- **Step implementations**: `src/ml_classification/ml_classification_pipeline/steps/`
-- **Zonal stats entry**: `src/openeo_parcel_stats_pipeline/zonal_stats.py`
-- **Common utilities**: `src/common_libraries/`
+- **Entry config**: `src/satellites/shared/constants.py` (seed, null lists, plot themes)
+- **Pipeline core**: `src/satellites/ml_classification/pipeline.py`
+- **Step implementations**: `src/satellites/ml_classification/steps/`
+- **Zonal stats entry**: `src/satellites/data_preparation/parcel_stats/openeo.py`
+- **Common utilities**: `src/satellites/shared/`
 
 
 ## General Notes
-- New code should be accompanied by unit tests in `src/unit_tests/`.
+- New code should be accompanied by unit tests in `tests/`.
 - All code should adhere to the linting and formatting rules defined in `.pylintrc` and `pyproject.toml`.
 - All code must be documented with docstrings and comments where necessary.
 - When new functionality is added, update the relevant documentation and README files to reflect the changes.
@@ -169,8 +168,12 @@ Predictions + probabilities + review flags (confidence < threshold)
   consider refactoring or extending it instead of creating a new one.
 - Ensure that the new code is covered by unit tests and that the tests are comprehensive, covering edge cases and potential
   failure points.
-- When adding new dependencies, ensure they are necessary and do not bloat the project. Update `requirements.txt` accordingly.
+- When adding new dependencies, ensure they are necessary and do not bloat the project. Update the dependency groups in `pyproject.toml` accordingly.
 - The new code should be compatible with the existing codebase and follow the same coding conventions and patterns, i.e.,
   naming conventions, code structure, and documentation style (130 characters max per line).
 - When new functionality is added, ensure that it follows the ruff and radon rules. New code should be tested for cyclomatic
   complexity and maintainability index, and refactored if necessary to meet the project's standards.
+
+## Repository organization
+
+See `docs/repository_structure.md` for the source boundaries. Notebooks live in `notebooks/`, tests in `tests/`, reference data in `data/reference/`, and generated files in `outputs/`. Shared parcel-statistics code must not depend on an imagery acquisition service.

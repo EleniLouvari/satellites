@@ -1,0 +1,8 @@
+[project]
+name = "volvi"
+run = "example"
+
+[paths]
+# Relative paths resolve from this configuration file's directory.
+data_root = "../data"
+output_root = "../outputs"
