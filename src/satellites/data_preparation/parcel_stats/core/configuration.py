@@ -90,7 +90,7 @@ class ZonalStatsConfiguration:
             raise ValueError("working_epsg must identify a projected CRS.")
         return epsg
 
-    def _validate_temporal_aggregation(self, temporal_period: str, temporal_reducer: str) -> tuple[str, str]:
+    def _validate_temporal_aggregation(self, temporal_period: str, temporal_reducer: str | None) -> tuple[str, str]:
         """Normalize a day/month bin width and acquisition reducer."""
         if not isinstance(temporal_period, str):
             raise TypeError("temporal_period must be a string such as 15D or 2M.")
@@ -102,7 +102,7 @@ class ZonalStatsConfiguration:
             raise ValueError("temporal_period must be a positive day/month/year interval such as 15D, 1M, 2M, 3M or 1Y.")
         reducer = str(temporal_reducer).strip().lower()
         reducer = {"average": "mean", "avg": "mean"}.get(reducer, reducer)
-        supported_reducers = {"mean", "median", "min", "max", "sum"}
+        supported_reducers = {"mean", "median", "min", "max", "sum", "none"}
         if reducer not in supported_reducers:
             raise ValueError(
                 f"Unsupported temporal_reducer: {temporal_reducer!r}. Supported reducers: {sorted(supported_reducers)}"

@@ -105,7 +105,7 @@ def build_dense_classifier_model(
     return model
 
 
-class TensorFlowDenseClassifier(BaseEstimator, ClassifierMixin):
+class TensorFlowDenseClassifier(ClassifierMixin, BaseEstimator):
     """Sklearn-compatible wrapper around a configurable TensorFlow dense classifier."""
 
     def __init__(

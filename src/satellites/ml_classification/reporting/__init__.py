@@ -6,6 +6,7 @@ only the functions listed in ``__all__``.
 """
 
 from .html import write_html_report
+from .server import open_report
 from .reports import (
     write_check_report,
     write_evaluate_report,
@@ -17,6 +18,7 @@ from .reports import (
 
 # Public reporting API - keep explicit so tools and IDEs can discover exports.
 __all__ = [
+    "open_report",
     "write_html_report",
     "write_check_report",
     "write_prepare_report",

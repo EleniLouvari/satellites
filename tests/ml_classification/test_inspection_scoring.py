@@ -14,7 +14,12 @@ def _config() -> SimpleNamespace:
     return SimpleNamespace(
         target_column="declared_crop",
         prediction_column="predicted_crop",
+        prediction_confidence_column="prediction_max_probability",
         prediction_confidence_level_column="prediction_confidence_level",
+        prediction_review_column="prediction_needs_review",
+        prediction_filled_column="declared_crop_filled",
+        probability_prefix="probability",
+        prediction_confidence_threshold=0.60,
         inspection_data_reliability_column="data_reliability_score",
         inspection_geometry_complexity_column="geom_shape_complexity_score",
         inspection_model_weight=0.60,
@@ -156,6 +161,49 @@ def test_predict_step_attaches_inspection_outputs_and_summary() -> None:
         "label_prediction_status",
         "inspection_check_type",
     }.issubset(result.columns)
+
+
+def test_predict_step_calculates_prediction_quality_without_full_run() -> None:
+    step = object.__new__(PredictStep)
+    step.config = _config()
+    parcels = pd.DataFrame(
+        {
+            "declared_crop": ["Cotton", "Cotton"],
+            "data_reliability_score": [0.9, 0.7],
+            "geom_shape_complexity_score": [1.0, 2.0],
+        }
+    )
+    predictions = np.array(["Cotton", "Maize"])
+    probabilities = np.array([[0.9, 0.1], [0.2, 0.8]])
+    member_probabilities = {
+        "m1": np.array([[0.9, 0.1], [0.2, 0.8]]),
+        "m2": np.array([[0.8, 0.2], [0.3, 0.7]]),
+    }
+    selection = {
+        "labels": ["Cotton", "Maize"],
+        "selected_models": ["m1", "m2"],
+        "confidence": {
+            "enabled": True,
+            "method": "rank_consensus_only",
+            "rank": {"minimum_models": 2, "high_min_borda": 90.0, "high_max_range": 2.0, "medium_min_borda": 75.0, "medium_max_range": 4.0},
+            "class_reliability": None,
+        },
+    }
+
+    result, unknown_mask, rank_confidence, rank_contract, inspection_summary = step.calculate_prediction_quality(
+        dataset=parcels,
+        predictions=predictions,
+        probabilities=probabilities,
+        selection=selection,
+        member_probabilities=member_probabilities,
+    )
+
+    assert unknown_mask.tolist() == [False, False]
+    assert rank_contract["enabled"] is True
+    assert rank_confidence is not None
+    assert "prediction_confidence_level" in result.columns
+    assert result["inspection_score"].notna().all()
+    assert inspection_summary["inspection_scoring_available"]
 
 
 def test_predict_step_skips_inspection_scoring_when_inputs_are_absent() -> None:

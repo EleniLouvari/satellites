@@ -45,8 +45,11 @@ def _style_confusion_matrix_axes(ax, labels: list[str]) -> None:
     """Apply consistent tick and annotation styling to confusion-matrix axes."""
     # Reuse a dynamic font-size rule for both ticks and in-cell annotations.
     tick_fontsize = _confusion_matrix_tick_fontsize(labels)
-    ax.tick_params(axis="x", labelsize=tick_fontsize)
-    ax.tick_params(axis="y", labelsize=tick_fontsize)
+    # Shorten display text only; keep the complete class labels for evaluation.
+    ax.set_xticks(ax.get_xticks(), labels=[label.get_text()[:20] for label in ax.get_xticklabels()])
+    ax.set_yticks(ax.get_yticks(), labels=[label.get_text()[:20] for label in ax.get_yticklabels()])
+    ax.tick_params(axis="x", labelsize=tick_fontsize, labelrotation=90)
+    ax.tick_params(axis="y", labelsize=tick_fontsize, labelrotation=0)
     for text in ax.texts:
         text.set_fontsize(tick_fontsize)
 
@@ -225,7 +228,7 @@ def save_confusion_matrix_plot(y_true, y_pred, labels: list[str], output_path: s
     # Use sklearn display helpers to keep label ordering consistent.
     fig, ax = plt.subplots(figsize=(8, 7))
     ConfusionMatrixDisplay.from_predictions(
-        y_true, y_pred, display_labels=labels, xticks_rotation=45, cmap="Blues", ax=ax, colorbar=False
+        y_true, y_pred, display_labels=labels, xticks_rotation=90, cmap="Blues", ax=ax, colorbar=False
     )
     _style_confusion_matrix_axes(ax, labels)
     ax.set_title(title)
@@ -243,7 +246,7 @@ def save_binary_evaluation_panel(y_true, y_pred, y_proba, labels: list[str], out
         roc_legend.remove()
     axes[0].set_title(f"ROC Curve: {model_name}")
     ConfusionMatrixDisplay.from_predictions(
-        y_true, y_pred, display_labels=labels, xticks_rotation=45, cmap="Blues", ax=axes[1], colorbar=False
+        y_true, y_pred, display_labels=labels, xticks_rotation=90, cmap="Blues", ax=axes[1], colorbar=False
     )
     _style_confusion_matrix_axes(axes[1], labels)
     axes[1].set_title(f"Confusion Matrix: {model_name}")
@@ -269,7 +272,7 @@ def save_multiclass_evaluation_panel(
         roc_legend.remove()
     axes[0].set_title(f"Multiclass ROC: {model_name}")
     ConfusionMatrixDisplay.from_predictions(
-        y_true, y_pred, display_labels=labels, xticks_rotation=45, cmap="Blues", ax=axes[1], colorbar=False
+        y_true, y_pred, display_labels=labels, xticks_rotation=90, cmap="Blues", ax=axes[1], colorbar=False
     )
     _style_confusion_matrix_axes(axes[1], labels)
     axes[1].set_title(f"Confusion Matrix: {model_name}")
@@ -331,7 +334,7 @@ def save_prediction_fill_plot(original_target: pd.Series, filled_target: pd.Seri
     ax.set_title("Final Target Distribution After Filling Unknown Labels")
     ax.set_xlabel("Target Class")
     ax.set_ylabel("Rows")
-    ax.tick_params(axis="x", rotation=45)
+    ax.tick_params(axis="x", rotation=90)
     _save_figure(fig, output_path)
 
 

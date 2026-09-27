@@ -36,6 +36,27 @@ A top-level index page is written to:
 
 - `report_index.html`
 
+With `open_html_report=True`, the pipeline opens this index through a local
+HTTP server. Use its links to view the step reports. Opening HTML files directly
+with `file://` can cause OpenStreetMap to reject tile requests because the browser
+does not send a web referrer. Tiles still require internet access.
+
+To view an existing report from a notebook without rerunning any pipeline step:
+
+```python
+from satellites.ml_classification.reporting import open_report
+
+open_report(config.check_dir / "report.html", root=config.project_dir)
+```
+
+The local viewer runs only on `127.0.0.1` and lasts for the lifetime of the Python
+process/notebook kernel. For reports from a finished script, run the standalone
+viewer from the repository root and leave it running while viewing:
+
+```console
+python -I src/satellites/ml_classification/reporting/server.py /path/to/project/report_index.html
+```
+
 The final dashboard combines the OpenStreetMap-backed study-area map,
 one combined parcel-level box-plot figure with one row per month, NDVI on the
 left, NDWI on the right, and class/label on the shared x-axis; monthly
@@ -252,3 +273,19 @@ Spatial train-test split (optional):
 - `spatial_split_method="by_group"` holds out complete grid cells so train and test are spatially disjoint.
 - `spatial_split_method="by_row"` samples rows from across the grid while preserving every class in both sets; grid cells can occur in both sets.
 - `spatial_split_grid_size` controls the grid granularity used to enforce spatial coverage.
+
+Cross-validation uses `cv_folds` disjoint validation subsets of the training data,
+so the target validation fraction is `1 / cv_folds`. For `test_size=0.2`, use
+`cv_folds=5` to match the holdout fraction; `test_size` itself controls the outer
+train/test split. Every training row appears in validation exactly once, as
+required for out-of-fold probabilities.
+
+When `spatial_split=True`, CV keeps whole grid cells together for both holdout
+methods. It compares row-balanced and class-stratified grouped assignments,
+rejects assignments missing a class in any training fold, and prioritizes the
+smallest worst-case deviation from the target validation fraction. Class balance
+breaks ties in row balance. Exact sizes are not guaranteed: a cell with more than
+20% of the training rows makes five balanced folds impossible. Increase
+`spatial_split_grid_size` to create finer cells if appropriate for the intended
+geographic separation. The preparation report shows actual and target validation
+fractions.

@@ -308,24 +308,27 @@ class EvaluateStep(PipelineStepBase):
     def _apply_class_reliability_guard(
         parcel_df: pd.DataFrame,
         reliability_contract: dict[str, Any],
+        *,
+        combine_with_rank: bool = True,
     ) -> pd.DataFrame:
-        """Apply the frozen OOF class table and combine it with rank confidence."""
+        """Attach frozen OOF class reliability and optionally combine it with rank confidence."""
         if parcel_df.empty:
             return parcel_df.copy()
         result = parcel_df.copy()
         reliability = get_class_reliability(result["predicted_class"].to_numpy(), reliability_contract)
-        final = combine_confidence_components(
-            result["rank_confidence_level"].to_numpy(),
-            result["rank_confidence_valid"].to_numpy(),
-            result["rank_confidence_reason"].to_numpy(),
-            reliability["class_reliability_level"],
-            reliability["class_reliability_valid"],
-            reliability["class_reliability_reason"],
-        )
         for name, values in reliability.items():
             result[name] = values
-        for name, values in final.items():
-            result[name] = values
+        if combine_with_rank:
+            final = combine_confidence_components(
+                result["rank_confidence_level"].to_numpy(),
+                result["rank_confidence_valid"].to_numpy(),
+                result["rank_confidence_reason"].to_numpy(),
+                reliability["class_reliability_level"],
+                reliability["class_reliability_valid"],
+                reliability["class_reliability_reason"],
+            )
+            for name, values in final.items():
+                result[name] = values
         return result
 
     def _to_geo_classifier_result_row(
@@ -695,7 +698,7 @@ class EvaluateStep(PipelineStepBase):
         confidence_enabled = bool(self.config.rank_confidence_enabled)
         reliability_guard_enabled = bool(confidence_enabled and self.config.class_reliability_enabled)
         class_reliability = None
-        if reliability_guard_enabled:
+        if confidence_enabled:
             if oof_parcel_ranking_df.empty:
                 raise RuntimeError(
                     "Simplified confidence requires selected-model OOF probabilities. Rerun Step 3 so Step 4 can "
@@ -710,10 +713,22 @@ class EvaluateStep(PipelineStepBase):
                 high_min_precision=self.config.class_reliability_high_min_precision,
                 medium_min_precision=self.config.class_reliability_medium_min_precision,
             )
-            # Holdout, train diagnostics, and OOF rows only apply the frozen table; none can modify it.
-            parcel_ranking_df = self._apply_class_reliability_guard(parcel_ranking_df, class_reliability)
-            train_parcel_ranking_df = self._apply_class_reliability_guard(train_parcel_ranking_df, class_reliability)
-            oof_parcel_ranking_df = self._apply_class_reliability_guard(oof_parcel_ranking_df, class_reliability)
+            # Attach class reliability everywhere; only combine it into final confidence when enabled.
+            parcel_ranking_df = self._apply_class_reliability_guard(
+                parcel_ranking_df,
+                class_reliability,
+                combine_with_rank=reliability_guard_enabled,
+            )
+            train_parcel_ranking_df = self._apply_class_reliability_guard(
+                train_parcel_ranking_df,
+                class_reliability,
+                combine_with_rank=reliability_guard_enabled,
+            )
+            oof_parcel_ranking_df = self._apply_class_reliability_guard(
+                oof_parcel_ranking_df,
+                class_reliability,
+                combine_with_rank=reliability_guard_enabled,
+            )
 
         if not parcel_ranking_df.empty:
             ranking_dir = self.config.evaluate_dir / "ranking"
@@ -785,6 +800,7 @@ class EvaluateStep(PipelineStepBase):
             ),
             "version": "2.0",
             "prediction_basis": selection["selection_type"],
+            "class_reliability_enabled": bool(self.config.class_reliability_enabled),
             "rank": {
                 "minimum_models": int(self.config.rank_confidence_minimum_models),
                 **rank_confidence_thresholds_from_config(self.config),

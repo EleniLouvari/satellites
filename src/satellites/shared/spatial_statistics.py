@@ -37,8 +37,9 @@ import seaborn as sns
 import statsmodels.api as sm
 import warnings
 import satellites.shared.constants as gb_l
-import libraries.common_libraries.generic_library as cm_l
-import libraries.common_libraries.geom_library as geom_l
+import satellites.shared.geometry as geom_l
+import satellites.shared.tabular as cm_l
+import satellites.shared.io as io_l
 
 
 def define_hotspot_columns(analysis):
@@ -475,7 +476,7 @@ def spatial_clustering_using_dbscan(gdf, epsilon=0.1, min_samples=5, field_clust
     return gdf
 
 
-def create_voronoi_polygons(df_points, df_extend=None, col_id="pipe_id", max_distance_in_ft=1000, simplify_in_ft=80,
+def create_voronoi_polygons(df_points, df_extend=None, col_id="pipe_id", max_distance_in_m=304.8, simplify_in_m=24.384,
                             plot_graphs=True):
     """Create Voronoi polygons from point geometries.
 
@@ -487,10 +488,10 @@ def create_voronoi_polygons(df_points, df_extend=None, col_id="pipe_id", max_dis
         The GeoDataFrame used to clip Voronoi polygons. Defaults to None.
     col_id : str, optional
         The column name with the ID in df_points. Defaults to 'pipe_id'.
-    max_distance_in_ft : float, optional
-        The maximum distance in feet for outer polygon creation. Defaults to 1000.
-    simplify_in_ft : float, optional
-        The simplification distance in feet. Defaults to 80.
+    max_distance_in_m : float, optional
+        The maximum distance in meters for outer polygon creation. Defaults to 304.8.
+    simplify_in_m : float, optional
+        The simplification distance in meters. Defaults to 24.384.
     plot_graphs : bool, optional
         Whether to plot the Voronoi diagram. Defaults to True.
 
@@ -513,7 +514,7 @@ def create_voronoi_polygons(df_points, df_extend=None, col_id="pipe_id", max_dis
     df_points = geom_l.convert_geometries_to_points(df_points)
     points = df_points.unary_union
     if isinstance(df_extend, gpd.geodataframe.GeoDataFrame):
-        clip_polygon = geom_l.create_outer_polygons(df_extend, max_distance_in_ft, simplify_in_ft)
+        clip_polygon = geom_l.create_outer_polygons(df_extend, max_distance_in_m, simplify_in_m)
         clip_polygon = clip_polygon.unary_union
         regions = voronoi_diagram(points, envelope=clip_polygon)
         voronoi_pols = gpd.GeoDataFrame(geometry=[Polygon(region) for region in regions.geoms], crs=df_points.crs)
@@ -530,7 +531,7 @@ def create_voronoi_polygons(df_points, df_extend=None, col_id="pipe_id", max_dis
     return voronoi_pols
 
 
-def spatial_clustering_using_buffer(gdf, field_id, min_cluster_distance, simplify_in_ft=80, field_cluster="cluster",
+def spatial_clustering_using_buffer(gdf, field_id, min_cluster_distance_in_m, simplify_in_m=24.384, field_cluster="cluster",
                                     plot_results=True, figsize=(15, 15)):
     """Perform clustering using buffer-based spatial analysis.
 
@@ -540,10 +541,10 @@ def spatial_clustering_using_buffer(gdf, field_id, min_cluster_distance, simplif
         The input GeoDataFrame containing spatial data.
     field_id : str
         The column name with unique identifiers.
-    min_cluster_distance : float
+    min_cluster_distance_in_m : float
         The minimum distance to define clusters.
-    simplify_in_ft : float, optional
-        The simplification distance in feet. Defaults to 80.
+    simplify_in_m : float, optional
+        The simplification distance in meters. Defaults to 24.384.
     field_cluster : str, optional
         The column name for cluster assignments. Defaults to 'cluster'.
     plot_results : bool, optional
@@ -557,30 +558,70 @@ def spatial_clustering_using_buffer(gdf, field_id, min_cluster_distance, simplif
         The input GeoDataFrame with cluster assignments.
 
     """
-    gdf = gdf.copy()
-    cluster = geom_l.create_outer_polygons(gdf, max_distance_in_ft=min_cluster_distance / 2,
-                                           simplify_in_ft=simplify_in_ft)
-    cluster['area'] = cluster.area
-    cluster = cluster.sort_values(by="area", ascending=False).reset_index(drop=True)
-    cluster[field_cluster] = cluster.index.to_series().apply(lambda x: f"Cluster {x}")
-    cluster.loc[(cluster[field_cluster] == "Cluster 0"), field_cluster] = "Cluster Main"
+    if "geometry" not in gdf.columns:
+        raise Exception("geometry column is not included in the dataframe")
+    if field_id not in gdf.columns:
+        raise Exception(f"{field_id} column is not included in the dataframe")
 
-    gdf_cluster_group = gpd.sjoin(cluster[[field_cluster, 'geometry']], gdf[[field_id, 'geometry']])
-    gdf_cluster_group = gdf_cluster_group.groupby(field_cluster, as_index=False).agg({field_id: list})
-    gdf_cluster_group['total'] = gdf_cluster_group[field_id].apply(lambda x: len(x))
+    gdf = gdf.copy()
+    gdf[field_cluster] = None
+
+    meter_to_df_units = create_unit_conversion_factor(source_unit="m", target_unit=get_unit_of_length(gdf))
+    buffer_distance = (min_cluster_distance_in_m / 2) * meter_to_df_units
+    print("Buffer distance in data units: ", buffer_distance)
+    buffered = gdf[["geometry"]].copy()
+    buffered["geometry"] = buffered["geometry"].buffer(buffer_distance)
+    buffered = return_valid_geometries(buffered)
+
+    if buffered.empty:
+        return gdf
+
+    merged = gpd.GeoDataFrame(geometry=[buffered["geometry"].unary_union], crs=gdf.crs)
+    cluster = merged.explode(ignore_index=True)
+    cluster = cluster[cluster.geometry.geom_type.isin(["Polygon", "MultiPolygon"])].copy()
+    cluster = return_valid_geometries(cluster)
+
+    if cluster.empty:
+        return gdf
+
+    if simplify_in_m and simplify_in_m > 0:
+        simplify_tolerance = simplify_in_m * meter_to_df_units
+        cluster["geometry"] = cluster["geometry"].simplify(simplify_tolerance, preserve_topology=True)
+        cluster = return_valid_geometries(cluster)
+
+    cluster["area"] = cluster.area
+    cluster = cluster.sort_values(by="area", ascending=False).reset_index(drop=True)
+    cluster[field_cluster] = cluster.index.to_series().apply(lambda x: "Cluster Main" if x == 0 else f"Cluster {x}")
+
+    gdf_to_join = gdf.reset_index().rename(columns={"index": "_orig_index"})
+    # Avoid name collision in sjoin when <field_cluster> already exists on the left dataframe.
+    if field_cluster in gdf_to_join.columns:
+        gdf_to_join = gdf_to_join.drop(columns=[field_cluster])
+
+    gdf_cluster = gpd.sjoin(gdf_to_join, cluster[[field_cluster, "area", "geometry"]], how="left", predicate="intersects")
+    gdf_cluster = gdf_cluster.sort_values(by=["_orig_index", "area"], ascending=[True, False])
+    gdf_cluster = gdf_cluster.drop_duplicates(subset=["_orig_index"], keep="first")
+    gdf_cluster = gdf_cluster.set_index("_orig_index")
+
+    gdf[field_cluster] = gdf_cluster[field_cluster]
+
+    gdf_cluster_group = gdf.groupby(field_cluster, as_index=False).agg({field_id: list})
+    gdf_cluster_group["total"] = gdf_cluster_group[field_id].apply(lambda x: len(x))
     display(gdf_cluster_group)
 
-    gdf_cluster = gpd.sjoin(gdf[[field_id, 'geometry']], cluster[[field_cluster, 'geometry']])
-    # Plot clustering results
+    # Plot clustering results using centroids
     if plot_results:
         fig, ax = plt.subplots(nrows=1, ncols=1, figsize=figsize)
-        gdf_cluster.plot(column=field_cluster, cmap="tab20c", legend=True, ax=ax)
-        ax.set_title("Spatial Clustering Results")
+        show_legend = False if len(gdf_cluster_group) > 10 else True
+        gdf_centroids = gdf.copy()
+        gdf_centroids["geometry"] = gdf_centroids["geometry"].centroid
+        gdf_centroids.plot(column=field_cluster, cmap="tab20c", legend=show_legend, ax=ax, markersize=5)
+        ax.set_title("Spatial Clustering Results (Centroids)")
         plt.show()
+
     return gdf
 
-
-def spatial_clustering_using_network(df, field_id, min_cluster_distance=1000, field_cluster="cluster",
+def spatial_clustering_using_network(df, field_id, min_cluster_distance_in_m=304.8, field_cluster="cluster",
                                      plot_results=True, figsize=(15,15)):
     """Identify spatially isolated clusters based on network connectivity.
 
@@ -590,8 +631,8 @@ def spatial_clustering_using_network(df, field_id, min_cluster_distance=1000, fi
         The input GeoDataFrame containing spatial data.
     field_id : str
         The column name with unique identifiers.
-    min_cluster_distance : float, optional
-        The minimum distance in feet between clusters for isolation. Defaults to 1000.
+    min_cluster_distance_in_m : float, optional
+        The minimum distance in meters between clusters for isolation. Defaults to 304.8.
     field_cluster : str, optional
         The column name for cluster assignments. Defaults to 'cluster'.
     plot_results : bool, optional
@@ -612,9 +653,9 @@ def spatial_clustering_using_network(df, field_id, min_cluster_distance=1000, fi
         raise Exception(f"{field_id} column is not included in the <field_id> dataframe!")
 
     df = df.copy()
-    G = geom_l.create_nearby_network(df, field_id, min_cluster_distance)
+    G = create_nearby_network(df, field_id, min_cluster_distance_in_m)
 
-    components = geom_l.order_components_bylen(G)
+    components = order_components_bylen(G)
     len_components = len(components)
     len_largest_component = components[0][0]
     len_smallest_component = components[-1][0]
@@ -631,7 +672,7 @@ def spatial_clustering_using_network(df, field_id, min_cluster_distance=1000, fi
     print(f"The total number of isolated pipe clusters are: {len_components}")
     print(f"The largest cluster has: {len_largest_component} geometries")
     print(f"The smallest cluster has: {len_smallest_component} geometries")
-    print(f"The disconnected clusters based on minimum distance of {min_cluster_distance} are: {len_clusters}")
+    print(f"The disconnected clusters based on minimum distance of {min_cluster_distance_in_m} are: {len_clusters}")
     components = None
     G = None
 
@@ -639,12 +680,14 @@ def spatial_clustering_using_network(df, field_id, min_cluster_distance=1000, fi
     gdf_cluster_group['total'] = gdf_cluster_group[field_id].apply(lambda x: len(x))
     display(gdf_cluster_group)
 
-    # Plot clustering results
+    # Plot clustering results using centroids
     if plot_results:
         fig, ax = plt.subplots(nrows=1, ncols=1, figsize=figsize)
-        show_legend = False if len(gdf_cluster_group)>10 else True
-        df.plot(column=field_cluster, cmap="tab20c", legend=show_legend, ax=ax)
-        ax.set_title("Spatial Clustering Results")
+        show_legend = False if len(gdf_cluster_group) > 10 else True
+        df_centroids = df.copy()
+        df_centroids["geometry"] = df_centroids["geometry"].centroid
+        df_centroids.plot(column=field_cluster, cmap="tab20c", legend=show_legend, ax=ax, markersize=5)
+        ax.set_title("Spatial Clustering Results (Centroids)")
         plt.show()
     return df
 

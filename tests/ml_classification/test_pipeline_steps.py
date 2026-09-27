@@ -1,10 +1,13 @@
 import numpy as np
 import pandas as pd
+import pytest
 
 from pathlib import Path
+from unittest.mock import MagicMock
 
 from satellites.ml_classification.core.config import ClassificationPipelineConfig
 from satellites.ml_classification.core.base import PipelineStepBase
+from satellites.ml_classification.pipeline import GeospatialClassificationPipeline
 from satellites.ml_classification.steps.predict_step import PredictStep
 from satellites.ml_classification.steps.prepare_step import PrepareStep
 
@@ -80,3 +83,31 @@ def test_build_cv_folds_stratified(tmp_path):
     for f in folds:
         assert all(0 <= idx < len(train_df) for idx in f["train_index"])
         assert all(0 <= idx < len(train_df) for idx in f["valid_index"])
+
+
+def test_create_reports_recreates_only_requested_step_and_index(tmp_path):
+    # Ensure create_reports("evaluate") dispatches only evaluate + index generation.
+    pipeline = GeospatialClassificationPipeline(_config(tmp_path))
+    pipeline._create_check_reports = MagicMock(return_value="check")
+    pipeline._create_prepare_reports = MagicMock(return_value="prepare")
+    pipeline._create_train_reports = MagicMock(return_value="train")
+    pipeline._create_evaluate_reports = MagicMock(return_value={"report": "evaluate"})
+    pipeline._create_predict_reports = MagicMock(return_value={"report": "predict"})
+
+    result = pipeline.create_reports("evaluate")
+
+    pipeline._create_check_reports.assert_not_called()
+    pipeline._create_prepare_reports.assert_not_called()
+    pipeline._create_train_reports.assert_not_called()
+    pipeline._create_evaluate_reports.assert_called_once()
+    pipeline._create_predict_reports.assert_not_called()
+    assert result["requested_steps"] == ["evaluate"]
+    assert "evaluate" in result
+    assert "index" in result
+
+
+def test_create_reports_raises_for_unknown_step(tmp_path):
+    # Ensure bad step names fail fast with a clear error.
+    pipeline = GeospatialClassificationPipeline(_config(tmp_path))
+    with pytest.raises(ValueError, match="Unknown step"):
+        pipeline.create_reports("unknown_step")

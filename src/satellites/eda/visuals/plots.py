@@ -22,6 +22,14 @@ from ..core.config import EDAConfig
 from ..core.io import ensure_dir
 
 TARGET_PALETTE = ["#4C78A8", "#E3BA22", "#F58518", "#7A9A48", "#B279A2", "#72B7B2", "#9C755F", "#BAB0AC"]
+PROFILE_LABEL_FONT_SIZE = 8
+
+
+def _style_profile_labels(axis) -> None:
+    """Use the median-profile label size across related report plots."""
+    axis.tick_params(axis="both", labelsize=PROFILE_LABEL_FONT_SIZE)
+    axis.xaxis.label.set_size(PROFILE_LABEL_FONT_SIZE)
+    axis.yaxis.label.set_size(PROFILE_LABEL_FONT_SIZE)
 
 
 def _boxplot(**kwargs) -> None:
@@ -334,7 +342,7 @@ def _plot_scatter_matrix(df: pd.DataFrame, columns: list[str], output_path: Path
         numeric_df = numeric_df.sample(1000, random_state=42)
     axes = scatter_matrix(numeric_df, figsize=(3 * len(columns), 3 * len(columns)), diagonal="kde", alpha=0.45)
     for ax in np.ravel(axes):
-        ax.tick_params(axis="x", labelrotation=45)
+        ax.tick_params(axis="x", labelrotation=90)
         ax.tick_params(axis="y", labelrotation=0)
     plt.suptitle("Numeric Scatter Matrix", y=1.02)
     plt.tight_layout()
@@ -385,13 +393,31 @@ def _plot_categorical_association_heatmap(
 
 
 def _plot_correlation_heatmap(correlation_matrix: pd.DataFrame, output_path: Path, title: str) -> None:
-    """Plot a correlation heatmap."""
-    size = max(6, min(16, 0.55 * len(correlation_matrix.columns) + 4))
-    fig, ax = plt.subplots(figsize=(size, size))
-    sns.heatmap(correlation_matrix, cmap="vlag", center=0, annot=len(correlation_matrix.columns) <= 10, fmt=".2f", ax=ax)
+    """Plot a correlation heatmap using the ML pipeline's visual style."""
+    mask = np.triu(np.ones_like(correlation_matrix, dtype=bool))
+    fontsize = 6 if correlation_matrix.shape[1] > 8 else 8
+    fig, ax = plt.subplots(figsize=(14, 12))
+    sns.heatmap(
+        correlation_matrix,
+        mask=mask,
+        cmap="coolwarm",
+        vmax=0.3,
+        center=0,
+        square=True,
+        linewidths=0.5,
+        annot=True,
+        fmt=".2f",
+        cbar_kws={"shrink": 0.7},
+        annot_kws={"fontsize": fontsize},
+        ax=ax,
+    )
+    ax.tick_params(axis="x", labelrotation=90)
+    ax.tick_params(axis="y", labelrotation=0)
     ax.set_title(title)
+    for axis in fig.axes:
+        _style_profile_labels(axis)
     fig.tight_layout()
-    fig.savefig(output_path, dpi=140)
+    fig.savefig(output_path, dpi=160, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -409,7 +435,8 @@ def _plot_vif_summary(vif_summary: pd.DataFrame, max_features: int, output_path:
     ax.set_title("Variance Inflation Factor")
     ax.set_xlabel("VIF")
     ax.set_ylabel("")
-    ax.legend()
+    _style_profile_labels(ax)
+    ax.legend(fontsize=PROFILE_LABEL_FONT_SIZE)
     fig.tight_layout()
     fig.savefig(output_path, dpi=140)
     plt.close(fig)
@@ -447,6 +474,7 @@ def _plot_numeric_target_correlations(correlations: pd.DataFrame, max_features: 
     ax.set_title("Numeric Features vs Target (Spearman)")
     ax.set_xlabel("Spearman correlation")
     ax.set_ylabel("")
+    _style_profile_labels(ax)
     fig.tight_layout()
     fig.savefig(output_path, dpi=140)
     plt.close(fig)
@@ -630,12 +658,15 @@ def _plot_numeric_target_median_percentile_heatmap(
         linewidths=0.5,
         linecolor="#FFFFFF",
         cbar_kws={"label": "Class median percentile within feature"},
+        annot_kws={"fontsize": PROFILE_LABEL_FONT_SIZE},
         ax=ax,
     )
     ax.set_title("Target-Class Median Percentiles Across Numeric Features")
     ax.set_xlabel(target_column)
     ax.set_ylabel("Numeric feature")
-    ax.tick_params(axis="x", labelrotation=30)
+    ax.tick_params(axis="x", labelrotation=90)
+    for axis in fig.axes:
+        _style_profile_labels(axis)
     for tick_label in ax.get_xticklabels():
         if tick_label.get_text() in target_colors:
             tick_label.set_color(target_colors[tick_label.get_text()])
@@ -775,13 +806,14 @@ def _plot_feature_target_association_ranking(
         axis.set_title(method.replace("_", " ").title())
         axis.set_xlabel("Effect size")
         axis.set_ylabel("")
+        _style_profile_labels(axis)
         for position, value in enumerate(data["effect_size"]):
-            axis.text(value, position, f" {value:.3f}", va="center", fontsize=8)
+            axis.text(value, position, f" {value:.3f}", va="center", fontsize=PROFILE_LABEL_FONT_SIZE)
     handles = [
         Line2D([0], [0], color="#4C78A8", linewidth=8, label="Numeric feature"),
         Line2D([0], [0], color="#E3BA22", linewidth=8, label="Categorical feature"),
     ]
-    axes[0, 0].legend(handles=handles, loc="lower right")
+    axes[0, 0].legend(handles=handles, loc="lower right", fontsize=PROFILE_LABEL_FONT_SIZE)
     fig.suptitle("Feature-Target Association Screening (Rank Within Method)", y=1.002)
     fig.tight_layout()
     fig.savefig(output_path, dpi=140, bbox_inches="tight")
@@ -795,11 +827,16 @@ def _plot_geometry_target_heatmap(
     max_target_levels: int,
     output_path: Path,
 ) -> bool:
-    """Plot geometries colored by the configured target column."""
+    """Plot representative points colored by target, with the legend outside the map."""
     try:
+        import geopandas as gpd
+
         plot_df = df[[target_column, "geometry"]].dropna(subset=["geometry"]).copy()
+        plot_df = gpd.GeoDataFrame(plot_df, geometry="geometry", crs=getattr(df, "crs", None))
+        plot_df = plot_df.loc[~plot_df.geometry.is_empty].copy()
         if plot_df.empty or plot_df[target_column].notna().sum() == 0:
             return False
+        plot_df.geometry = plot_df.geometry.representative_point()
         fig, ax = plt.subplots(figsize=(9, 8))
         if target_task == "regression":
             plot_df.plot(
@@ -807,6 +844,8 @@ def _plot_geometry_target_heatmap(
                 ax=ax,
                 cmap="viridis",
                 legend=True,
+                legend_kwds={"shrink": 0.7, "label": target_column},
+                markersize=18,
                 edgecolor="#2f4b4f",
                 linewidth=0.3,
                 alpha=0.85,
@@ -820,6 +859,7 @@ def _plot_geometry_target_heatmap(
             plot_df.plot(
                 ax=ax,
                 color=plot_df[target_column].map(target_colors).fillna("#e5e7eb"),
+                markersize=18,
                 edgecolor="#2f4b4f",
                 linewidth=0.3,
                 alpha=0.85,
@@ -828,7 +868,7 @@ def _plot_geometry_target_heatmap(
                 Line2D(
                     [0],
                     [0],
-                    marker="s",
+                    marker="o",
                     linestyle="",
                     markerfacecolor=target_colors[level],
                     markeredgecolor="#2f4b4f",
@@ -841,18 +881,28 @@ def _plot_geometry_target_heatmap(
                     Line2D(
                         [0],
                         [0],
-                        marker="s",
+                        marker="o",
                         linestyle="",
                         markerfacecolor="#e5e7eb",
                         markeredgecolor="#2f4b4f",
                         label="Missing",
                     )
                 )
-            ax.legend(handles=handles, title=target_column)
+            ax.legend(
+                handles=handles,
+                title=target_column,
+                bbox_to_anchor=(1.02, 1),
+                loc="upper left",
+                fontsize=8,
+                title_fontsize=8,
+                borderaxespad=0,
+            )
+        for axis in fig.axes:
+            _style_profile_labels(axis)
         ax.set_title(f"Target Heatmap: {target_column}")
         ax.set_axis_off()
         fig.tight_layout()
-        fig.savefig(output_path, dpi=140)
+        fig.savefig(output_path, dpi=140, bbox_inches="tight")
         plt.close(fig)
         return True
     except Exception:

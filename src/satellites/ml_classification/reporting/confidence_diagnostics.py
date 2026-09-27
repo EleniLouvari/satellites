@@ -609,7 +609,7 @@ def _save_confusion_heatmap(confusion: pd.DataFrame, output_path: Path) -> Path 
     ax.set_xlabel("Predicted class")
     ax.set_ylabel("True class")
     ax.set_title("Need-to-check true-versus-predicted class confusions", loc="left", fontweight="bold")
-    ax.tick_params(axis="x", labelrotation=45)
+    ax.tick_params(axis="x", labelrotation=90)
     ax.tick_params(axis="y", labelrotation=0)
     fig.tight_layout()
     fig.savefig(output_path, dpi=170, bbox_inches="tight", facecolor="white")

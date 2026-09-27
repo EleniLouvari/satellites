@@ -212,42 +212,6 @@ def convert_line_start_end_to_points(df):
     return gdf_nodes
 
 
-# def calculate_representative_line_azimuth(x, norm=True, defclass=False):
-#     """Calculates the azimuths and the lengths of all the line segments and returns the azimuth of the segments
-#     with the maximum length.
-
-#     Keyword arguments:
-#     x -- the line geometry
-#     defclass -- if defclass = True it returns the classified value of the azimuth
-#                 otherwise it returns the actual value of the azimuth
-#     :return:
-#     the line azimuth in degrees
-#     """
-#     azs, lengths = get_line_segments_azimuths(x, norm)
-
-#     # get the azimuth of the longest segment
-#     if len(lengths) > 0:
-#         max_value = max(lengths)
-#         max_index = lengths.index(max_value)
-#         line_az = azs[max_index]
-
-#         if defclass:
-#             if (0 <= line_az < 15) or (165 <= line_az <= 180):
-#                 return "N-S"
-#             if 15 <= line_az < 45:
-#                 return "NNE-SSW"
-#             if 45 <= line_az < 75:
-#                 return "NE-SW"
-#             if 75 <= line_az < 105:
-#                 return "E-W"
-#             if 105 <= line_az < 135:
-#                 return "ESE-WNW"
-#             if 135 <= line_az < 165:
-#                 return "SE-NW"
-#         else:
-#             return line_az
-#     else:
-#         return np.nan
 def calculate_representative_line_azimuth(x, norm=True, defclass=False, step=30):
     """
     Calculates the azimuths and the lengths of all the line segments and returns the azimuth of the segments
@@ -504,6 +468,16 @@ def convert_value_in_ft_to_df_units(df, value_in_ft):
     return value_in_ft * conversion_factor
 
 
+def convert_value_in_m_to_df_units(df, value_in_m):
+    """
+    Get the projection units of the df geo dataframe
+    and converts a value from meters to projection units
+    """
+    local_df_unit = get_unit_of_length(df)
+    conversion_factor = create_unit_conversion_factor(source_unit="m", target_unit=local_df_unit)
+    return value_in_m * conversion_factor
+
+
 def convert_value_in_df_units_from_ft(df, value_in_df_units):
     """
     Get the projection units of the df geo dataframe
@@ -511,6 +485,16 @@ def convert_value_in_df_units_from_ft(df, value_in_df_units):
     """
     local_df_unit = get_unit_of_length(df)
     conversion_factor = create_unit_conversion_factor(source_unit=local_df_unit, target_unit="ft")
+    return value_in_df_units * conversion_factor
+
+
+def convert_value_in_df_units_from_m(df, value_in_df_units):
+    """
+    Get the projection units of the df geo dataframe
+    and converts a value from projection units to meters
+    """
+    local_df_unit = get_unit_of_length(df)
+    conversion_factor = create_unit_conversion_factor(source_unit=local_df_unit, target_unit="m")
     return value_in_df_units * conversion_factor
 
 
@@ -581,7 +565,7 @@ def preprocess_and_reproject_geometries(df, crs):
     return df
 
 
-def create_nearby_network(df, field_id, buffer_in_feet=1):
+def create_nearby_network(df, field_id, buffer_in_m=0.3048):
     if "geometry" not in df.columns:
         raise Exception("geometry column is not included in the <fg> dataframe!")
     if field_id not in df.columns:
@@ -589,7 +573,7 @@ def create_nearby_network(df, field_id, buffer_in_feet=1):
 
     print("Start searching for nearby geometries")
     df = df.copy()
-    buffer_radius = convert_value_in_ft_to_df_units(df, buffer_in_feet)
+    buffer_radius = convert_value_in_m_to_df_units(df, buffer_in_m)
 
     # create the graph
     G = nx.Graph()
@@ -631,7 +615,7 @@ def order_components_bylen(G):
     return components
 
 
-def nearest_point_distance_ckdtree(gdf, col_dist="near_dist", col_nearest_count="near_count", n_nearest=1, max_distance_in_ft=None, plot=False):
+def nearest_point_distance_ckdtree(gdf, col_dist="near_dist", col_nearest_count="near_count", n_nearest=1, max_distance_in_m=None, plot=False):
     """Calculates the distance of each geometry in the <gdf> geodataframe from the nearest of the rest geometries.
     The distance is saved in the column <col_dist>."""
     gdf = gdf.copy()
@@ -646,8 +630,8 @@ def nearest_point_distance_ckdtree(gdf, col_dist="near_dist", col_nearest_count=
     coords = np.array(list(points.geometry.apply(lambda x: (x.x, x.y))))
 
     max_dist = None
-    if max_distance_in_ft is not None:
-        max_dist = convert_value_in_ft_to_df_units(gdf, max_distance_in_ft)
+    if max_distance_in_m is not None:
+        max_dist = convert_value_in_m_to_df_units(gdf, max_distance_in_m)
 
     # Build the cKDTree
     tree = cKDTree(coords)
@@ -684,11 +668,11 @@ def nearest_point_distance_ckdtree(gdf, col_dist="near_dist", col_nearest_count=
                 x_label = x_label + f" ({gdf.crs.axis_info[0].unit_name})"
             # Histogram plot
             sns.histplot(gdf[col].dropna(), kde=True, color="skyblue", bins=100, ax=axes[0])
-            axes[0].set_title(f"{title} to Up to {n_nearest} Nearest Points Within {max_distance_in_ft} ft")
+            axes[0].set_title(f"{title} to Up to {n_nearest} Nearest Points Within {max_distance_in_m} m")
             axes[0].set_xlabel(x_label)
             # Cumulative distribution plot
             sns.histplot(gdf[col].dropna(), cumulative=True, kde=True, color="skyblue", bins=100, ax=axes[1])
-            axes[1].set_title(f"Cumulative Distribution of {title} to Up to {n_nearest} Nearest Points Within {max_distance_in_ft} ft")
+            axes[1].set_title(f"Cumulative Distribution of {title} to Up to {n_nearest} Nearest Points Within {max_distance_in_m} m")
             axes[1].set_xlabel(x_label)
             axes[1].set_ylabel("Cumulative Frequency")
 
@@ -851,34 +835,6 @@ def create_uniform_spatial_random_sample(df_to_sample, total_samples, seed, col_
     return random_sample
 
 
-def create_voronoi_polygons(df_points, col_id, col_voronoi, df_extend=None, max_distance_in_ft=10000, simplify_in_ft=500):
-    if len(df_points) == 0:
-        print("Error: Create voronoi on empty geodataframe")
-        return None
-
-    cm_l.check_needed_df_columns(df_points, [col_id, 'geometry'])
-    df_points = df_points[[col_id, 'geometry']].copy()
-
-    if df_extend is not None:
-        cm_l.check_needed_df_columns(df_extend, ['geometry'])
-        df_extend = df_extend[['geometry']].copy()
-    else:
-        df_extend = df_points[['geometry']].copy()
-
-    df_points = convert_geometries_to_points(df_points)
-    voronoi_pols = gpd.GeoDataFrame(geometry=df_points.voronoi_polygons(), crs=df_points.crs)
-
-    if isinstance(df_extend, gpd.geodataframe.GeoDataFrame):
-        clip_polygon = create_outer_polygons(df_extend, max_distance_in_ft, simplify_in_ft)
-        clip_polygon = clip_polygon.unary_union
-        voronoi_pols = gpd.clip(voronoi_pols, clip_polygon)
-
-    voronoi_pols = explode_multigeometries(voronoi_pols)
-    voronoi_pols = return_valid_geometries(voronoi_pols)
-    voronoi_pols[col_voronoi] = voronoi_pols['geometry'].area
-    return voronoi_pols
-
-
 def update_df_with_intersecting_polygons(df, items, col_id, item_cols):
     assert {col_id, 'geometry'}.issubset(df.columns), "df: one of the needed field: [id, geometry] is missing"
     assert set(item_cols + ['geometry']).issubset(items.columns), f"items: one of the needed field is missing: {item_cols} or geometry"
@@ -911,13 +867,13 @@ def update_df_with_intersecting_polygons(df, items, col_id, item_cols):
     return df
 
 
-def create_outer_polygons(df, max_distance_in_ft=300, simplify_in_ft=80):
+def create_outer_polygons(df, max_distance_in_m=91.44, simplify_in_m=24.384):
     if "geometry" not in df.columns:
         raise Exception("geometry column is not included in the dataframe")
 
     df = df.copy()
-    buffer_dist = convert_value_in_ft_to_df_units(df, max_distance_in_ft)
-    simplify_tolerance = convert_value_in_ft_to_df_units(df, simplify_in_ft)
+    buffer_dist = convert_value_in_m_to_df_units(df, max_distance_in_m)
+    simplify_tolerance = convert_value_in_m_to_df_units(df, simplify_in_m)
 
     df['geometry'] = df['geometry'].buffer(buffer_dist)
     geoms = [df['geometry'].unary_union]
@@ -931,18 +887,18 @@ def create_outer_polygons(df, max_distance_in_ft=300, simplify_in_ft=80):
     return gdf_areas
 
 
-def create_polygon_from_bounds(bounds, buffer_in_ft=0):
+def create_polygon_from_bounds(bounds, buffer_in_m=0):
     """
     Purpose: create a polygon geometry from the bound of a dataframe
     """
-    buffer_radius = buffer_in_ft
+    buffer_radius = buffer_in_m
     if buffer_radius is None or buffer_radius == np.nan:
         buffer_radius = 0
 
     if isinstance(bounds, gpd.geodataframe.GeoDataFrame):
         west, south, east, north = bounds.total_bounds
         if buffer_radius > 0:
-            buffer_radius = convert_value_in_ft_to_df_units(bounds, buffer_in_ft)
+            buffer_radius = convert_value_in_m_to_df_units(bounds, buffer_in_m)
     else:
         west, south, east, north = bounds
 
@@ -989,15 +945,15 @@ def reproject_coordinates(source_crs_EPSG, dest_crs_EPSG, x, y):
     return new_x, new_y
 
 
-def find_nearest_item(df, nearest_item_id_field, items, item_id_field, max_distance_in_feet=100, distance_field=None,
+def find_nearest_item(df, nearest_item_id_field, items, item_id_field, max_distance_in_m=30.48, distance_field=None,
                       item_to_point=False, drop_duplicate=True):
     """Finds the nearest item from <items> for each geometry in <df>.
 
     Returns a copy of the given <df> having a new field <nearest_item_id_field> where it stores the nearest
-    id from <item_id_field> of the dataframe <items> that is within the given <max_distance_in_feet>.
+    id from <item_id_field> of the dataframe <items> that is within the given <max_distance_in_m>.
 
     If <distance_field> is given, then it also creates that field and stores there the distance found.
-    If <max_distance_in_feet> is None, then it doesn't limit the search area.
+    If <max_distance_in_m> is None, then it doesn't limit the search area.
     if <item_to_point> = True, it converts the geometries of the items to points
     """
     start = time.time()
@@ -1031,8 +987,8 @@ def find_nearest_item(df, nearest_item_id_field, items, item_id_field, max_dista
 
     df['tmpid'] = "p" + df.index.astype(str)
     items = items.rename(columns={item_id_field: nearest_item_id_field})
-    if max_distance_in_feet:
-        dist_search_max = convert_value_in_ft_to_df_units(df, max_distance_in_feet)
+    if max_distance_in_m:
+        dist_search_max = convert_value_in_m_to_df_units(df, max_distance_in_m)
         df = gpd.sjoin_nearest(df, items, how="left", distance_col=distance_field,
                                max_distance=dist_search_max)
     else:
@@ -1090,13 +1046,13 @@ def get_list_of_connected(g, x):
 
 def create_line_network(lines_to_update, lines_to_search,
                         lines_to_update_colid="line_id", lines_to_search_colid="line_id",
-                        network_tolerance=1, check_line_continuous=False, max_az_dif=None, directed=False):
+                        network_tolerance_in_m=0.3048, check_line_continuous=False, max_az_dif=None, directed=False):
     """Creates a network with nodes and edges.
 
     Keyword arguments:
     lines_to_update -- the dataframe to update, with ID in the column <lines_to_update_colid>
     lines_to_search -- the dataframe to search, with ID in the column <lines_to_search_colid>
-    tolerance -- the buffer size (in feet) around the start & end points
+    tolerance -- the buffer size (in meters) around the start & end points
                  of each line, used to find the connected lines if line_continuous=True,
                  else is the buffer intersection of the lines
     line_continuous -- True, if we want to include in the network only the lines that intersect
@@ -1132,8 +1088,8 @@ def create_line_network(lines_to_update, lines_to_search,
     print("Start searching for connected lines")
     # create the network graph
     G = nx.DiGraph() if directed else nx.Graph()
-    buffer_radius = convert_value_in_ft_to_df_units(lines_to_update, network_tolerance)
-    buffer_intersect = convert_value_in_ft_to_df_units(lines_to_update, 0.001)
+    buffer_radius = convert_value_in_m_to_df_units(lines_to_update, network_tolerance_in_m)
+    buffer_intersect = convert_value_in_m_to_df_units(lines_to_update, 0.0003048)
 
     if max_az_dif is not None:
         tq_auto.pandas(desc="Computing segment azimuths")
@@ -1413,13 +1369,13 @@ def find_connected_lines(lines_to_update, lines_to_search, lines_to_update_colid
     return df_merge, gdf_nodes, [col_left, col_right]
 
 
-def lines_get_connected(lines, field_id="line_id", tolerance=1, col_null=None, allow_zeros=True,
+def lines_get_connected(lines, field_id="line_id", tolerance_in_m=0.3048, col_null=None, allow_zeros=True,
                         line_continuous=False, max_az_dif=None):
     """Find the connected lines for each line in the dataframe <df>.
 
     Keyword arguments:
     field_id  -- the column id of the line's
-    tolerance -- the maximum distance (in ft) between the lines nodes in order to handle them as connected
+    tolerance -- the maximum distance (in m) between the lines nodes in order to handle them as connected
     col_Null  -- if this column not equals None, then the script finds the connected only for the lines
                  with values in this column==None
     allow_zeros -- if col_Null<>None and allow_zeros=False then the script finds the connected only for the lines
@@ -1454,7 +1410,7 @@ def lines_get_connected(lines, field_id="line_id", tolerance=1, col_null=None, a
     else:
         df_to_update = lines.copy()
 
-    g, df_to_update = create_line_network(df_to_update, lines, field_id, field_id, tolerance, line_continuous,
+    g, df_to_update = create_line_network(df_to_update, lines, field_id, field_id, tolerance_in_m, line_continuous,
                                           max_az_dif)
     tq_auto.pandas(desc="Adding connected")
     df_to_update['connected'] = df_to_update[field_id].progress_apply(lambda x: get_list_of_connected(g, x))
@@ -1471,13 +1427,13 @@ def lines_get_connected(lines, field_id="line_id", tolerance=1, col_null=None, a
     return lines
 
 
-def remove_multiple_points_within_radius(df_reference, gdf_poi, col_category="category", search_radius_in_ft=350):
+def remove_multiple_points_within_radius(df_reference, gdf_poi, col_category="category", search_radius_in_m=106.68):
     gdf_poi = gdf_poi.copy()
     gdf_poi.reset_index(inplace=True, drop=True)
     gdf_poi['checked'] = False
     gdf_poi['delete'] = False
 
-    clean_radius = convert_value_in_ft_to_df_units(df_reference, search_radius_in_ft)
+    clean_radius = convert_value_in_m_to_df_units(df_reference, search_radius_in_m)
 
     spatial_index = gdf_poi.sindex
     for index, row in tqdm(gdf_poi.iterrows(), total=len(gdf_poi.index)):
@@ -1655,6 +1611,7 @@ def split_lines_at_intersections(gdf, col_id=None):
         split_gdf = cm_l.update_double_ids(split_gdf, col_id)
 
     return split_gdf
+
 
 def get_geodataframe_center(df):
     x_min, y_min, x_max, y_max = df.total_bounds

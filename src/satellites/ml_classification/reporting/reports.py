@@ -505,7 +505,13 @@ def write_prepare_report(config, prepare_summary: dict[str, Any], train_df: pd.D
     summary_kv = {key: value for key, value in prepare_summary.items() if key != "cv_folds"}
     folds_df = pd.DataFrame(
         [
-            {"fold": fold["fold"], "train_rows": len(fold["train_index"]), "valid_rows": len(fold["valid_index"])}
+            {
+                "fold": fold["fold"],
+                "train_rows": len(fold["train_index"]),
+                "valid_rows": len(fold["valid_index"]),
+                "valid_fraction": len(fold["valid_index"]) / len(train_df),
+                "target_valid_fraction": 1 / config.cv_folds,
+            }
             for fold in prepare_summary["cv_folds"]
         ]
     )
@@ -525,7 +531,12 @@ def write_prepare_report(config, prepare_summary: dict[str, Any], train_df: pd.D
             {"title": "Split Overview", "table": split_preview},
             {
                 "title": "Cross-Validation Folds",
-                "text": "Fold sizes only, without the raw train and validation index lists.",
+                "text": (
+                    "Each validation fold targets 1 / cv_folds of the training rows. "
+                    "This matches test_size when test_size = 1 / cv_folds. "
+                    "Spatial CV keeps whole grid cells together, so large cells can prevent balanced fold sizes. "
+                    "A finer spatial_split_grid_size creates smaller cells. Raw row indices are saved in prepare_summary.json."
+                ),
                 "table": folds_df,
             },
             {
@@ -746,6 +757,8 @@ def write_predict_report(config, final_df: pd.DataFrame, selection: dict[str, An
         config.prediction_confidence_level_column,
         "prediction_confidence_valid",
         "prediction_confidence_reason",
+        "prediction_confidence_source",
+        "prediction_class_reliability_applied",
         "prediction_mean_borda",
         "prediction_rank_range",
         "prediction_mean_rank",
@@ -758,6 +771,7 @@ def write_predict_report(config, final_df: pd.DataFrame, selection: dict[str, An
         "prediction_class_oof_support",
         "prediction_class_reliability_level",
         "prediction_class_reliability_valid",
+        "prediction_class_reliability_reason",
         "prediction_borda_margin",
         "prediction_top1_agreement",
         "prediction_top2_agreement",
@@ -782,11 +796,6 @@ def write_predict_report(config, final_df: pd.DataFrame, selection: dict[str, An
     ]
     preview_columns.extend(column for column in confidence_columns if column in final_df.columns)
     probability_columns = [column for column in final_df.columns if column.startswith(f"{config.probability_prefix}_")]
-    images = [{"title": "Filled Target Distribution", "path": config.predict_dir / "plots" / "filled_target_distribution.png"}]
-    predicted_map_path = config.predict_dir / "plots" / "predicted_labels_map.png"
-    if predicted_map_path.exists():
-        images.append({"title": "Classified Predicted Labels Map", "path": predicted_map_path})
-
     confidence_artifacts = export_prediction_confidence_diagnostics(
         final_df,
         config.target_column,
@@ -832,11 +841,59 @@ def write_predict_report(config, final_df: pd.DataFrame, selection: dict[str, An
     }
     if confidence_artifacts is not None:
         prediction_summary.update(confidence_artifacts.summary)
+    confidence_contract = selection.get("confidence") or selection.get("rank_confidence") or {}
+    class_reliability_enabled = bool(confidence_contract.get("class_reliability_enabled", False))
+    class_reliability_applied = bool(final_df.get("prediction_class_reliability_applied", pd.Series([False])).iloc[0])
+    prediction_summary.update(
+        {
+            "class_reliability_enabled": class_reliability_enabled,
+            "class_reliability_applied_to_final_confidence": class_reliability_applied,
+            "final_confidence_rule": "rank_plus_class_reliability" if class_reliability_applied else "rank_only",
+        }
+    )
 
     sections: list[dict[str, Any]] = [
         {"title": "Prediction Summary", "kv": prediction_summary},
         {"title": "Prediction Preview", "table": final_df[preview_columns + probability_columns].head(50)},
     ]
+    confidence_formula = pd.DataFrame(
+        [
+            {
+                "Component": "Rank confidence",
+                "How it is computed": (
+                    "Borda score and rank-range agreement across models; final class must agree with the Borda winner"
+                ),
+                "Used in final confidence": "Always",
+            },
+            {
+                "Component": "Class reliability",
+                "How it is computed": (
+                    "OOF precision of the predicted class from the frozen class-reliability contract"
+                ),
+                "Used in final confidence": "Only when class_reliability_enabled is true",
+            },
+            {
+                "Component": "Final prediction confidence",
+                "How it is computed": (
+                    "If class reliability is enabled, take the lower of rank confidence and class reliability; otherwise"
+                    " use rank confidence only"
+                ),
+                "Used in final confidence": (
+                    "rank_plus_class_reliability" if class_reliability_applied else "rank_only"
+                ),
+            },
+        ]
+    )
+    sections.append(
+        {
+            "title": "How Final Confidence Is Calculated",
+            "text": (
+                "Rank confidence is always calculated. Class reliability is also always calculated and reported, "
+                "but it only influences the final prediction confidence when class_reliability_enabled is true."
+            ),
+            "table": confidence_formula,
+        }
+    )
     confidence_sections: list[dict[str, Any]] = []
     inspection_sections: list[dict[str, Any]] = []
     # Add the inspection section only when scoring produced its companion artifacts.
@@ -1134,14 +1191,16 @@ def write_predict_report(config, final_df: pd.DataFrame, selection: dict[str, An
         if class_rate_path is not None:
             confidence_sections.append(
                 {
-                    "title": "Need-to-Check Rate by Predicted Class",
+                    "title": "Class Reliability by Predicted Class",
                     "text": (
-                        "This view is restricted to parcels where Borda agrees with the final prediction. "
-                        "Rates use all such parcels in each predicted class; annotations retain the error count, "
-                        "denominator, and median out-of-fold class precision. Small classes should be interpreted "
-                        "with their support counts."
+                        "This view shows the class-reliability signal used by the final confidence calculation. "
+                        "Each row groups parcels by predicted class and reports the rate that needs checking, the "
+                        "median out-of-fold precision for that class, and the support count. When "
+                        "class_reliability_enabled is false, the same class-reliability table is still shown as a "
+                        "diagnostic, but it does not lower the final confidence. This is the same view previously "
+                        "described as Need-to-Check Rate by Predicted Class."
                     ),
-                    "images": [{"title": "Need-to-Check Rate by Predicted Class", "path": class_rate_path}],
+                    "images": [{"title": "Class Reliability by Predicted Class", "path": class_rate_path}],
                     "table": prepare_class_risk_display_table(
                         confidence_artifacts.tables["need_to_check_by_predicted_class"]
                     ),
@@ -1201,13 +1260,6 @@ def write_predict_report(config, final_df: pd.DataFrame, selection: dict[str, An
                 {"label": "Confidence Levels", "sections": confidence_sections},
                 {"label": "Inspection Priority", "sections": inspection_sections},
             ],
-        }
-    )
-    sections.append(
-        {
-            "title": "Prediction Output Plots",
-            "text": "These plots summarize the filled-label distribution and spatial prediction coverage.",
-            "images": images,
         }
     )
     output_links = [
@@ -1289,6 +1341,7 @@ def write_index_report(config) -> None:
             {
                 "title": "Step Reports",
                 "links": links,
+                "open_html_report": getattr(config, "open_html_report", False),
             }
         ],
     )

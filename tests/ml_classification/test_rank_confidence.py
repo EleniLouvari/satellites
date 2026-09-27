@@ -402,6 +402,42 @@ def test_prediction_applies_frozen_oof_class_reliability():
     assert result["class_oof_precision"].tolist() == pytest.approx([0.95, 0.20])
 
 
+def test_prediction_can_compute_class_reliability_without_applying_it():
+    reliability = calculate_oof_class_reliability(
+        np.array(["a"] * 95 + ["b"] * 5 + ["b"] * 20 + ["a"] * 80),
+        np.array(["a"] * 100 + ["b"] * 100),
+        ["a", "b"],
+    )
+    thresholds = {
+        "high_min_borda": 90.0,
+        "high_max_range": 2.0,
+        "medium_min_borda": 75.0,
+        "medium_max_range": 4.0,
+    }
+    selection = {
+        "selected_models": ["m1", "m2", "m3"],
+        "labels": ["a", "b"],
+        "confidence": {
+            "enabled": True,
+            "method": "rank_consensus_with_class_reliability_guard",
+            "class_reliability_enabled": False,
+            "rank": {"minimum_models": 3, **thresholds},
+            "class_reliability": reliability,
+        },
+    }
+    member_matrix = np.array([[0.8, 0.2], [0.2, 0.8]])
+    members = {name: member_matrix for name in selection["selected_models"]}
+    step = object.__new__(PredictStep)
+    step.config = SimpleNamespace()
+
+    result, _ = step._calculate_rank_confidence(selection, np.array(["a", "b"]), members)
+
+    assert result["prediction_confidence_level"].tolist() == ["HIGH", "HIGH"]
+    assert result["class_oof_precision"].tolist() == pytest.approx([0.95, 0.20])
+    assert result["prediction_class_reliability_applied"].tolist() == [False, False]
+    assert result["prediction_confidence_source"].tolist() == ["rank_only", "rank_only"]
+
+
 def test_confidence_summary_reports_accuracy_by_level():
     parcels = pd.DataFrame(
         {

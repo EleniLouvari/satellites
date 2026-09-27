@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from html import escape
+import os
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import pandas as pd
 
 from ..core.persistence import append_log, ensure_dir
+from .server import open_report
 
 # Escape externally supplied text before interpolating it into generated HTML.
 
@@ -51,9 +54,11 @@ def write_html_report(output_path: str | Path, title: str, intro: str, sections:
     output_path.write_text("\n".join(body), encoding="utf-8")
     append_log(f"Generated HTML report: {output_path}", level="INFO")
     if any(section.get("open_html_report", False) for section in sections):
-        import webbrowser
-
-        webbrowser.open(output_path.as_uri())
+        try:
+            url = open_report(output_path, once=output_path.name == "report_index.html")
+            append_log(f"Viewing HTML report: {url}", level="INFO")
+        except OSError as exc:
+            append_log(f"Report saved, but the local HTTP viewer could not start: {exc}", level="WARNING")
 
 
 def _render_section(section: dict[str, Any], report_dir: Path, css_class: str = "card") -> str:
@@ -298,12 +303,10 @@ def _render_embeds(embeds: list[dict[str, str]], report_dir: Path) -> str:
 def _to_report_relative_path(path: Path, report_dir: Path) -> str:
     """Convert a path to a report-relative POSIX string when possible."""
     # Prefer relative paths so copied report folders remain self-contained.
-    if not path.is_absolute():
-        return path.as_posix()
     try:
-        return path.relative_to(report_dir).as_posix()
+        return quote(Path(os.path.relpath(path, report_dir)).as_posix(), safe="/")
     except ValueError:
-        return path.as_posix()
+        return path.as_uri()
 
 
 def _stringify(value: Any) -> str:

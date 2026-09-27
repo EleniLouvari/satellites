@@ -4,7 +4,8 @@
 Copernicus Data Space Ecosystem (CDSE) openEO backend and calculates temporal
 statistics for parcel polygons.
 
-The remote openEO jobs create temporally aggregated raster cubes. Pixel cleaning,
+The remote openEO jobs create temporally aggregated raster cubes, or retain all
+acquisitions when `temporal_reducer="none"`. Pixel cleaning,
 parcel masking, zonal statistics, derived statistics, and final file creation are
 performed locally.
 
@@ -54,7 +55,8 @@ compatible while each implementation has a single scope.
 7. For Sentinel-1, calculate linear-power `sigma0-ellipsoid` backscatter using the
    `COPERNICUS_30` elevation model and resample to 10 m. No logarithmic/dB
    conversion is applied.
-8. Aggregate acquisitions into the configured temporal periods.
+8. Aggregate acquisitions into the configured temporal periods, or retain all
+   acquisition timestamps when `temporal_reducer="none"`.
 9. Download each raster cube as NetCDF and cache it locally.
 10. For every physical band and time slice, remove IQR outliers once across the
     complete raster, then fill nulls with the temporal, 3x3, 5x5, and final
@@ -63,8 +65,10 @@ compatible while each implementation has a single scope.
     each filled raster pixel. An observation-only copy is calculated separately
     so statistics and provenance distinguish indices that depend on an imputed
     source pixel.
-12. Mask the filled raster by parcel and calculate parcel statistics. Spatial
-    filling may use neighboring pixels that fall inside an adjacent parcel.
+12. Mask the filled raster by parcel and calculate parcel statistics. With
+    `temporal_reducer="none"`, pool all valid pixel observations across acquisitions
+    within each configured period, separately for each band/index. Spatial filling
+    may use neighboring pixels that fall inside an adjacent parcel.
 13. Add parcel metrics and derived statistics.
 14. Pivot every temporal feature to dated columns, attach the original parcel
     attributes and geometry once, reproject geometry to `working_epsg`, and write
@@ -204,13 +208,89 @@ the temporal stage.
 | Parameter | Default | Accepted values and behavior |
 |---|---:|---|
 | `temporal_period` | `"1M"` | Positive day, month, or year interval such as `15D`, `1M`, `2M`, `3M`, `1Y` |
-| `temporal_reducer` | `"median"` | `mean`, `median`, `min`, `max`, or `sum` |
+| `temporal_reducer` | `"median"` | `mean`, `median`, `min`, `max`, `sum`, or `"none"` / `None` to pool all acquisition pixels locally |
 | `spatial_statistics` | `None` | `mean`, `median`, `sd`, `min`, `max`, `p10`, `p25`, `p75`, `p90`; `mean` is always added. Legacy `count` is accepted but emits only the static parcel pixel count described below. |
 | `batch_workers` | `1` | Positive integer controlling base-class remote job waves and local statistics processes; for the manager it controls local statistics only |
 
 Temporal intervals start at `start_date`, are half-open internally, and the final
 interval is clipped after the inclusive `end_date`. For example, `1M` means
 one-month steps from the configured start date, not necessarily calendar months.
+
+### All valid pixels within each period
+
+Set these constructor options (or the same keys in a multi-user configuration):
+
+```python
+temporal_period="1M",
+temporal_reducer="none",
+remove_outliers=False,
+fill_nulls=False,
+```
+
+This downloads every acquisition after the existing sensor preprocessing and
+cloud masking, without a temporal image reduction. Locally, each parcel's valid
+pixels from every acquisition in the period form one sample pool per band/index.
+For example, images contributing `[1, 2, 3, 4]` and `[10]` produce statistics over
+`[1, 2, 3, 4, 10]`: mean `4` and median `3`. Every observation has equal weight;
+a spatial pixel observed on several dates contributes once per acquisition.
+NaN and infinite values do not participate. An empty period has null statistics.
+
+Indices are calculated from bands at the same pixel and acquisition before
+pooling. Sentinel-1 and Sentinel-2 may have different acquisition timestamps;
+each output uses its own available observations. Acquisitions on the same day
+are retained separately. The configured final calendar day is included.
+
+Other intervals, such as `15D`, `3M`, or `1Y`, work the same way. Output naming
+is unchanged: `NDVI_median__20240101` is the median of all valid NDVI pixel
+observations in that period. The separate annual feature file still summarizes
+the per-period parcel medians.
+
+The cleaning options remain active: `remove_outliers=True` filters each
+acquisition/band before pooling, and `fill_nulls=True` allows imputed pixels to
+participate. Keep both `False` to use all observed valid pixels. Cleaning audit
+rows and raster checkpoints retain acquisition timestamps in this mode.
+`intersected_pixel_count` still counts spatial cells, not repeated observations;
+fill provenance is calculated across acquisition/band/pixel slots.
+
+Raw downloads use a separate cache signature from composite runs. Keeping every
+acquisition increases download size and checkpoint disk use. The existing reducers
+and default `"median"` behavior remain available.
+
+### Memory use and large acquisition cubes
+
+The openEO local processing path streams data through NetCDF checkpoints:
+
+- Raw data are read one acquisition/band layer at a time. IQR bounds still use
+  the complete raster layer.
+- Temporal filling processes small spatial strips containing every acquisition.
+  Coverage thresholds are calculated for the full layer, and temporal neighbors
+  can cross reporting-period boundaries as before.
+- Spatial filling and interpolation process complete individual layers. Indices
+  are calculated one acquisition and output variable at a time.
+- Parcel statistics read one parcel window, band/index, and reporting period at
+  a time. A resumed final checkpoint is read in windows without loading either
+  the complete raw or final cube.
+
+Files are closed on completion or failure. Temporary arrays are released between
+stages and cubes; garbage collection runs after each cube. Failed processing
+frames are cleared so notebook error tracebacks do not retain their raster arrays.
+
+Within a process, multi-user queues serialize local raster work while remote
+openEO jobs can continue concurrently. `batch_workers > 1` explicitly creates
+separate worker processes, each with its own memory needs. Keep
+`batch_workers=1` when memory is limited. Peak memory still depends on a full
+spatial layer and the largest parcel/band/period sample pool, particularly for
+exact medians and percentiles; it no longer requires all dates and bands in RAM.
+
+This trades additional disk I/O for lower RAM use. Allow space for physical-band
+and final index checkpoints alongside the raw downloads. The intermediate
+physical checkpoint is removed after the final checkpoint commits unless
+`keep_cleaned_checkpoint=True`. Existing complete final checkpoints remain
+usable. Older intermediate checkpoints without temporal masks are rebuilt from
+the cached raw cube, without downloading again.
+
+After updating code following a notebook `MemoryError`, restart the kernel before
+rerunning to load the new implementation and release arrays held by the old run.
 
 ### Outlier removal and null filling
 
@@ -232,6 +312,7 @@ one-month steps from the configured start date, not necessarily calendar months.
 | `interpolation_variogram_max_distance_in_meters` | `None` | Required positive distance in metres for `kriging` |
 
 Cleaning is performed independently for every physical band and temporal period
+(or acquisition when `temporal_reducer="none"`)
 across the complete batch raster before parcel masking. `fill_nulls=True` does
 not guarantee every null can be filled;
 the observed-fraction threshold, available neighbors, and distance settings still
@@ -310,15 +391,47 @@ result = extractor.run()
 
 | Parameter | Default | Meaning |
 |---|---:|---|
-| `tile_size_metres` | `50000` | Positive core tile width/height in the projected working CRS |
+| `tile_size_metres` | `50000` | Core tile width/height, or maximum buffered width/height when fitting to parcels, in metres |
 | `tile_buffer_metres` | `500` | Non-negative buffer around every remote raster extent |
+| `fit_tiles_to_parcels` | `False` | Fit cubes to parcel bounds plus buffer; split only when either dimension exceeds the tile limit |
 | `openeo_parallel_jobs` | `2` | Maximum active CDSE jobs managed remotely |
 | `job_poll_seconds` | `30` | Positive number of seconds between status polls |
 | `max_job_retries` | `3` | Bounded retries after terminal `error` or a failed start request; persisted across restarts |
 | `job_retry_delay_seconds` | `60` | Cooldown before retry waves for transient backend/API failures |
 | `run_identifier` | generated timestamp | Readable label, at most 80 characters, included in openEO job titles |
 
-### How parcel ownership works
+### Fitting cubes to cluster bounds
+
+Create one `spatial_part` per cluster and enable fitted extents in the multi-user
+extraction configuration:
+
+```python
+if gdf_grouped["cluster"].isna().any():
+    raise ValueError("Every parcel must have a cluster label.")
+spatial_parts = [part.copy() for _, part in gdf_grouped.groupby("cluster", sort=True, observed=True)]
+extraction_config.update(
+    fit_tiles_to_parcels=True,
+    tile_size_metres=20_000,
+    tile_buffer_metres=1_400,
+)
+```
+
+Each partition first gets one rectangular extent computed from all its parcel
+geometries in `working_epsg`, padded by the buffer on every side. The requested
+width is `east - west + 2 * buffer`, and height is `north - south + 2 * buffer`.
+If both are at most `tile_size_metres`, the entire partition uses one cube.
+Otherwise, the planner divides the parcels spatially along the longer axis and
+repeats until every subgroup fits. Each subgroup uses its own bounds plus buffer.
+Parcel geometries are never cut and each parcel belongs to exactly one job.
+An individual parcel exceeding the limit with its buffer raises an error before
+submission. The limit controls requested spatial extent, not backend memory or
+pixel-count quotas, which also depend on bands, resolution and time range.
+
+Existing per-user queues distribute the cluster partitions. Fitted cubes have a
+separate cache namespace from regular grid cubes. The Neuro fill notebook uses
+this mode; other callers retain regular grid tiles unless they enable it.
+
+### How regular-grid parcel ownership works
 
 1. A regular core grid covers the total parcel extent in `working_epsg`.
 2. Each parcel is owned by the one core tile intersecting its representative

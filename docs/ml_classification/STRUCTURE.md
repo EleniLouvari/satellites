@@ -252,8 +252,7 @@ project_dir/
         |-- inspection_score_confidence_data_heatmap.png
         |-- inspection_declaration_conflicts.png   [when conflicts exist]
         |-- inspection_evidence_quality_heatmap.png
-        |-- inspection_confidence_review_comparison.png
-        `-- predicted_labels_map.png               [optional]
+        `-- inspection_confidence_review_comparison.png
 ```
 
 ## Generated-file reference

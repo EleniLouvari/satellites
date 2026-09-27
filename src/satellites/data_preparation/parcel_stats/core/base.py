@@ -109,6 +109,10 @@ class ParcelStatsBase(
     temporal_reducer:
         Reducer applied to acquisitions in each temporal bin. Supported values
         are ``'mean'``, ``'median'``, ``'min'``, ``'max'`` and ``'sum'``.
+        For openEO, ``'none'`` (or ``None``) retains all acquisitions and pools
+        their valid parcel pixels within each bin for statistics. Indices are
+        calculated per acquisition before pooling. Cleaning options still apply;
+        use ``fill_nulls=False`` to exclude imputed observations.
     interpolation_method:
         Final pixel-level interpolation applied per variable and temporal period.
         Choose ``'nearest'``, ``'idw'`` or ``'kriging'``.
@@ -227,7 +231,7 @@ class ParcelStatsBase(
         iqr_multiplier: float = 1.5,
         fill_nulls: bool = False,
         temporal_period: str = "1M",  # Valid values: '1M', '3M', '6M', '1Y', '15D', etc.
-        temporal_reducer: str = "median",
+        temporal_reducer: str | None = "median",
         interpolation_method: str = "nearest",
         interpolation_max_distance_in_meters: float | None = None,
         interpolation_variogram_lags: int = 15,

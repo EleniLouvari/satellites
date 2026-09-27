@@ -206,11 +206,17 @@ class JobManagerSatelliteZonalStats(SatelliteZonalStats):
     additions:
 
     ``tile_size_metres``
-        Square tile size in the projected ``working_epsg`` CRS.
+        Square core tile size in the projected ``working_epsg`` CRS. With
+        ``fit_tiles_to_parcels=True``, the maximum buffered width and height.
     ``tile_buffer_metres``
         Buffer added around every remote tile extent. Parcels are still owned
         by one unbuffered core tile, so overlapping rasters do not duplicate
         parcel results.
+    ``fit_tiles_to_parcels``
+        Fit each cube to the partition's parcel bounds plus buffer. Only split
+        when either buffered dimension exceeds ``tile_size_metres``. Splits
+        group whole parcels spatially; a single parcel that cannot fit raises
+        an error. Defaults to False to retain regular grid tiles.
     ``openeo_parallel_jobs``
         Jobs kept active on CDSE.  The general-user limit is currently two.
     ``job_poll_seconds``
@@ -242,6 +248,7 @@ class JobManagerSatelliteZonalStats(SatelliteZonalStats):
         *args,
         tile_size_metres: int = DEFAULT_TILE_SIZE_METRES,
         tile_buffer_metres: int = 500,
+        fit_tiles_to_parcels: bool = False,
         openeo_parallel_jobs: int = DEFAULT_OPENEO_PARALLEL_JOBS,
         job_poll_seconds: int = 30,
         max_job_retries: int = DEFAULT_MAX_JOB_RETRIES,
@@ -251,6 +258,11 @@ class JobManagerSatelliteZonalStats(SatelliteZonalStats):
     ) -> None:
         self.tile_size_metres = self._positive_integer(tile_size_metres, "tile_size_metres")
         self.tile_buffer_metres = self._non_negative_integer(tile_buffer_metres, "tile_buffer_metres")
+        if not isinstance(fit_tiles_to_parcels, bool):
+            raise TypeError("fit_tiles_to_parcels must be a boolean.")
+        self.fit_tiles_to_parcels = fit_tiles_to_parcels
+        if fit_tiles_to_parcels and 2 * self.tile_buffer_metres >= self.tile_size_metres:
+            raise ValueError("tile_size_metres must exceed twice tile_buffer_metres when fitting tiles to parcels.")
         self.openeo_parallel_jobs = self._positive_integer(openeo_parallel_jobs, "openeo_parallel_jobs")
         self.job_poll_seconds = self._positive_integer(job_poll_seconds, "job_poll_seconds")
         self.max_job_retries = self._non_negative_integer(max_job_retries, "max_job_retries")
@@ -417,14 +429,78 @@ class JobManagerSatelliteZonalStats(SatelliteZonalStats):
         # invalidate the cache.
 
         base = super()._run_signature()
+        strategy = "job-manager-v1-parcel-bounds" if self.fit_tiles_to_parcels else "job-manager-v7-buffered-tiles"
         suffix = hashlib.sha256(
-            (f"job-manager-v7-buffered-tiles:{self.tile_size_metres}:buffer:{self.tile_buffer_metres}").encode("utf-8")
+            (f"{strategy}:{self.tile_size_metres}:buffer:{self.tile_buffer_metres}").encode("utf-8")
         ).hexdigest()[:8]
         return f"{base}-tiles-{suffix}"
+
+    def _build_fitted_tile_plan(self, cube_dir: Path):
+        """Fit buffered bounds, bisecting oversized groups without cutting parcels."""
+        metric = self.parcels.to_crs(epsg=self.working_epsg)
+        metric = metric.sort_values(self.PARCEL_ID_FIELD, key=lambda values: values.astype(str)).reset_index(drop=True)
+        if metric.empty:
+            raise ValueError("No parcels available for fitted tile planning.")
+        bounds = metric.geometry.bounds.to_numpy()
+        buffer = self.tile_buffer_metres
+        limit = self.tile_size_metres
+        dimensions = (bounds[:, 2:] + buffer) - (bounds[:, :2] - buffer)
+        oversized = (dimensions > limit).any(axis=1)
+        if oversized.any():
+            examples = metric.loc[oversized, self.PARCEL_ID_FIELD].head(10).tolist()
+            raise ValueError(
+                f"{int(oversized.sum())} parcel(s) individually exceed tile_size_metres={limit} "
+                f"including a {buffer} m buffer on each side. Cannot split whole parcels. "
+                f"Increase tile_size_metres or reduce tile_buffer_metres. Parcel IDs: {examples}"
+            )
+
+        centers = (bounds[:, :2] + bounds[:, 2:]) / 2
+        parcel_lookup = self.parcels.set_index(self.PARCEL_ID_FIELD, drop=False)
+        pending = [np.arange(len(metric))]
+        plans = []
+        while pending:
+            rows = pending.pop()
+            west, south = bounds[rows, :2].min(axis=0) - buffer
+            east, north = bounds[rows, 2:].max(axis=0) + buffer
+            width, height = east - west, north - south
+            if width > limit or height > limit:
+                # Bisect the longer spatial dimension so dense groups are not
+                # divided merely to balance parcel counts. Fall back to the
+                # median if all bounding centers lie on the same side.
+                axis = 0 if width >= height else 1
+                order = np.lexsort((rows, centers[rows, 1 - axis], centers[rows, axis]))
+                ordered = rows[order]
+                midpoint = (west + east) / 2 if axis == 0 else (south + north) / 2
+                middle = int(np.searchsorted(centers[ordered, axis], midpoint))
+                if middle == 0 or middle == len(ordered):
+                    middle = len(ordered) // 2
+                pending.extend((ordered[middle:], ordered[:middle]))
+                continue
+
+            number = len(plans) + 1
+            parcel_ids = metric.iloc[rows][self.PARCEL_ID_FIELD].tolist()
+            plans.append(
+                {
+                    "batch_number": number,
+                    "tile_id": f"tile_{number - 1:05d}",
+                    "spatial_extent": {
+                        "west": float(west),
+                        "south": float(south),
+                        "east": float(east),
+                        "north": float(north),
+                        "crs": f"EPSG:{self.working_epsg}",
+                    },
+                    "target_path": str((cube_dir / f"batch_{number:05d}_monthly.nc").resolve()),
+                    "parcels": parcel_lookup.loc[parcel_ids].reset_index(drop=True),
+                }
+            )
+        return plans
 
     def _build_tile_plan(self, cube_dir: Path):
         """Return tile rows and whole-parcel batches, rejecting split parcels."""
 
+        if self.fit_tiles_to_parcels:
+            return self._build_fitted_tile_plan(cube_dir)
         metric = self.parcels.to_crs(epsg=self.working_epsg)
         west, south, east, north = metric.total_bounds
         tiles = split_area(
@@ -531,7 +607,7 @@ class JobManagerSatelliteZonalStats(SatelliteZonalStats):
             sentinel2 = connection.load_collection(
                 self.SENTINEL2_COLLECTION,
                 spatial_extent=spatial_extent,
-                temporal_extent=[self.start_date.strftime("%Y-%m-%d"), self.end_date.strftime("%Y-%m-%d")],
+                temporal_extent=self._openeo_temporal_extent(),
                 bands=[*required_sentinel2_bands, self.SENTINEL2_SCENE_CLASSIFICATION_BAND],
                 max_cloud_cover=self.SENTINEL2_MAX_SCENE_CLOUD_COVER,
             )
@@ -554,7 +630,7 @@ class JobManagerSatelliteZonalStats(SatelliteZonalStats):
         sentinel1 = connection.load_collection(
             self.SENTINEL1_COLLECTION,
             spatial_extent=spatial_extent,
-            temporal_extent=[self.start_date.strftime("%Y-%m-%d"), self.end_date.strftime("%Y-%m-%d")],
+            temporal_extent=self._openeo_temporal_extent(),
             bands=list(required_sentinel1_bands),
             **self._sentinel1_load_options(),
         )
@@ -587,7 +663,7 @@ class JobManagerSatelliteZonalStats(SatelliteZonalStats):
             max(parcel_counts),
             singleton_jobs,
         )
-        if len(plans) >= 10 and singleton_jobs == len(plans):
+        if not self.fit_tiles_to_parcels and len(plans) >= 10 and singleton_jobs == len(plans):
             raise RuntimeError(
                 "Refusing to submit a pathological tile plan: every remote job contains "
                 "one parcel. Check the split_area AOI and tile grouping before retrying."
@@ -646,6 +722,7 @@ class JobManagerSatelliteZonalStats(SatelliteZonalStats):
             poll_sleep=self.job_poll_seconds, root_dir=cube_dir / "job_manager", download_results=False
         )
         manager.add_backend("cdse", connection=connection, parallel_jobs=self.openeo_parallel_jobs)
+        self._restore_finished_tile_downloads(manager, connection, job_db, plan_lookup)
         retry_count = self._reset_retryable_failed_jobs(job_db)
         self._wait_before_job_retry(retry_count)
         while True:
@@ -672,6 +749,30 @@ class JobManagerSatelliteZonalStats(SatelliteZonalStats):
                 f"{failure_details}"
             )
         return pending_batches
+
+    def _restore_finished_tile_downloads(self, manager, connection, job_db, plan_lookup) -> None:
+        """Restore deleted raw cubes from existing finished jobs before local resume."""
+        # Finished database rows are not revisited by run_jobs. A missing local
+        # asset must therefore be downloaded explicitly, without submitting a
+        # replacement satellite-processing job or changing its finished status.
+        for _, row in job_db.get_by_status(statuses=["finished"]).iterrows():
+            plan = plan_lookup.get(int(row["batch_number"]))
+            if plan is None or Path(plan["target_path"]).exists():
+                continue
+            job_id = self._clean_job_id(row.get("id"))
+            if not job_id:
+                raise RuntimeError(f"Cannot restore batch {plan['batch_number']}: its finished job has no saved ID.")
+            self.source_logger.info("Restoring missing raw cube for batch %s from finished job %s.", plan["batch_number"], job_id)
+            download_row = row.copy()
+            download_row["target_path"] = plan["target_path"]
+            try:
+                manager.on_job_done(connection.job(job_id), download_row)
+            except Exception as error:
+                raise RuntimeError(
+                    f"Could not restore raw cube for batch {plan['batch_number']} from finished job {job_id}. "
+                    "Check free disk space and whether the backend still retains this job's results. "
+                    "Keep any remaining cleaned/final NetCDF checkpoints."
+                ) from error
 
 
 # Source-explicit public name, retaining the original class identity.

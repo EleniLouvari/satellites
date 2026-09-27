@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import timedelta
 
 import openeo
 from shapely.geometry import mapping
@@ -59,12 +60,21 @@ class OpenEOCubePipeline:
         return masked_sentinel2_reflectance.filter_bands(list(self._required_sentinel2_bands()))
 
     def _aggregate_temporal_cube(self, cube):
-        """Aggregate a sensor cube using the configured shared intervals."""
+        """Optionally aggregate acquisitions using the configured shared intervals."""
+        if self.temporal_reducer == "none":
+            return cube
         if self.temporal_period == "1M" and self.start_date.is_month_start:
             # Use the backend's native monthly operator only when its boundaries match the requested range.
             return cube.aggregate_temporal_period(period="month", reducer=self.temporal_reducer)
         intervals, labels = self._temporal_intervals()
         return cube.aggregate_temporal(intervals=intervals, labels=labels, reducer=self.temporal_reducer)
+
+    def _openeo_temporal_extent(self) -> list[str]:
+        """Include the final calendar day when downloading individual acquisitions."""
+        end = self.end_date
+        if self.temporal_reducer == "none":
+            end = end + timedelta(days=1)
+        return [self.start_date.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")]
 
     def _build_multisensor_temporal_cube(self, connection: openeo.Connection, feature_collection: dict):
         """Build the Sentinel-1/Sentinel-2 temporal openEO cube."""
@@ -74,7 +84,7 @@ class OpenEOCubePipeline:
             required_bands = self._required_sentinel2_bands()
             sentinel2 = connection.load_collection(
                 self.SENTINEL2_COLLECTION,
-                temporal_extent=[self.start_date.strftime("%Y-%m-%d"), self.end_date.strftime("%Y-%m-%d")],
+                temporal_extent=self._openeo_temporal_extent(),
                 bands=[*required_bands, self.SENTINEL2_SCENE_CLASSIFICATION_BAND],
                 max_cloud_cover=self.SENTINEL2_MAX_SCENE_CLOUD_COVER,
             ).filter_spatial(feature_collection)
@@ -97,7 +107,7 @@ class OpenEOCubePipeline:
 
         sentinel1 = connection.load_collection(
             self.SENTINEL1_COLLECTION,
-            temporal_extent=[self.start_date.strftime("%Y-%m-%d"), self.end_date.strftime("%Y-%m-%d")],
+            temporal_extent=self._openeo_temporal_extent(),
             bands=list(required_sentinel1_bands),
             **self._sentinel1_load_options(),
         ).filter_spatial(feature_collection)

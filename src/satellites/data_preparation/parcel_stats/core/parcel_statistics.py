@@ -10,8 +10,10 @@ atomic file operations to make interrupted runs resumable.
 from __future__ import annotations
 
 import hashlib
+import gc
 import json
 import math
+import traceback
 import warnings
 from pathlib import Path
 
@@ -25,9 +27,10 @@ from rasterio.windows import Window, from_bounds, transform as window_transform
 from shapely.geometry import mapping
 
 from satellites.shared.io import read_data, write_data
+from .streamed_raster import LOCAL_RASTER_LOCK, StreamedRasterProcessing
 
 
-class ParcelStatisticsCalculator:
+class ParcelStatisticsCalculator(StreamedRasterProcessing):
     """Aggregate an already-cleaned raster into parcel-level statistics."""
 
     # These values describe the parcel or extraction batch, so they remain unsuffixed after the temporal pivot.
@@ -36,6 +39,7 @@ class ParcelStatisticsCalculator:
         "intersected_pixel_count",
         "meets_minimum_pixel_count",
         "expected_pixel_count",
+        "observed_count",
         "temporal_filled_pixel_count",
         "spatial_filled_pixel_count",
         "temporal_filled_ratio",
@@ -288,6 +292,7 @@ class ParcelStatisticsCalculator:
 
     def _reduce_local_pixels(self, pixel_values: np.ndarray) -> dict[str, np.ndarray]:
         """Calculate requested statistics across the final pixel axis."""
+        pixel_values = np.where(np.isfinite(pixel_values), pixel_values, np.nan)
         valid_count = np.isfinite(pixel_values).sum(axis=-1)
         # Empty parcel masks need explicit outputs because most reducers reject zero-length axes.
         if pixel_values.shape[-1] == 0:
@@ -322,6 +327,17 @@ class ParcelStatisticsCalculator:
                     values = np.nanquantile(pixel_values, self.QUANTILE_PROBABILITIES[statistic], axis=-1, method="linear")
                 reduced[statistic] = values
         return reduced
+
+    def _reduce_period_pixels(self, pixel_values: np.ndarray, period_groups: list[np.ndarray]) -> dict[str, np.ndarray]:
+        """Pool acquisition and spatial samples within each period, separately per variable."""
+        reductions = []
+        for indices in period_groups:
+            # Input axes are acquisition, variable, pixel. Keep variables separate
+            # while making every pixel observation one sample in the final axis.
+            selected = pixel_values[indices].transpose(1, 0, 2)
+            pooled = selected.reshape(pixel_values.shape[1], len(indices) * pixel_values.shape[2])
+            reductions.append(self._reduce_local_pixels(pooled))
+        return {statistic: np.stack([result[statistic] for result in reductions]) for statistic in self.spatial_statistics}
 
     @staticmethod
     def _summarize_parcel_filling(
@@ -392,15 +408,31 @@ class ParcelStatisticsCalculator:
         return (values[:, :, row_start:row_stop, column_start:column_stop].copy(), parcel_mask, parcel_transform)
 
     def _calculate_local_statistics(self, netcdf_path, parcels, batch_number):
-        """Clean the complete raster first, then calculate parcel statistics."""
+        """Bound local concurrency and release resources after successful or failed cubes."""
+        with LOCAL_RASTER_LOCK:
+            try:
+                return self._calculate_streamed_statistics(netcdf_path, parcels, batch_number)
+            except Exception as error:
+                # Notebook/Future tracebacks otherwise retain failed raster frames.
+                traceback.clear_frames(error.__traceback__)
+                raise
+            finally:
+                gc.collect()
+
+    def _calculate_streamed_statistics(self, netcdf_path, parcels, batch_number):
+        """Clean on disk, then read only parcel windows from the final checkpoint."""
         self.parcel_logger.info(f"Reading temporal pixel cube {netcdf_path}.")
-        with xr.open_dataset(netcdf_path, decode_coords="all", mask_and_scale=True) as dataset:
+        with xr.open_dataset(netcdf_path, decode_coords="all", mask_and_scale=True, cache=False) as dataset:
             time_dimension = self._find_cube_dimension(dataset, ("t", "time", "temporal"), "temporal")
             x_dimension = self._find_cube_dimension(dataset, ("x", "longitude", "lon"), "x")
             y_dimension = self._find_cube_dimension(dataset, ("y", "latitude", "lat"), "y")
             cube_variables = list(self._cube_sensor_variables())
             monthly_values = self._select_monthly_variables(
-                dataset, time_dimension, x_dimension, y_dimension, expected_variables=cube_variables
+                dataset.isel({time_dimension: slice(0, 0)}),
+                time_dimension,
+                x_dimension,
+                y_dimension,
+                expected_variables=cube_variables,
             )
             monthly_values = monthly_values.rio.set_spatial_dims(x_dim=x_dimension, y_dim=y_dimension, inplace=False)
             cube_crs = monthly_values.rio.crs or dataset.rio.crs
@@ -411,98 +443,76 @@ class ParcelStatisticsCalculator:
                 )
             monthly_values = monthly_values.rio.write_crs(cube_crs, inplace=False)
             transform = monthly_values.rio.transform(recalc=False)
-            ordered = monthly_values.transpose(time_dimension, "variable", y_dimension, x_dimension)
-            # Materialize one compact layout shared by cleaning and parcel aggregation.
-            values = np.asarray(ordered.values, dtype="float32")
-            time_values = pd.to_datetime(ordered[time_dimension].values, utc=True, errors="coerce")
+            pool_acquisitions = getattr(self, "temporal_reducer", "median") == "none"
+            time_values = pd.to_datetime(dataset[time_dimension].values, utc=True, errors="coerce")
             if pd.isna(time_values).any():
                 raise ValueError(
                     f"The NetCDF temporal coordinate {time_dimension!r} contains values that cannot be parsed as dates."
                 )
-            periods = time_values.strftime("%Y-%m-%d").tolist()
-            if len(periods) != len(set(periods)):
-                raise ValueError("The temporal NetCDF contains duplicate period-start labels.")
+            order = np.argsort(time_values, kind="stable") if pool_acquisitions else np.arange(len(time_values))
+            time_values = time_values[order]
             intervals, labels = self._temporal_intervals()
             period_end_lookup = {label: interval[1] for label, interval in zip(labels, intervals)}
-            unknown = sorted(set(periods).difference(period_end_lookup))
-            if unknown:
-                raise ValueError(f"The temporal NetCDF contains unexpected period labels: {unknown}")
+            if pool_acquisitions:
+                # Full timestamps also identify cleaning checkpoints and audit rows;
+                # multiple acquisitions on the same calendar day remain distinct.
+                periods = [timestamp.isoformat() for timestamp in time_values]
+                period_groups = [
+                    np.flatnonzero((time_values >= pd.Timestamp(start, tz="UTC")) & (time_values < pd.Timestamp(end, tz="UTC")))
+                    for start, end in intervals
+                ]
+                if sum(len(indices) for indices in period_groups) != len(time_values):
+                    raise ValueError("The acquisition NetCDF contains timestamps outside the configured temporal intervals.")
+                result_periods = labels
+            else:
+                periods = time_values.strftime("%Y-%m-%d").tolist()
+                if len(periods) != len(set(periods)):
+                    raise ValueError("The temporal NetCDF contains duplicate period-start labels.")
+                unknown = sorted(set(periods).difference(period_end_lookup))
+                if unknown:
+                    raise ValueError(f"The temporal NetCDF contains unexpected period labels: {unknown}")
+                result_periods = periods
 
             variables = list(self._output_sensor_variables())
             projected = parcels.to_crs(cube_crs)
-            final_shape = (values.shape[0], len(variables), *values.shape[-2:])
-            raster_mask = np.ones(values.shape[-2:], dtype=bool)
-            final_checkpoint = self._load_final_checkpoint(netcdf_path, periods, variables, final_shape)
-            if final_checkpoint is None:
-                checkpoint = self._load_cleaning_checkpoint(netcdf_path, periods, cube_variables, values.shape)
-                if checkpoint is None:
-                    # Clean the complete batch so adjacent parcels can contribute valid fill sources.
-                    iqr_bounds = self._calculate_iqr_bounds(values)
-                    cleaned_values, raster_observed, raster_report = self._clean_monthly_pixels(
-                        values,
-                        raster_mask,
-                        batch_number,
-                        periods,
-                        transform,
-                        cube_crs,
-                        iqr_bounds=iqr_bounds,
-                        variable_names=cube_variables,
-                    )
-                    self._save_cleaning_checkpoint(
-                        netcdf_path, cleaned_values, raster_observed, raster_report, periods, cube_variables
-                    )
-                else:
-                    # Resume index calculation from a completed physical-band cleaning checkpoint.
-                    cleaned_values, raster_observed, raster_report = checkpoint
+            spatial_shape = (dataset.sizes[y_dimension], dataset.sizes[x_dimension])
+            final_path = self._ensure_streamed_checkpoint(
+                netcdf_path,
+                dataset,
+                (time_dimension, x_dimension, y_dimension),
+                order,
+                periods,
+                cube_variables,
+                variables,
+                spatial_shape,
+                transform,
+                cube_crs,
+                batch_number,
+            )
+            _, report_path = self._cleaning_checkpoint_paths(netcdf_path)
+            raster_report = read_data(str(report_path))
 
-                # Ignore indices present in the raw cube and recalculate them from the cleaned physical bands.
-                temporally_filled_values = self._fill_temporal_cube_only(raster_observed, raster_mask)
-                cleaned_values = self._build_local_output_cube(cleaned_values, cube_variables)
-                raster_observed = self._build_local_output_cube(raster_observed, cube_variables)
-                temporally_filled_values = self._build_local_output_cube(temporally_filled_values, cube_variables)
-                temporal_filled_mask = ~np.isfinite(raster_observed) & np.isfinite(temporally_filled_values)
-                self._save_final_checkpoint(
-                    netcdf_path, cleaned_values, raster_observed, periods, variables, temporally_filled=temporally_filled_values
-                )
-                if not getattr(self, "keep_cleaned_checkpoint", False):
-                    self._remove_cleaned_raster_checkpoint(netcdf_path)
-            else:
-                # Resume directly at parcel aggregation when the post-index NetCDF is already complete.
-                cleaned_values, raster_observed, temporal_filled_mask, raster_report = final_checkpoint
-
+        with xr.open_dataset(final_path, cache=False) as final_checkpoint:
             rows = []
             for (_, parcel), (_, projected_parcel) in zip(parcels.iterrows(), projected.iterrows()):
                 # Keep source attributes and projected geometry aligned by their preserved row order.
                 parcel_id = str(parcel[self.PARCEL_ID_FIELD])
-                cleaned, cleaned_mask, _ = self._mask_parcel_window(cleaned_values, projected_parcel.geometry, transform)
-                observed, observed_mask, _ = self._mask_parcel_window(raster_observed, projected_parcel.geometry, transform)
-                local_temporal_filled, temporal_mask, _ = self._mask_parcel_window(
-                    temporal_filled_mask, projected_parcel.geometry, transform
+                groups = period_groups if pool_acquisitions else [np.array([index]) for index in range(len(periods))]
+                parcel_rows, fill_metrics = self._stream_parcel_statistics(
+                    final_checkpoint, projected_parcel.geometry, transform, result_periods, groups, variables
                 )
-                if not np.array_equal(observed_mask, cleaned_mask) or not np.array_equal(temporal_mask, cleaned_mask):
-                    raise RuntimeError("Parcel masks changed between raster filling and aggregation.")
-
-                intersected_pixel_count = int(cleaned_mask.sum())
-                local_temporal_filled = local_temporal_filled[:, :, cleaned_mask].astype(bool, copy=False)
-                fill_metrics = self._summarize_parcel_filling(
-                    observed[:, :, cleaned_mask], local_temporal_filled, cleaned[:, :, cleaned_mask], intersected_pixel_count
-                )
+                pixel_count = fill_metrics["intersected_pixel_count"]
                 pixel_cell_area = abs(float(transform.a * transform.e - transform.b * transform.d))
-                stats = self._reduce_local_pixels(cleaned[:, :, cleaned_mask])
-                for time_index, period_start in enumerate(periods):
-                    row = {
-                        self.PARCEL_ID_FIELD: parcel_id,
-                        "period_start": period_start,
-                        "period_end": period_end_lookup[period_start],
-                        "intersected_pixel_count": intersected_pixel_count,
-                        "meets_minimum_pixel_count": intersected_pixel_count >= self.minimum_parcel_pixels,
-                        **fill_metrics,
-                        "pixel_area": intersected_pixel_count * pixel_cell_area,
-                    }
-                    for variable_index, variable in enumerate(variables):
-                        for statistic in self.spatial_statistics:
-                            value = stats[statistic][time_index, variable_index]
-                            row[f"{variable}_{statistic}"] = float(value)
+                for row in parcel_rows:
+                    row.update(
+                        {
+                            self.PARCEL_ID_FIELD: parcel_id,
+                            "period_end": period_end_lookup[row["period_start"]],
+                            "meets_minimum_pixel_count": pixel_count >= self.minimum_parcel_pixels,
+                            **fill_metrics,
+                            "pixel_area": pixel_count * pixel_cell_area,
+                        }
+                    )
                     rows.append(row)
 
         result = pd.DataFrame(rows)

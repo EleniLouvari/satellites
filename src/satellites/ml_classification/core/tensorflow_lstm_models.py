@@ -190,7 +190,7 @@ class TemporalTensorBuilder:
         return entries
 
 
-class KerasLSTMClassifier(BaseEstimator, ClassifierMixin):
+class KerasLSTMClassifier(ClassifierMixin, BaseEstimator):
     """Sklearn-compatible LSTM classifier operating on flattened temporal parcel features."""
 
     def __init__(

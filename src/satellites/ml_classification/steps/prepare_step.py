@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import pandas as pd
-from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold, train_test_split
+from sklearn.model_selection import GroupKFold, StratifiedGroupKFold, StratifiedKFold, train_test_split
 from sklearn.preprocessing import LabelEncoder
 
 from ..core.persistence import load_joblib, load_json, print_formatted_txt, save_frame_csv, save_joblib, save_json, time_decorator
@@ -60,15 +60,14 @@ class PrepareStep(PipelineStepBase):
         )
 
     def _build_cv_folds(self, train_df, active_features, spatial_splitter):
-        # Build CV folds using stratified KFold or stratified group KFold for spatial splits.
+        # Disjoint CV targets 1 / cv_folds of the training rows per validation fold.
         if spatial_splitter is None:
             splitter = StratifiedKFold(n_splits=self.config.cv_folds, shuffle=True, random_state=self.config.random_state)
             split_iterator = splitter.split(train_df[active_features], train_df["_target_encoded"])
         else:
-            # When spatial splitting is used, generate group labels and use StratifiedGroupKFold.
+            # Keep cells intact while prioritizing row balance over class stratification.
             groups = spatial_splitter.build_spatial_groups(train_df)
-            splitter = StratifiedGroupKFold(n_splits=self.config.cv_folds, shuffle=True, random_state=self.config.random_state)
-            split_iterator = splitter.split(train_df[active_features], train_df["_target_encoded"], groups=groups)
+            split_iterator = self._balanced_spatial_cv_splits(train_df, active_features, groups)
         folds = []
         all_labels = set(train_df["_target_encoded"])
         for fold_id, (train_idx, valid_idx) in enumerate(split_iterator):
@@ -82,6 +81,41 @@ class PrepareStep(PipelineStepBase):
                     )
             folds.append({"fold": fold_id, "train_index": train_idx.tolist(), "valid_index": valid_idx.tolist()})
         return folds
+
+    def _balanced_spatial_cv_splits(self, train_df, active_features, groups):
+        """Choose row-balanced whole-cell folds with every class retained in training."""
+        if groups.nunique() < self.config.cv_folds:
+            raise ValueError("Spatial CV requires at least cv_folds occupied grid cells. Increase spatial_split_grid_size.")
+        target = train_df["_target_encoded"]
+        overall_distribution = target.value_counts(normalize=True)
+        all_labels = set(overall_distribution.index)
+        candidates = []
+        # GroupKFold balances row counts; the stratified candidate can rescue class
+        # coverage or improve label balance when its fold sizes are equally good.
+        splitters = (
+            GroupKFold(n_splits=self.config.cv_folds),
+            StratifiedGroupKFold(
+                n_splits=self.config.cv_folds, shuffle=True, random_state=self.config.random_state
+            ),
+        )
+        for splitter in splitters:
+            splits = list(splitter.split(train_df[active_features], target, groups=groups))
+            if any(set(target.iloc[train_idx]) != all_labels for train_idx, _ in splits):
+                continue
+            size_errors = [abs(len(valid_idx) / len(train_df) - 1 / self.config.cv_folds) for _, valid_idx in splits]
+            class_error = sum(
+                float((target.iloc[valid_idx].value_counts(normalize=True)
+                       .reindex(overall_distribution.index, fill_value=0.0) - overall_distribution).abs().mean())
+                for _, valid_idx in splits
+            )
+            score = (max(size_errors), sum(error ** 2 for error in size_errors), class_error)
+            candidates.append((score, splits))
+        if not candidates:
+            raise ValueError(
+                "Spatial CV could not retain every class in every training fold. "
+                "Increase spatial_split_grid_size, merge unsupported rare classes, or reduce cv_folds."
+            )
+        return min(candidates, key=lambda candidate: candidate[0])[1]
 
     def _persist_prepare_artifacts(self, labeled_df, train_df, test_df, summary, label_encoder):
         # Persist train/test/labeled datasets and a prepare summary with schema.

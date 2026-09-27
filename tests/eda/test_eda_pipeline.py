@@ -204,16 +204,20 @@ def test_vertical_category_labels_are_smaller_and_truncated() -> None:
 
 
 def test_categorical_target_colors_are_consistent_across_report_plots(monkeypatch) -> None:
+    gpd = pytest.importorskip("geopandas")
+    from shapely.geometry import box
+
     data = pd.DataFrame(
         {
             "target": ["B", "B", "B", "A", "A"],
             "numeric_feature": [3.0, np.nan, np.nan, 1.0, 2.0],
             "category": ["x", "x", "y", "x", "y"],
-            "geometry": ["shape"] * 5,
+            "geometry": [box(index, 0, index + 0.5, 0.5) for index in range(5)],
         }
     )
     barh_colors = []
     dataframe_plot_calls = []
+    map_geometries = []
 
     def capture_barh(_axis, *_args, **kwargs):
         barh_colors.extend(kwargs["color"])
@@ -221,11 +225,14 @@ def test_categorical_target_colors_are_consistent_across_report_plots(monkeypatc
 
     def capture_dataframe_plot(_frame, *_args, **kwargs):
         dataframe_plot_calls.append(kwargs)
+        if isinstance(_frame, gpd.GeoDataFrame):
+            map_geometries.extend(_frame.geometry)
 
     monkeypatch.setattr("matplotlib.axes.Axes.barh", capture_barh)
     monkeypatch.setattr("matplotlib.axes.Axes.legend", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("matplotlib.figure.Figure.savefig", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(pd.DataFrame, "plot", capture_dataframe_plot)
+    monkeypatch.setattr(gpd.GeoDataFrame, "plot", capture_dataframe_plot)
 
     plots_module._plot_target_distribution(data["target"], "classification", 10, "unused.png")
     assert plots_module._plot_categorical_target_composition(
@@ -245,6 +252,9 @@ def test_categorical_target_colors_are_consistent_across_report_plots(monkeypatc
         expected_colors["A"],
         expected_colors["A"],
     ]
+    assert len(map_geometries) == len(data)
+    assert all(point.geom_type == "Point" for point in map_geometries)
+    assert all(polygon.covers(point) for polygon, point in zip(data["geometry"], map_geometries))
 
 
 def test_numeric_target_median_heatmap_uses_global_target_order_and_percentiles(monkeypatch) -> None:
