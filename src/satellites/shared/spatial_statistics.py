@@ -566,12 +566,12 @@ def spatial_clustering_using_buffer(gdf, field_id, min_cluster_distance_in_m, si
     gdf = gdf.copy()
     gdf[field_cluster] = None
 
-    meter_to_df_units = create_unit_conversion_factor(source_unit="m", target_unit=get_unit_of_length(gdf))
+    meter_to_df_units = geom_l.create_unit_conversion_factor(source_unit="m", target_unit=geom_l.get_unit_of_length(gdf))
     buffer_distance = (min_cluster_distance_in_m / 2) * meter_to_df_units
     print("Buffer distance in data units: ", buffer_distance)
     buffered = gdf[["geometry"]].copy()
     buffered["geometry"] = buffered["geometry"].buffer(buffer_distance)
-    buffered = return_valid_geometries(buffered)
+    buffered = geom_l.return_valid_geometries(buffered)
 
     if buffered.empty:
         return gdf
@@ -579,7 +579,7 @@ def spatial_clustering_using_buffer(gdf, field_id, min_cluster_distance_in_m, si
     merged = gpd.GeoDataFrame(geometry=[buffered["geometry"].unary_union], crs=gdf.crs)
     cluster = merged.explode(ignore_index=True)
     cluster = cluster[cluster.geometry.geom_type.isin(["Polygon", "MultiPolygon"])].copy()
-    cluster = return_valid_geometries(cluster)
+    cluster = geom_l.return_valid_geometries(cluster)
 
     if cluster.empty:
         return gdf
@@ -587,7 +587,7 @@ def spatial_clustering_using_buffer(gdf, field_id, min_cluster_distance_in_m, si
     if simplify_in_m and simplify_in_m > 0:
         simplify_tolerance = simplify_in_m * meter_to_df_units
         cluster["geometry"] = cluster["geometry"].simplify(simplify_tolerance, preserve_topology=True)
-        cluster = return_valid_geometries(cluster)
+        cluster = geom_l.return_valid_geometries(cluster)
 
     cluster["area"] = cluster.area
     cluster = cluster.sort_values(by="area", ascending=False).reset_index(drop=True)

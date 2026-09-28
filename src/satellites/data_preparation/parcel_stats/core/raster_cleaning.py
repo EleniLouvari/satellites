@@ -151,6 +151,9 @@ class RasterCleaner:
 
     def _fill_temporal_neighbors(self, variable_values: np.ndarray) -> np.ndarray:
         """Fill temporal gaps independently at each spatial pixel."""
+        window_sizes = getattr(self, "temporal_fill_window_sizes", None)
+        if window_sizes is not None:
+            return self._fill_bounded_temporal_neighbors(variable_values, window_sizes)
         filled = variable_values.copy()
         forward = filled.copy()
         # Carry observations forward first; this is the complete behavior in past-only mode.
@@ -173,6 +176,34 @@ class RasterCleaner:
         filled[both] = (forward[both] + backward[both]) / 2.0
         filled[missing & forward_valid & ~backward_valid] = forward[missing & forward_valid & ~backward_valid]
         filled[missing & ~forward_valid & backward_valid] = backward[missing & ~forward_valid & backward_valid]
+        return filled
+
+    def _fill_bounded_temporal_neighbors(self, variable_values: np.ndarray, window_sizes: tuple[int, ...]) -> np.ndarray:
+        """Retry gaps with wider windows without propagating imputed values."""
+        filled = variable_values.copy()
+        for size in window_sizes:
+            forward = variable_values.copy()
+            backward = variable_values.copy()
+            radius = min(size // 2, variable_values.shape[0] - 1)
+            # Search nearest first, always reading original observations.
+            for offset in range(1, radius + 1):
+                source = variable_values[:-offset]
+                target = forward[offset:]
+                np.copyto(target, source, where=~np.isfinite(target) & np.isfinite(source))
+                if self.temporal_fill_mode == "bidirectional":
+                    source = variable_values[offset:]
+                    target = backward[:-offset]
+                    np.copyto(target, source, where=~np.isfinite(target) & np.isfinite(source))
+
+            missing = ~np.isfinite(filled)
+            forward_valid = np.isfinite(forward)
+            backward_valid = np.isfinite(backward)
+            both = missing & forward_valid & backward_valid
+            filled[both] = (forward[both] + backward[both]) / 2.0
+            use_forward = missing & forward_valid & ~backward_valid
+            use_backward = missing & ~forward_valid & backward_valid
+            filled[use_forward] = forward[use_forward]
+            filled[use_backward] = backward[use_backward]
         return filled
 
     def _fill_spatial_neighbors(self, variable_values: np.ndarray, eligible_mask: np.ndarray, window_size: int = 3) -> np.ndarray:

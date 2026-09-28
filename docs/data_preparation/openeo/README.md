@@ -302,6 +302,7 @@ rerunning to load the new implementation and release arrays held by the old run.
 | `iqr_min_valid_pixels` | `20` | Minimum valid raster pixels required before applying IQR filtering |
 | `fill_nulls` | `False` | Enable temporal, sequential spatial-neighbor, and final interpolation filling |
 | `spatial_fill_window_sizes` | `(3, 5)` | Ordered spatial-mean passes: `(3,)`, `(3, 5)`, `(3, 5, 7)`, or `(3, 5, 7, 9)` |
+| `temporal_fill_window_sizes` | `None` | Increasing odd time-step widths. `(3,)` searches the immediately previous/next step at the same pixel; `None` keeps unlimited search. Direction is controlled by `temporal_fill_mode`. |
 | `keep_cleaned_checkpoint` | `False` | Retain the intermediate cleaned physical-band NetCDF after the final NetCDF commits |
 | `temporal_fill_mode` | `"past_only"` | `past_only` carries the nearest earlier value; `bidirectional` uses closest earlier/later values |
 | `minimum_parcel_pixels` | `3` | Threshold for the output quality flag; small parcels are retained |
@@ -317,6 +318,21 @@ across the complete batch raster before parcel masking. `fill_nulls=True` does
 not guarantee every null can be filled;
 the observed-fraction threshold, available neighbors, and distance settings still
 apply.
+
+To use one previous and one next time step for temporal filling, independently
+of the spatial neighborhoods, set:
+
+```python
+fill_nulls=True,
+temporal_fill_mode="bidirectional",
+temporal_fill_window_sizes=(3,),
+spatial_fill_window_sizes=(3, 5, 7),
+```
+
+The two temporal observations are averaged; if only one is available, its value
+is used. Windows count raster time steps, not calendar days. Wider temporal
+windows retry remaining gaps using the nearest original observation in each
+allowed direction; filled values never extend the temporal search range.
 
 The default stops after 3x3 and 5x5 means before using raster-native nearest
 interpolation. Larger 7x7 and 9x9 passes are optional because they progressively

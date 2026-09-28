@@ -1,8 +1,7 @@
 """Multi-user spatial partitioning for parallel openEO extraction.
 
-This module orchestrates splitting large parcel GeoDataFrames into spatial
-partitions and running one extractor queue per openEO user account. User queues
-run in parallel, and each active extractor uses at most two CDSE jobs.
+Partitions retain their spatial identity and output paths. By default, tile
+batches are shared across all accounts, with at most two CDSE jobs per account.
 """
 
 from __future__ import annotations
@@ -10,14 +9,17 @@ from __future__ import annotations
 import math
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import geopandas as gpd
 import pandas as pd
 
 from satellites.shared.io import write_data
-from satellites.data_preparation.parcel_stats.job_manager import JobManagerSatelliteZonalStats
+from satellites.data_preparation.parcel_stats.batch_scheduler import run_shared_batches
+from satellites.data_preparation.parcel_stats.partition_scheduler import (
+    run_partition_extractor as run_partition_extractor,
+    run_shared_partitions,
+)
 
 PARTITION_RESULT_FILE_NAME = "satellite_parcel_time_stats.geoparquet"
 MAX_OPENEO_JOBS_PER_USER = 2
@@ -172,133 +174,6 @@ def load_openeo_users_from_env() -> list[tuple[str, str]]:
     print(f"Loaded {len(credentials)} openEO user(s): {user_names}")
     print(f"Remote capacity: {len(credentials)} users x {MAX_OPENEO_JOBS_PER_USER} jobs")
     return credentials
-
-def run_partition_extractor(
-    part_idx: int,
-    gdf_part: gpd.GeoDataFrame,
-    users_list: list[tuple[str, str]],
-    total_partitions: int,
-    config: dict,
-) -> tuple[int, gpd.GeoDataFrame]:
-    """Extract one spatial partition with assigned user.
-
-    Parameters
-    ----------
-    part_idx : int
-        Partition index (1-based)
-    gdf_part : GeoDataFrame
-        Parcels for this partition
-    users_list : list[tuple[str, str]]
-        Available (username, password) tuples
-    total_partitions : int
-        Total number of partitions (for display)
-    config : dict
-        Configuration dictionary containing:
-        - output_dir: base output directory
-        - run_identifier: run identifier string
-        - parcel_id_field: name of parcel ID column
-        - start_date, end_date: date range
-        - working_epsg: projected EPSG code
-        - sentinel2_bands, sentinel2_indices: Sentinel-2 config
-        - sentinel1_bands, sentinel1_indices, sentinel1_orbit_direction: Sentinel-1 config
-        - spatial_statistics: statistics to calculate
-        - tile_size_metres, tile_buffer_metres: tiling parameters
-        - Plus any additional kwargs (IQR, fill, interpolation, etc.)
-
-    Returns
-    -------
-    tuple[int, GeoDataFrame]
-        (partition_index, results_gdf)
-        Run identifier string
-    parcel_id_field : str
-        Name of parcel ID column
-    start_date, end_date : str
-        Date range
-    working_epsg : int
-        Projected EPSG code
-    sentinel2_bands, sentinel2_indices : list[str]
-        Sentinel-2 bands and indices
-    sentinel1_bands : list[str]
-        Sentinel-1 bands
-    sentinel1_indices : list[str]
-        Sentinel-1 indices (R and/or RVI)
-    sentinel1_orbit_direction : str
-        Sentinel-1 orbit selection: ASCENDING, DESCENDING, or BOTH
-    spatial_statistics : list[str]
-        Statistics to calculate
-    tile_size_metres, tile_buffer_metres : int
-        Tiling parameters
-    **kwargs
-        Additional parameters (IQR, interpolation, fill options, etc.)
-
-    Returns
-    -------
-    tuple[int, GeoDataFrame]
-        (partition_index, results_dataframe)
-    """
-    print(f"\n{'─'*70}")
-    print(f"PARTITION {part_idx}/{total_partitions}: {len(gdf_part)} parcels")
-    print(f"{'─'*70}")
-
-    # Unpack known keys from config; remaining keys are passed as kwargs
-    output_dir = Path(config["output_dir"])
-    run_identifier = config["run_identifier"]
-    parcel_id_field = config["parcel_id_field"]
-    start_date = config["start_date"]
-    end_date = config["end_date"]
-    working_epsg = config["working_epsg"]
-    sentinel2_bands = config["sentinel2_bands"]
-    sentinel2_indices = config.get("sentinel2_indices", [])
-    sentinel1_bands = config["sentinel1_bands"]
-    sentinel1_indices = config.get("sentinel1_indices", [])
-    spatial_statistics = config["spatial_statistics"]
-    tile_size_metres = config["tile_size_metres"]
-    tile_buffer_metres = config["tile_buffer_metres"]
-    known_keys = {
-        "output_dir", "run_identifier", "parcel_id_field", "start_date", "end_date",
-        "working_epsg", "sentinel2_bands", "sentinel2_indices",
-        "sentinel1_bands", "sentinel1_indices", "spatial_statistics", "tile_size_metres", "tile_buffer_metres",
-    }
-    kwargs = {k: v for k, v in config.items() if k not in known_keys}
-
-    # Select the user for this partition (round-robin)
-    selected_user_idx = (part_idx - 1) % len(users_list)
-    selected_user = users_list[selected_user_idx]
-
-    # Create partition-specific output directory
-    partition_output_dir = output_dir / f"partition_{part_idx}"
-
-    # Build extractor configuration
-    extractor_config = dict(
-        parcels=gdf_part,
-        parcel_id_field=parcel_id_field,
-        start_date=start_date,
-        end_date=end_date,
-        output_dir=partition_output_dir,
-        working_epsg=working_epsg,
-        openeo_username=selected_user[0],
-        openeo_password=selected_user[1],
-        sentinel2_bands=sentinel2_bands,
-        sentinel2_indices=sentinel2_indices,
-        sentinel1_bands=sentinel1_bands,
-        sentinel1_indices=sentinel1_indices,
-        spatial_statistics=spatial_statistics,
-        tile_size_metres=tile_size_metres,
-        tile_buffer_metres=tile_buffer_metres,
-        run_identifier=f"{run_identifier}_part{part_idx}",
-        **kwargs,
-    )
-
-    print(f"User: {selected_user[0]}")
-    print(f"Output: {partition_output_dir}")
-
-    # Create and run extractor
-    extractor = JobManagerSatelliteZonalStats(**extractor_config)
-    results = extractor.run()
-
-    print(f"✓ Partition {part_idx} complete: {len(results)} parcels")
-    return part_idx, results
-
 
 def load_saved_partition_results(output_dir: Path) -> dict[int, gpd.GeoDataFrame]:
     """Load completed partition results from an extraction output directory.
@@ -459,13 +334,15 @@ def run_parallel_extractions(
     spatial_parts: list[gpd.GeoDataFrame],
     users_list: list[tuple[str, str]],
     config: dict,
+    *,
+    scheduling: str = "batches",
 ) -> None:
     """Run parallel openEO extractions for multiple spatial partitions.
 
-    Partitions are assigned round-robin to one sequential queue per account.
-    User queues run in parallel, while each account has at most one active job
-    manager. The manager's ``openeo_parallel_jobs`` setting controls the remote
-    jobs for that account (normally two).
+    Plan all partitions first, then share their unsubmitted tile batches across
+    accounts. Each account has ``openeo_parallel_jobs`` slots (normally two).
+    Existing remote jobs remain on their owning account when resuming. Use
+    ``scheduling="partitions"`` for the legacy round-robin partition queues.
 
     Parameters
     ----------
@@ -497,6 +374,11 @@ def run_parallel_extractions(
         raise ValueError("spatial_parts must contain at least one partition.")
     if not users_list:
         raise ValueError("users_list must contain at least one openEO account.")
+    usernames = [user.strip().casefold() for user, _ in users_list]
+    if len(set(usernames)) != len(usernames):
+        raise ValueError("Duplicate usernames; each account may be listed only once.")
+    if scheduling not in {"batches", "partitions"}:
+        raise ValueError("scheduling must be 'batches' or 'partitions'.")
     jobs_per_user = int(config.get("openeo_parallel_jobs", 2))
     if jobs_per_user < 1:
         raise ValueError("openeo_parallel_jobs must be positive.")
@@ -512,23 +394,10 @@ def run_parallel_extractions(
 
     start_time = time.time()
 
-    user_queues: list[list[tuple[int, gpd.GeoDataFrame]]] = [[] for _ in users_list]
-    for part_idx, gdf_part in enumerate(spatial_parts, start=1):
-        user_queues[(part_idx - 1) % len(users_list)].append((part_idx, gdf_part))
-
-    def run_user_queue(queue: list[tuple[int, gpd.GeoDataFrame]]) -> list[int]:
-        completed = []
-        for part_idx, gdf_part in queue:
-            returned_idx, _ = run_partition_extractor(part_idx, gdf_part, users_list, len(spatial_parts), config)
-            completed.append(returned_idx)
-            print(f"[Completed] Partition {returned_idx} result stored")
-        return completed
-
-    active_queues = [queue for queue in user_queues if queue]
-    with ThreadPoolExecutor(max_workers=len(active_queues)) as executor:
-        futures = [executor.submit(run_user_queue, queue) for queue in active_queues]
-        for future in as_completed(futures):
-            future.result()
+    if scheduling == "batches":
+        run_shared_batches(spatial_parts, users_list, config, jobs_per_user)
+    else:
+        run_shared_partitions(spatial_parts, users_list, config)
 
     elapsed = time.time() - start_time
-    print(f"\n✓ All {len(spatial_parts)} partition(s) completed in {elapsed:.1f}s")
+    print(f"\nAll {len(spatial_parts)} partition(s) completed in {elapsed:.1f}s")

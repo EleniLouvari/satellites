@@ -231,6 +231,62 @@ def test_spatial_fill_ignores_pixels_outside_eligible_mask() -> None:
     assert np.isnan(filled[0, 0, 1]) or filled[0, 0, 1] == 100.0
 
 
+@pytest.mark.parametrize(
+    "mode, expected",
+    [
+        ("past_only", [0, 0, 8, 8, np.nan, np.nan, 20, 20]),
+        ("bidirectional", [0, 4, 8, 8, np.nan, 20, 20, 20]),
+    ],
+)
+def test_three_step_temporal_window_uses_only_adjacent_original_pixels(mode, expected) -> None:
+    extractor = _extractor(
+        temporal_fill_mode=mode, temporal_fill_window_sizes=(3,), spatial_fill_window_sizes=(3, 5, 7)
+    )
+    values = np.array([0, np.nan, 8, np.nan, np.nan, np.nan, 20, np.nan]).reshape(-1, 1, 1)
+    original = values.copy()
+
+    filled = extractor._fill_temporal_neighbors(values)
+
+    np.testing.assert_allclose(filled[:, 0, 0], expected, equal_nan=True)
+    np.testing.assert_array_equal(values, original)
+    extractor.spatial_fill_window_sizes = (3,)
+    np.testing.assert_array_equal(extractor._fill_temporal_neighbors(values), filled)
+
+
+def test_wider_temporal_windows_retry_only_remaining_gaps() -> None:
+    extractor = _extractor(temporal_fill_mode="bidirectional", temporal_fill_window_sizes=(3, 5))
+    values = np.array([0, np.nan, np.nan, np.nan, 20], dtype=float).reshape(-1, 1, 1)
+
+    filled = extractor._fill_temporal_neighbors(values)
+
+    np.testing.assert_allclose(filled[:, 0, 0], [0, 0, 10, 20, 20])
+
+
+@pytest.mark.parametrize("windows", [None, (3,), [3, 5, 7]])
+def test_temporal_window_validation_accepts_supported_inputs(windows) -> None:
+    assert _extractor()._validate_temporal_fill_windows(windows) == (None if windows is None else tuple(windows))
+
+
+@pytest.mark.parametrize(
+    "windows, error",
+    [(3, TypeError), ([3.0], TypeError), ([True], TypeError), ([], ValueError),
+     ([1], ValueError), ([4], ValueError), ([5, 3], ValueError), ([3, 3], ValueError)],
+)
+def test_temporal_window_validation_rejects_invalid_inputs(windows, error) -> None:
+    with pytest.raises(error, match="temporal_fill_window_sizes"):
+        _extractor()._validate_temporal_fill_windows(windows)
+
+
+def test_temporal_window_changes_invalidate_cleaning_checkpoints() -> None:
+    extractor = _extractor()
+    unlimited_signature = extractor._cleaning_checkpoint_signature()
+    extractor.temporal_fill_window_sizes = (3,)
+    bounded_signature = extractor._cleaning_checkpoint_signature()
+    extractor.temporal_fill_window_sizes = (3, 5)
+
+    assert len({unlimited_signature, bounded_signature, extractor._cleaning_checkpoint_signature()}) == 3
+
+
 def test_raster_spatial_fill_can_borrow_from_an_adjacent_parcel() -> None:
     extractor = _extractor()
     values = np.array([[[np.nan, 7.0]]])

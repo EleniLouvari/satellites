@@ -28,6 +28,7 @@ from sklearn.neural_network import MLPClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.preprocessing import FunctionTransformer
+from sklearn.svm import SVC
 from sklearn.tree import DecisionTreeClassifier
 
 from .config import ClassificationPipelineConfig
@@ -222,6 +223,15 @@ def build_model_candidates(
                 SGDClassifier(loss="log_loss", penalty="elasticnet", class_weight="balanced", random_state=config.random_state),
             ),
             param_distributions=config.tune_params["linear_sgd_classifier"],
+        ),
+        ModelCandidate(
+            name="support_vector_machine",
+            builder=lambda: _build_pipeline_with_optional_balancer(
+                config,
+                _build_linear_preprocessor(config, numeric_features, categorical_features),
+                SVC(probability=True, class_weight="balanced", random_state=config.random_state),
+            ),
+            param_distributions=config.tune_params["support_vector_machine"],
         ),
         ModelCandidate(
             name="random_forest",

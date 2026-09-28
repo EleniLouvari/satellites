@@ -27,6 +27,10 @@ class SatelliteZonalStats(ParcelStatsBase, OpenEOCubePipeline):
         self.logger.info(f"Temporal cube cache: {cube_dir}.")
         # Run openEO jobs for each uncached parcel batch, downloading the monthly NetCDF cubes.
         batches = self._run_openeo_jobs(cube_dir)
+        return self.run_from_batches(batches)
+
+    def run_from_batches(self, batches) -> gpd.GeoDataFrame:
+        """Calculate and save partition statistics from already acquired cubes."""
         # Run local statistics for each batch in parallel, returning a list of DataFrames and cleaning reports.
         completed_results, cleaning_reports = self._run_batch_statistics(batches)
         # Concatenate the batch results into a single DataFrame, sort by parcel and period, and add derived statistics.

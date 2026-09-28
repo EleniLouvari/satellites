@@ -173,7 +173,8 @@ def test_existing_composites_still_reduce_only_spatial_pixels(tmp_path):
 
 @pytest.mark.parametrize("fill_mode", ["past_only", "bidirectional"])
 @pytest.mark.parametrize("remove_outliers", [False, True])
-def test_streamed_cleaning_matches_full_cube_with_filling(tmp_path, monkeypatch, fill_mode, remove_outliers):
+@pytest.mark.parametrize("temporal_windows", [None, (3,), (3, 5)])
+def test_streamed_cleaning_matches_full_cube_with_filling(tmp_path, monkeypatch, fill_mode, remove_outliers, temporal_windows):
     from satellites.data_preparation.parcel_stats.core import streamed_raster
 
     extractor = _extractor(
@@ -184,6 +185,7 @@ def test_streamed_cleaning_matches_full_cube_with_filling(tmp_path, monkeypatch,
         iqr_min_valid_pixels=3,
         minimum_observed_fraction_for_fill=0.5,
         spatial_fill_window_sizes=(3, 5, 7),
+        temporal_fill_window_sizes=temporal_windows,
     )
     times = ["2024-01-01", "2024-01-10", "2024-02-01", "2024-02-15"]
     red = np.array(

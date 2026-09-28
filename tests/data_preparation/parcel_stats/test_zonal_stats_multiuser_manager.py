@@ -7,6 +7,7 @@ import pytest
 from shapely.geometry import Point
 
 from satellites.data_preparation.parcel_stats import multiuser as manager
+from satellites.data_preparation.parcel_stats import partition_scheduler
 
 
 def _result(parcel_id: int, index: int) -> gpd.GeoDataFrame:
@@ -126,12 +127,13 @@ def test_run_parallel_extractions_returns_none_after_all_partitions_complete(mon
         completed_partitions.append(part_idx)
         return part_idx, _result(part_idx, 0)
 
-    monkeypatch.setattr(manager, "run_partition_extractor", fake_run_partition_extractor)
+    monkeypatch.setattr(partition_scheduler, "run_partition_extractor", fake_run_partition_extractor)
 
     result = manager.run_parallel_extractions(
         spatial_parts=[_result(1, 0), _result(2, 0)],
         users_list=[("user", "password")],
         config={},
+        scheduling="partitions",
     )
 
     assert result is None
@@ -189,12 +191,13 @@ def test_parallel_extractions_never_reuses_one_user_concurrently(monkeypatch):
             active_total -= 1
         return part_idx, _result(part_idx, 0)
 
-    monkeypatch.setattr(manager, "run_partition_extractor", fake_run_partition_extractor)
+    monkeypatch.setattr(partition_scheduler, "run_partition_extractor", fake_run_partition_extractor)
 
     manager.run_parallel_extractions(
         spatial_parts=[_result(index, index) for index in range(1, 5)],
         users_list=users,
         config={"openeo_parallel_jobs": 2},
+        scheduling="partitions",
     )
 
     assert maximum_by_user == {"first": 1, "second": 1}

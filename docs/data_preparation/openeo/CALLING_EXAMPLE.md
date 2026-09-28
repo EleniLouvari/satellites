@@ -70,7 +70,8 @@ extraction_config = {
     "minimum_observed_fraction_for_fill": MINIMUM_OBSERVED_FRACTION_FOR_FILL,
     "interpolation_method": INTERPOLATION_METHOD,
     "interpolation_max_distance_in_meters": INTERPOLATION_MAX_DISTANCE_IN_METERS,
-    "spatial_fill_window_sizes": (3, 5),
+    "temporal_fill_window_sizes": (3,),  # previous/next step with bidirectional mode
+    "spatial_fill_window_sizes": (3, 5, 7),
 }
 
 # User queues run concurrently. A user processes its partitions sequentially,

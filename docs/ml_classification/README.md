@@ -23,6 +23,24 @@ See [INCREMENTAL_WORKFLOW.md](INCREMENTAL_WORKFLOW.md) for:
 - **Forced Retraining**: Option to retrain specific models when needed
 - Complete workflow examples and API reference
 
+## Support vector machine (SVM)
+
+Use `selected_models=("support_vector_machine",)` to train SVM alone, or add
+`"support_vector_machine"` to your existing model selection. It is also included
+when `selected_models=None`.
+
+The SVM uses numeric imputation and standardization, categorical imputation and
+one-hot encoding, and the configured optional label balancing. Its class
+probabilities support evaluation and soft voting. The existing default tuning
+space searches `C`, kernel (`linear`, `rbf`, `poly`), and `gamma`; override it via
+`tune_params["support_vector_machine"]`. Keep `model__probability` enabled if
+overriding it.
+
+[Scikit-learn's SVC documentation](https://scikit-learn.org/stable/modules/generated/sklearn.svm.SVC.html)
+notes that kernel SVM training scales at least quadratically with sample count,
+and probability estimation adds internal cross-validation, so large parcel
+datasets can take substantially longer to train.
+
 ## Reports
 
 - `01_check/report.html`

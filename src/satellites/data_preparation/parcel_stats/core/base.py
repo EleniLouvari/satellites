@@ -100,6 +100,11 @@ class ParcelStatsBase(
     spatial_fill_window_sizes:
         Ordered spatial-mean windows applied after temporal filling. Defaults to
         ``(3, 5)``; append 7 and 9 only when wider smoothing is acceptable.
+    temporal_fill_window_sizes:
+        Increasing odd temporal window widths, including the target step.
+        ``(3,)`` uses only the immediately previous/next step at the same pixel,
+        subject to ``temporal_fill_mode``. Wider windows retry remaining gaps
+        using original observations. ``None`` preserves unlimited search.
     keep_cleaned_checkpoint:
         Retain the intermediate physical-band checkpoint after the final
         bands-and-indices checkpoint commits. Defaults to ``False``.
@@ -245,6 +250,7 @@ class ParcelStatsBase(
         keep_cleaned_checkpoint: bool = False,
         openeo_username: str | None = None,
         openeo_password: str | None = None,
+        temporal_fill_window_sizes: tuple[int, ...] | list[int] | None = None,
     ) -> None:
         """Validate inputs and prepare a reusable extraction instance."""
 
@@ -272,6 +278,7 @@ class ParcelStatsBase(
         self.PARCEL_ID_FIELD = parcel_id_field
         self.batch_workers = self._validate_batch_workers(batch_workers)
         self.spatial_fill_window_sizes = self._validate_spatial_fill_windows(spatial_fill_window_sizes)
+        self.temporal_fill_window_sizes = self._validate_temporal_fill_windows(temporal_fill_window_sizes)
         if not isinstance(keep_cleaned_checkpoint, bool):
             raise TypeError("keep_cleaned_checkpoint must be a bool.")
         self.keep_cleaned_checkpoint = keep_cleaned_checkpoint

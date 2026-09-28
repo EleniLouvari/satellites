@@ -430,6 +430,7 @@ class ClassificationPipelineConfig:
         # None -> use all available models
         # logistic_regression
         # linear_sgd_classifier
+        # support_vector_machine
         # random_forest
         # extra_trees
         # gradient_boosting

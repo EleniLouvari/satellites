@@ -72,6 +72,9 @@ class ParcelStatisticsCalculator(StreamedRasterProcessing):
             "interpolation_variogram_lags": self.interpolation_variogram_lags,
             "interpolation_variogram_max_distance_in_meters": self.interpolation_variogram_max_distance_in_meters,
         }
+        temporal_windows = getattr(self, "temporal_fill_window_sizes", None)
+        if temporal_windows is not None:
+            configuration["temporal_fill_window_sizes"] = temporal_windows
         payload = json.dumps(configuration, sort_keys=True).encode("utf-8")
         return hashlib.sha256(payload).hexdigest()[:16]
 

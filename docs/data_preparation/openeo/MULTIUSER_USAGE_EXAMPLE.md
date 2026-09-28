@@ -1,7 +1,7 @@
 # Multi-user spatial extraction example
 
-The workflow uses one openEO account queue per user and up to two remote jobs
-inside each queue. For `N` unique accounts, the maximum intended remote
+The workflow plans all partition tiles first, then shares unsubmitted batches
+across all users, with up to two remote jobs per account. For `N` unique accounts, the maximum intended remote
 concurrency is therefore `2 × N`.
 
 Set the credentials before starting Python or the notebook kernel:
@@ -83,15 +83,35 @@ print(output_path)
 
 ## Scheduling behavior
 
-- `partition_count=len(users_list)` creates one initial grid cell per account.
+`multiuser.run_parallel_extractions` validates the configuration and dispatches
+to `batch_scheduler.run_shared_batches` or
+`partition_scheduler.run_shared_partitions`. Each scheduler owns its execution
+strategy; the notebook keeps the same entry point.
+
+- `partition_count=len(users_list)` creates that many grid cells; partitions
+  can also come from spatial clusters and need not match the account count.
 - Each parcel belongs to exactly one partition, based on its centroid.
-- Partition queues run concurrently across users.
-- A user queue is sequential, preventing two job managers from competing for
-  the same account's two remote slots.
-- The active manager runs at most two remote tile jobs for its account.
-- If a grid cell is empty, it is omitted and the corresponding user may be idle.
-- If there are more partitions than users, partitions are assigned round-robin
-  and processed sequentially within their assigned user queue.
+- `run_parallel_extractions(..., scheduling="batches")` is the default. All
+  accounts pull unsubmitted batches from one shared queue. A partition with
+  20 batches can use every account even when the other partitions are finished.
+- Each account has at most `config["openeo_parallel_jobs"]` active slots (1 or 2).
+  There is no partition-wide or fixed-wave barrier between remote batches.
+- Cached NetCDFs are reused. Job IDs, retries and the account username persist
+  in each partition's existing `monthly_cubes/<signature>/tile_jobs.parquet`.
+  Passwords are not saved in the database.
+- Existing remote jobs stay with their owning account. When first resuming an
+  older run without saved usernames, keep the original account list and order:
+  ownership is inferred from the previous round-robin partition assignment.
+- Local statistics start after acquisition completes. At most one partition
+  per account is processed locally at a time, each using `batch_workers`.
+  Partition paths, batch numbering and the merge call are unchanged.
+- `scheduling="partitions"` retains the legacy scheduling for legacy runs.
+  Keep using batch scheduling to resume a run whose batches used mixed accounts.
+
+Let a currently running notebook finish normally. Start a fresh kernel before
+the next run to load the updated scheduler; do not run a second scheduler against
+the same output directory concurrently. The notebook need not repartition the
+parcels just to use all accounts.
 
 `compute_tile_width` evaluates each candidate separately inside every actual
 partition and selects the largest width that still supplies two non-empty jobs

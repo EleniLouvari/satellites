@@ -69,6 +69,23 @@ class ZonalStatsConfiguration:
             raise ValueError("spatial_fill_window_sizes must be one of (3,), (3, 5), (3, 5, 7), or (3, 5, 7, 9).")
         return normalized
 
+    def _validate_temporal_fill_windows(self, window_sizes) -> tuple[int, ...] | None:
+        """Validate increasing odd widths measured in raster time steps."""
+        if window_sizes is None:
+            return None
+        if not isinstance(window_sizes, (tuple, list)):
+            raise TypeError("temporal_fill_window_sizes must be a tuple or list, or None.")
+        if any(isinstance(size, (bool, np.bool_)) or not isinstance(size, (int, np.integer)) for size in window_sizes):
+            raise TypeError("temporal_fill_window_sizes must contain integers.")
+        normalized = tuple(int(size) for size in window_sizes)
+        if (
+            not normalized
+            or any(size < 3 or size % 2 == 0 for size in normalized)
+            or any(left >= right for left, right in zip(normalized, normalized[1:]))
+        ):
+            raise ValueError("temporal_fill_window_sizes must contain strictly increasing odd integers of at least 3.")
+        return normalized
+
     def _validate_dates(self, start_date: str | pd.Timestamp, end_date: str | pd.Timestamp) -> tuple[pd.Timestamp, pd.Timestamp]:
         """Parse the temporal bounds and verify that they are ordered."""
         start = pd.Timestamp(start_date)
