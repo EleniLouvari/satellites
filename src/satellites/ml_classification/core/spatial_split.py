@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import warnings
-from typing import Any
 
 import geopandas as gpd
 import numpy as np
@@ -13,10 +12,12 @@ from sklearn.model_selection import StratifiedGroupKFold
 
 from shapely.geometry import box
 
+from .spatial_allocation import allocate_spatial_rows
+
 
 @dataclass(slots=True)
 class SpatialTrainTestSplitter:
-    """Create reproducible, spatially disjoint holdouts and CV group labels."""
+    """Create reproducible spatially distributed or whole-cell holdouts and CV groups."""
 
     random_state: int = 42
     grid_size: int = 10
@@ -107,7 +108,7 @@ class SpatialTrainTestSplitter:
         return train_df, test_df
 
     def split_by_row(self, labeled_df: pd.DataFrame, target_column: str, test_size: float) -> tuple[pd.DataFrame, pd.DataFrame]:
-        """Split labeled data into spatially uniform train/test sets per class."""
+        """Keep every class in both sets and jointly maximize multiscale grid coverage."""
         # Validate basic split constraints.
         if not 0.0 < float(test_size) < 1.0:
             raise ValueError("test_size must be strictly between 0 and 1 for spatial split.")
@@ -126,35 +127,32 @@ class SpatialTrainTestSplitter:
                 stacklevel=2,
             )
 
-        # Build class-wise spatial samples for train.
-        split_ratio = 1.0 - float(test_size)
+        if labeled_df.empty or labeled_df[target_column].isna().any():
+            raise ValueError("Row-wise spatial splitting requires non-empty data with known class labels.")
+        class_counts = labeled_df[target_column].value_counts()
+        if (class_counts < 2).any():
+            rare = class_counts[class_counts < 2].index.tolist()
+            raise ValueError(f"spatial_split=True requires at least 2 rows per class. Unsupported classes: {rare}")
+
+        # Use one shared grid for all classes. Work positionally so repeated or
+        # non-numeric source indices cannot duplicate/drop rows across the split.
+        frame = labeled_df.reset_index(drop=True)
+        groups = self.build_spatial_groups(frame)
+        n_classes = len(class_counts)
+        requested_test = int(np.ceil(float(test_size) * len(frame)))
+        n_test = max(n_classes, min(len(frame) - n_classes, requested_test))
+        if n_test != requested_test:
+            warnings.warn(
+                f"Adjusted test rows from {requested_test} to {n_test} to retain every class in train and test.",
+                stacklevel=2,
+            )
+        assignments = allocate_spatial_rows(
+            frame[target_column], groups, np.array([len(frame) - n_test, n_test]), self.random_state,
+        )
+        # Shuffle the rows within each split to avoid any residual ordering effects from the spatial allocation.
         rng = np.random.default_rng(self.random_state)
-        train_indices: list[Any] = []
-
-        for label_value, class_df in labeled_df.groupby(target_column):
-            class_idx = class_df.index.to_numpy()
-            if len(class_idx) < 2:
-                raise ValueError(
-                    f"spatial_split=True requires at least 2 rows per class. Class '{label_value}' has {len(class_idx)}."
-                )
-
-            target_train_count = int(round(split_ratio * len(class_idx)))
-            target_train_count = max(1, min(len(class_idx) - 1, target_train_count))
-            selected = self._uniform_spatial_sample_indices(class_df, target_train_count, rng)
-            train_indices.extend(selected.tolist())
-
-        # Derive test as complement and randomize row order reproducibly.
-        train_indices_arr = np.unique(np.asarray(train_indices, dtype=object))
-        all_indices_arr = labeled_df.index.to_numpy(dtype=object)
-        test_indices_arr = np.setdiff1d(all_indices_arr, train_indices_arr, assume_unique=False)
-
-        if len(test_indices_arr) == 0:
-            raise ValueError("Spatial split produced an empty test split. Reduce test_size or adjust data.")
-
-        train_indices_arr = rng.permutation(train_indices_arr)
-        test_indices_arr = rng.permutation(test_indices_arr)
-        train_df = labeled_df.loc[train_indices_arr].copy().reset_index(drop=True)
-        test_df = labeled_df.loc[test_indices_arr].copy().reset_index(drop=True)
+        train_df = frame.iloc[rng.permutation(np.flatnonzero(assignments == 0))].copy().reset_index(drop=True)
+        test_df = frame.iloc[rng.permutation(np.flatnonzero(assignments == 1))].copy().reset_index(drop=True)
         return train_df, test_df
 
     def build_spatial_groups(self, df: pd.DataFrame) -> pd.Series:
@@ -174,42 +172,6 @@ class SpatialTrainTestSplitter:
         if groups.isna().any():
             groups = groups.fillna("cell_unassigned")
         return groups.astype(str)
-
-    def _uniform_spatial_sample_indices(self, class_df: pd.DataFrame, total_samples: int, rng: np.random.Generator) -> np.ndarray:
-        """Sample class indices proportionally across intersecting spatial grid cells."""
-        # Normalize to point representation for robust point-in-cell checks.
-        rep_points_gdf = self._to_representative_points(class_df)
-        # Retain source indices because callers use them to select rows from the original class frame.
-        valid_indices = rep_points_gdf.index.to_numpy(dtype=object)
-
-        if len(valid_indices) == 0:
-            raise ValueError("Could not compute valid representative points for spatial split.")
-
-        grid_gdf = self._create_grid_polygons(rep_points_gdf)
-        cell_assignments = self._assign_points_to_grid(rep_points_gdf, grid_gdf)
-        cell_ids = cell_assignments.to_numpy(dtype=object)
-
-        # Allocate samples per cell proportional to points in that cell.
-        sampled: list[Any] = []
-        total_points = len(valid_indices)
-        for cell in np.unique(cell_ids):
-            cell_idx = valid_indices[cell_ids == cell]
-            # Guarantee representation for every occupied cell, subject to its available row count.
-            sample_size = max(1, int(round(total_samples * len(cell_idx) / total_points)))
-            sample_size = min(sample_size, len(cell_idx))
-            chosen = rng.choice(cell_idx, size=sample_size, replace=False)
-            sampled.extend(chosen.tolist())
-
-        # Adjust to exact requested count using deterministic random fill/trim.
-        sampled_arr = np.unique(np.asarray(sampled, dtype=object))
-        sampled_arr = self._adjust_sample_size(sampled_arr, valid_indices, total_samples, rng)
-
-        # Final fallback to full class index pool when needed.
-        if len(sampled_arr) < total_samples:
-            all_class_idx = class_df.index.to_numpy(dtype=object)
-            sampled_arr = self._adjust_sample_size(sampled_arr, all_class_idx, total_samples, rng)
-
-        return sampled_arr
 
     def _to_representative_points(self, class_df: pd.DataFrame) -> gpd.GeoDataFrame:
         """Convert geometries to representative points while keeping valid rows only."""
@@ -292,24 +254,3 @@ class SpatialTrainTestSplitter:
             assignments.loc[remaining] = fallback_cell_ids
 
         return assignments
-
-    def _adjust_sample_size(
-        self,
-        sampled_indices: np.ndarray,
-        pool_indices: np.ndarray,
-        total_samples: int,
-        rng: np.random.Generator,
-    ) -> np.ndarray:
-        """Trim or expand sampled indices to exactly match requested sample count."""
-        # Deduplicate and either downsample or top up from remaining pool.
-        # Uniqueness ensures the returned count always represents distinct source observations.
-        sampled = np.unique(sampled_indices)
-        if len(sampled) > total_samples:
-            return np.sort(rng.choice(sampled, size=total_samples, replace=False))
-        if len(sampled) < total_samples:
-            remaining = np.setdiff1d(pool_indices, sampled, assume_unique=False)
-            if len(remaining) > 0:
-                add_n = min(total_samples - len(sampled), len(remaining))
-                extra = rng.choice(remaining, size=add_n, replace=False)
-                sampled = np.unique(np.concatenate([sampled, extra]))
-        return sampled

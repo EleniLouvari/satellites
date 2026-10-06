@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
 import pandas as pd
 from sklearn.model_selection import GroupKFold, StratifiedGroupKFold, StratifiedKFold, train_test_split
 from sklearn.preprocessing import LabelEncoder
@@ -12,6 +13,7 @@ from ..core.persistence import load_joblib, load_json, print_formatted_txt, save
 from ..reporting import write_index_report, write_prepare_report
 from ..core import PipelineStepBase
 from ..core.spatial_split import SpatialTrainTestSplitter
+from ..core.spatial_allocation import allocate_spatial_rows
 from ..visuals import (
     save_correlation_heatmap,
     save_spatial_split_plot,
@@ -46,7 +48,7 @@ class PrepareStep(PipelineStepBase):
                 stratify=labeled_df[self.config.target_column],
             )
             return train_df.reset_index(drop=True), test_df.reset_index(drop=True), "random_stratified", None
-        # Spatial splitting preserves geographic separation using a grid-based splitter.
+        # Row mode spreads both sets across the grid; group mode holds out cells.
         splitter = SpatialTrainTestSplitter(
             random_state=self.config.random_state, grid_size=self.config.spatial_split_grid_size
         )
@@ -65,9 +67,14 @@ class PrepareStep(PipelineStepBase):
             splitter = StratifiedKFold(n_splits=self.config.cv_folds, shuffle=True, random_state=self.config.random_state)
             split_iterator = splitter.split(train_df[active_features], train_df["_target_encoded"])
         else:
-            # Keep cells intact while prioritizing row balance over class stratification.
+            # Build spatial cell labels for CV scoring in both spatial modes.
             groups = spatial_splitter.build_spatial_groups(train_df)
-            split_iterator = self._balanced_spatial_cv_splits(train_df, active_features, groups)
+            if self.config.spatial_split_method == "by_group":
+                # Keep cells intact while prioritizing row balance over class stratification.
+                split_iterator = self._balanced_spatial_cv_splits(train_df, active_features, groups)
+            else:
+                # Prefer row-wise folds that keep broad tile coverage in train and validation.
+                split_iterator = self._balanced_spatial_row_cv_splits(train_df, active_features, groups)
         folds = []
         all_labels = set(train_df["_target_encoded"])
         for fold_id, (train_idx, valid_idx) in enumerate(split_iterator):
@@ -116,6 +123,17 @@ class PrepareStep(PipelineStepBase):
                 "Increase spatial_split_grid_size, merge unsupported rare classes, or reduce cv_folds."
             )
         return min(candidates, key=lambda candidate: candidate[0])[1]
+
+    def _balanced_spatial_row_cv_splits(self, train_df, active_features, groups):
+        """Jointly spread validation and training coverage, retaining class support."""
+        n_rows, n_folds = len(train_df), self.config.cv_folds
+        sizes = np.full(n_folds, n_rows // n_folds, dtype=int)
+        sizes[:n_rows % n_folds] += 1
+        assignments = allocate_spatial_rows(train_df["_target_encoded"], groups, sizes, self.config.random_state)
+        return [
+            (np.flatnonzero(assignments != fold), np.flatnonzero(assignments == fold))
+            for fold in range(n_folds)
+        ]
 
     def _persist_prepare_artifacts(self, labeled_df, train_df, test_df, summary, label_encoder):
         # Persist train/test/labeled datasets and a prepare summary with schema.

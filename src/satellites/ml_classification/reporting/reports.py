@@ -534,8 +534,9 @@ def write_prepare_report(config, prepare_summary: dict[str, Any], train_df: pd.D
                 "text": (
                     "Each validation fold targets 1 / cv_folds of the training rows. "
                     "This matches test_size when test_size = 1 / cv_folds. "
-                    "Spatial CV keeps whole grid cells together, so large cells can prevent balanced fold sizes. "
-                    "A finer spatial_split_grid_size creates smaller cells. Raw row indices are saved in prepare_summary.json."
+                    "Spatial by_group CV keeps whole cells together, so large cells can prevent balanced fold sizes. "
+                    "Spatial by_row CV balances fold sizes and prioritizes class presence and geographic coverage; "
+                    "cells may occur in both training and validation. Raw row indices are saved in prepare_summary.json."
                 ),
                 "table": folds_df,
             },

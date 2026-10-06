@@ -292,14 +292,35 @@ Spatial train-test split (optional):
 - `spatial_split_method="by_row"` samples rows from across the grid while preserving every class in both sets; grid cells can occur in both sets.
 - `spatial_split_grid_size` controls the grid granularity used to enforce spatial coverage.
 
+Row-wise allocation uses one shared grid for all classes and jointly chooses train
+and test counts within each occupied class/cell. Every class must have at least two
+rows. Both sets retain every class; the requested test count (`ceil(test_size * N)`)
+is adjusted, with a warning, only when needed for class presence. Within those
+sizes, allocation maximizes the number of occupied regions across the fine grid
+and progressively coarser grids. This encourages broad area coverage even when
+there are too few samples to visit every cell. Sparse cells may appear in only one
+set. Class proportions break coverage ties, so they may differ from the full-data
+proportions when broader coverage requires it. Rows without usable geometry retain
+their class support but do not contribute to geographic coverage. The seed controls
+row selection within the optimized class/cell counts. Optimization works on counts,
+not individual rows; runtime depends on occupied class/cell combinations and folds.
+This evaluates predictions within the sampled area, not transfer to unseen regions.
+
 Cross-validation uses `cv_folds` disjoint validation subsets of the training data,
 so the target validation fraction is `1 / cv_folds`. For `test_size=0.2`, use
 `cv_folds=5` to match the holdout fraction; `test_size` itself controls the outer
 train/test split. Every training row appears in validation exactly once, as
 required for out-of-fold probabilities.
 
-When `spatial_split=True`, CV keeps whole grid cells together for both holdout
-methods. It compares row-balanced and class-stratified grouped assignments,
+With `by_row`, CV jointly allocates disjoint validation folds with sizes differing
+by at most one row, maximizing multiscale coverage in both validation and its
+training complement. Every class is retained in every training fold. Classes with
+at least `cv_folds` training samples also appear in every validation fold; rarer
+classes are spread across as many validation folds as possible, with a warning.
+A class with only one training sample cannot support CV and raises an error.
+
+With `by_group`, CV keeps whole grid cells together.
+It compares row-balanced and class-stratified grouped assignments,
 rejects assignments missing a class in any training fold, and prioritizes the
 smallest worst-case deviation from the target validation fraction. Class balance
 breaks ties in row balance. Exact sizes are not guaranteed: a cell with more than

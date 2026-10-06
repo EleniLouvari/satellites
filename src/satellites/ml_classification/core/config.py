@@ -188,7 +188,7 @@ class ClassificationPipelineConfig:
 
     # ================================================================================
     # Spatial Splitting (for GeoDataFrame projects)
-    # Hold out complete geographic regions/tiles for honest spatial evaluation
+    # Spread rows across the area (by_row), or hold out whole cells (by_group).
     # ================================================================================
     spatial_split: bool = False
     spatial_split_method: str = "by_row"
