@@ -6,9 +6,25 @@ and a runner for measuring sensitivity to the random seed.
 
 ## Package layout
 
-- `src/satellites/ml_classification/` contains the five-step pipeline, with
-  `core/`, `steps/`, `reporting/`, and `visuals/` retaining their responsibilities.
-- `sensitivity/` contains the multi-seed runner.
+- `src/satellites/ml_classification/` contains `step_01_check/` through
+  `step_05_predict/`. Each step has an entry file and its own `libraries/`.
+- `shared/` contains classification code used by multiple steps.
+- `shared/config/` holds `base.py`, `config.py`, and `tune_params.py`; `shared/models/` holds
+  model implementations and `modeling_context.py` for loading saved feature/label
+  context. The main orchestrator remains the root `pipeline.py`.
+- `shared/reports/` holds common figure styling/saving, HTML rendering, formatting, the report index,
+  HTTP viewer, confidence diagnostics, and final dashboard. Each step retains
+  its own `libraries/report.py` to assemble its report.
+- Evaluation owns metrics, probability optimization, and OOF class reliability
+  fitting. Applying reliability and combining confidence remain shared. Prediction groups its
+  inspection scoring, diagnostics, and plots in `libraries/inspection_priority/`.
+- `sensitivity/` contains the multi-seed runner and its own `libraries/`.
+- `to_delete/` holds the former `core/`, `steps/`, `reporting/`, and `visuals/`
+  wrappers and original source snapshots until testing is complete. The wrappers
+  still support existing imports and saved models during this transition.
+- The [source guide](../../src/satellites/ml_classification/README.md) and
+  [file usage index](../../src/satellites/ml_classification/FILE_USAGE.md)
+  explain ownership, dependencies, and artifact consumers.
 - `docs/ml_classification/output_template/` documents generated run folders.
   The pipeline creates these directories automatically beneath `project_dir`.
 

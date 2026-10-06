@@ -33,7 +33,17 @@ src/satellites/
     core/ reporting/ visuals/
   ml_classification/
     pipeline.py
-    core/ steps/ reporting/ visuals/ sensitivity/
+    step_01_check/check.py        each numbered step owns a libraries/ folder
+    step_02_prepare/prepare.py
+    step_03_train/train.py
+    step_04_evaluate/evaluate.py
+    step_05_predict/predict.py
+    shared/                      classification helpers used across steps
+      config/                    base.py, config.py and tune_params.py
+      models/                    models.py, modeling_context.py and TensorFlow implementations
+      reports/                   common report rendering, viewer, diagnostics and dashboard
+    sensitivity/runner.py        sensitivity helpers live in libraries/
+    to_delete/                   previous wrappers and original source snapshots
   shared/
     io.py logging.py constants.py formatting.py
     geometry.py raster.py tabular.py spatial_statistics.py s3.py

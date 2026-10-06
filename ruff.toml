@@ -1,4 +1,5 @@
 line-length = 130
+extend-exclude = ["**/to_delete/_archive/**"]
 
 [format]
 skip-magic-trailing-comma = true

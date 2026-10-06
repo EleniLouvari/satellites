@@ -4,13 +4,26 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from satellites.ml_classification.reporting import reports as reports_module
-from satellites.ml_classification.reporting.reports import (
+from satellites.ml_classification.shared.reports.report_helpers import _prepare_cv_results_table
+from satellites.ml_classification.shared.reports.report_html import _render_table
+from satellites.ml_classification.step_03_train.libraries import report as train_reports_module
+from satellites.ml_classification.step_04_evaluate.libraries import report as reports_module
+from satellites.ml_classification.step_04_evaluate.libraries.report import (
     _build_average_metrics_section,
-    _prepare_cv_results_table,
     _prepare_analytical_metrics,
 )
-from satellites.ml_classification.reporting.html import _render_table
+
+
+def test_numeric_cell_styles_preserve_missing_value_placeholders():
+    table = pd.DataFrame({"delta": ["n/a", None, "2.5", -1, 0]})
+    rendered = _render_table(
+        table,
+        numeric_cell_styles={"delta": {"positive": "success", "negative": "danger", "zero": "warning"}},
+    )
+    assert "<td>n/a</td>" in rendered
+    assert rendered.count("class='cell-success'") == 1
+    assert rendered.count("class='cell-danger'") == 1
+    assert rendered.count("class='cell-warning'") == 1
 
 
 def test_build_average_metrics_section_orders_and_labels_special_models():
@@ -277,8 +290,8 @@ def test_write_train_report_explains_strategy_and_ranks_cv_results():
     )
     model_specs = {model_name: {"best_params": {}} for model_name in ("best", "second", "third")}
 
-    with patch.object(reports_module, "write_html_report") as write_html_report:
-        reports_module.write_train_report(config, training_summary_df, model_specs, pd.DataFrame())
+    with patch.object(train_reports_module, "write_html_report") as write_html_report:
+        train_reports_module.write_train_report(config, training_summary_df, model_specs, pd.DataFrame())
 
     sections = write_html_report.call_args.kwargs["sections"]
     assert sections[0]["title"] == "Model Selection Strategy"

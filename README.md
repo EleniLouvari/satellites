@@ -24,6 +24,11 @@ restartable geospatial classification.
 | `outputs/` | Generated run artifacts and quality reports, ignored by Git |
 | `src/_compat/` | Old import paths forwarding to maintained implementations |
 
+Classification source is organized into `step_01_check/` through `step_05_predict/`,
+each with its own `libraries/`, plus classification-specific `shared/` modules.
+See the [source guide](src/satellites/ml_classification/README.md) and
+[file usage index](src/satellites/ml_classification/FILE_USAGE.md) to trace implementations.
+
 ## Installation
 
 Use the Python environment containing your geospatial dependencies. Install the

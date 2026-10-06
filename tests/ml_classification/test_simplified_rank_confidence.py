@@ -3,12 +3,9 @@ from copy import deepcopy
 import numpy as np
 import pytest
 
-from satellites.ml_classification.core.class_reliability import (
-    calculate_oof_class_reliability,
-    combine_confidence_components,
-    get_class_reliability,
-)
-from satellites.ml_classification.core.rank_confidence import (
+from satellites.ml_classification.shared.class_reliability import combine_confidence_components, get_class_reliability
+from satellites.ml_classification.step_04_evaluate.libraries.class_reliability import calculate_oof_class_reliability
+from satellites.ml_classification.shared.rank_confidence import (
     assign_confidence_levels,
     calculate_rank_confidence,
     probabilities_to_ranks,
@@ -68,10 +65,7 @@ def test_structural_rank_safeguards_are_low(agrees, tied, models, reason):
     assert reasons.tolist() == [reason]
 
 
-@pytest.mark.parametrize(
-    ("correct", "expected_level"),
-    [(80, "HIGH"), (60, "MEDIUM"), (59, "LOW")],
-)
+@pytest.mark.parametrize(("correct", "expected_level"), [(80, "HIGH"), (60, "MEDIUM"), (59, "LOW")])
 def test_oof_precision_thresholds(correct, expected_level):
     true = np.array(["a"] * correct + ["b"] * (100 - correct))
     predicted = np.array(["a"] * 100)
@@ -94,11 +88,7 @@ def test_insufficient_class_support_is_not_pooled():
 
 
 def test_holdout_lookup_does_not_modify_frozen_oof_contract():
-    contract = calculate_oof_class_reliability(
-        np.array(["a"] * 80 + ["b"] * 20),
-        np.array(["a"] * 100),
-        ["a", "b"],
-    )
+    contract = calculate_oof_class_reliability(np.array(["a"] * 80 + ["b"] * 20), np.array(["a"] * 100), ["a", "b"])
     frozen = deepcopy(contract)
     get_class_reliability(np.array(["a", "b", "a"]), contract)
     assert contract == frozen
@@ -116,7 +106,15 @@ def test_complete_final_confidence_matrix_and_invalid_evidence():
         np.array(["sufficient_oof_support"] * 9),
     )
     assert result["prediction_confidence_level"].tolist() == [
-        "HIGH", "MEDIUM", "LOW", "MEDIUM", "MEDIUM", "LOW", "LOW", "LOW", "LOW"
+        "HIGH",
+        "MEDIUM",
+        "LOW",
+        "MEDIUM",
+        "MEDIUM",
+        "LOW",
+        "LOW",
+        "LOW",
+        "LOW",
     ]
     invalid = combine_confidence_components(
         np.array(["HIGH", "HIGH"]),

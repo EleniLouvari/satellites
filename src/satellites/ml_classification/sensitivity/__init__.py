@@ -1,8 +1,5 @@
 """Utilities to run seed-based sensitivity analysis for the classification pipeline."""
 
-from .runner import ClassificationSensitivityRunner, SensitivityResult
+from satellites.ml_classification.sensitivity.runner import ClassificationSensitivityRunner, SensitivityResult
 
-__all__ = [
-    "ClassificationSensitivityRunner",
-    "SensitivityResult",
-]
+__all__ = ["ClassificationSensitivityRunner", "SensitivityResult"]

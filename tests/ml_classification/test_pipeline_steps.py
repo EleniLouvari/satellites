@@ -1,15 +1,15 @@
+from pathlib import Path
+from unittest.mock import MagicMock
+
 import numpy as np
 import pandas as pd
 import pytest
 
-from pathlib import Path
-from unittest.mock import MagicMock
-
-from satellites.ml_classification.core.config import ClassificationPipelineConfig
-from satellites.ml_classification.core.base import PipelineStepBase
 from satellites.ml_classification.pipeline import GeospatialClassificationPipeline
-from satellites.ml_classification.steps.predict_step import PredictStep
-from satellites.ml_classification.steps.prepare_step import PrepareStep
+from satellites.ml_classification.shared.config.base import PipelineStepBase
+from satellites.ml_classification.shared.config.config import ClassificationPipelineConfig
+from satellites.ml_classification.step_02_prepare.prepare import PrepareStep
+from satellites.ml_classification.step_05_predict.predict import PredictStep
 
 
 def _config(tmp_path: Path, **overrides):

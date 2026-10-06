@@ -6,8 +6,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from satellites.ml_classification.core.inspection import calculate_inspection_metrics
-from satellites.ml_classification.steps.predict_step import PredictStep
+from satellites.ml_classification.step_05_predict.libraries.inspection_priority.scoring import calculate_inspection_metrics
+from satellites.ml_classification.step_05_predict.predict import PredictStep
 
 
 def _config() -> SimpleNamespace:

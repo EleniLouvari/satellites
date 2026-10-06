@@ -8,8 +8,8 @@ import pandas as pd
 import pytest
 from shapely.geometry import Point
 
-from satellites.ml_classification.core.spatial_allocation import allocate_spatial_rows
-from satellites.ml_classification.core.spatial_split import SpatialTrainTestSplitter
+from satellites.ml_classification.step_02_prepare.libraries.spatial_allocation import allocate_spatial_rows
+from satellites.ml_classification.step_02_prepare.libraries.spatial_split import SpatialTrainTestSplitter
 
 
 def _frame(sizes, labels=None):

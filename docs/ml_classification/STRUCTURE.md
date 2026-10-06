@@ -21,124 +21,59 @@ Each step persists the artifacts required by later steps. This makes the
 workflow restartable: a later step can load earlier artifacts without keeping
 all intermediate objects in memory.
 
-## Source package tree
+## Source package and ownership
+
+The maintained source is organized by workflow step:
 
 ```text
 src/satellites/ml_classification/
-|-- core/
-|   |-- __init__.py
-|   |-- base.py
-|   |-- class_reliability.py
-|   |-- config.py
-|   |-- inspection.py
-|   |-- iqr.py
-|   |-- metrics.py
-|   |-- models.py
-|   |-- persistence.py
-|   |-- rank_confidence.py
-|   |-- selection.py
-|   |-- spatial_interpolation.py
-|   |-- spatial_split.py
-|   |-- tensorflow_lstm_models.py
-|   `-- tensorflow_models.py
-|-- reporting/
-|   |-- __init__.py
-|   |-- confidence_diagnostics.py
-|   |-- final_dashboard.py
-|   |-- html.py
-|   |-- inspection_diagnostics.py
-|   `-- reports.py
-|-- sensitivity/
-|   |-- __init__.py
-|   `-- runner.py
-|-- steps/
-|   |-- __init__.py
-|   |-- check_step.py
-|   |-- evaluate_step.py
-|   |-- predict_step.py
-|   |-- prepare_step.py
-|   `-- train_step.py
-|-- visuals/
-|   |-- __init__.py
-|   |-- interpretability.py
-|   |-- maps.py
-|   `-- plots.py
-|-- __init__.py
-`-- pipeline.py
+  pipeline.py
+  step_01_check/       check.py + libraries/
+  step_02_prepare/     prepare.py + libraries/
+  step_03_train/       train.py + libraries/
+  step_04_evaluate/    evaluate.py + libraries/
+  step_05_predict/     predict.py + libraries/
+  shared/
+    config/           base.py + config.py + tune_params.py
+    models/           models.py + tensorflow_models.py + tensorflow_lstm_models.py
+      modeling_context.py  load saved feature schema and label encoder for steps 3-5
+    reports/          figure utilities, HTML, formatting, report index/server, diagnostics, dashboard
+    probabilities.py  apply saved adjustments in evaluation and prediction
+    ...               other modules used across steps
+  sensitivity/        runner.py + libraries/
+  to_delete/          previous wrappers and original source snapshots
 ```
 
-## Entry points and accompanying documentation
+Each step owns its algorithms, report assembly, plots, and report regeneration.
+Its `libraries/report.py` uses the common rendering and report tools in `shared/reports/`.
+`pipeline.py` coordinates the existing step classes. Shared modules never import
+step implementations; private step libraries never import another step.
 
-| File | Responsibility |
-|---|---|
-| `__init__.py` | Defines the small public API: `ClassificationPipelineConfig` and `GeospatialClassificationPipeline`. |
-| `pipeline.py` | Composes the five step mixins into `GeospatialClassificationPipeline` and provides `run_all(df)`. |
-| `docs/ml_classification/README.md` | Quick-start configuration, main concepts, supported options, and common usage examples. |
-| `docs/ml_classification/STRUCTURE.md` | This package and generated-artifact reference. |
-| `docs/ml_classification/INCREMENTAL_WORKFLOW.md` | Explains model reuse, adding models without retraining existing ones, forced retraining, and filtered evaluation. |
+Evaluation owns `libraries/metrics.py`, `libraries/probability_optimization.py`,
+and OOF reliability fitting in `libraries/class_reliability.py`. Applying frozen
+class reliability and combining confidence remain in `shared/class_reliability.py`.
+Prediction owns `libraries/inspection_priority/`, containing `scoring.py`,
+`diagnostics.py`, and `plots.py`. The root `pipeline.py` remains the orchestrator.
 
-## `core/`: shared modeling logic
+- [Source guide and artifact lineage](../../src/satellites/ml_classification/README.md)
+- [Generated file responsibilities and direct importers](../../src/satellites/ml_classification/FILE_USAGE.md)
+- [Configuration](../../src/satellites/ml_classification/shared/config/config.py)
 
-| File | Responsibility |
-|---|---|
-| `core/__init__.py` | Re-exports common core classes and helpers for concise internal imports. |
-| `core/base.py` | Defines `PipelineStepBase`, which stores validated configuration and standardizes schema metadata and manifest persistence. |
-| `core/config.py` | Defines and validates `ClassificationPipelineConfig`; normalizes options, applies safe caps, derives output columns, and exposes paths for every step directory. |
-| `core/iqr.py` | Applies optional IQR outlier filtering to numeric features and returns bounds and replacement diagnostics. |
-| `core/metrics.py` | Validates input, reduces dataframe memory use, builds feature profiles, loads modeling context, calculates metrics, ranks models for interpretability, and extracts feature importance. |
-| `core/models.py` | Defines model candidates, sklearn-compatible wrappers, preprocessing, optional balancing, search spaces, and estimator reconstruction by model name. |
-| `core/persistence.py` | Centralizes logging, timing, directory management, output reset behavior, and JSON/joblib/CSV serialization. |
-| `core/rank_confidence.py` | Validates selected-member outputs, converts within-model probabilities to average ranks and 0-100 Borda scores, and assigns parcel rank confidence from Borda support, predicted-class rank range, and winner agreement. |
-| `core/class_reliability.py` | Fits one OOF soft-voting precision record per predicted class, applies the frozen table, and combines it with parcel rank confidence using the lower level. |
-| `core/selection.py` | Ranks probability models from CV, applies `top_voting_models`, evaluates soft voting, optimizes optional class multipliers, freezes selection, and refits the selected strategy. |
-| `core/spatial_interpolation.py` | Fills missing spatial feature values with the configured nearest, IDW, or kriging method. |
-| `core/spatial_split.py` | Implements spatial train/test splitting using grid intersections, class-preservation checks, and spatial grouping. |
-| `core/tensorflow_models.py` | Implements the optional dense TensorFlow classifier and its sklearn-compatible wrapper. |
-| `core/tensorflow_lstm_models.py` | Parses temporal features, constructs parcel time-series tensors, and implements the sklearn-compatible Keras LSTM classifier. |
+The former `core/`, `steps/`, `reporting/`, and `visuals/` directories are held in
+`to_delete/` as compatibility wrappers until testing is complete. Original source
+snapshots are in `to_delete/_archive/`. Old imports and saved class paths still resolve;
+new code imports the defining numbered-step or `shared/` module directly.
 
-## `steps/`: pipeline stages
-
-| File | Responsibility |
-|---|---|
-| `steps/__init__.py` | Exports the five step mixins in workflow order. |
-| `steps/check_step.py` | Step 1. Resets outputs when configured, validates input, optimizes dtypes, applies IQR/interpolation, profiles features, and persists checked data. |
-| `steps/prepare_step.py` | Step 2. Encodes labels, creates train/test partitions, builds stratified or spatial CV folds, and persists modeling context. |
-| `steps/train_step.py` | Step 3. Builds candidates, performs halving random search using `scoring_primary`, stores estimators and CV results, creates optional OOF probabilities, and supports incremental training. |
-| `steps/evaluate_step.py` | Step 4. Evaluates base models, produces holdout diagnostics, freezes selection from training CV, computes voting/ranking ensembles, and creates interpretability artifacts. |
-| `steps/predict_step.py` | Step 5. Refits the frozen strategy on all labeled rows, predicts the full dataset, adds probabilities and confidence fields, persists final output, and refreshes the final dashboard with validation-backed confidence diagnostics. |
-
-## `reporting/`: HTML report construction
-
-| File | Responsibility |
-|---|---|
-| `reporting/__init__.py` | Exports step-report and report-index writers. |
-| `reporting/confidence_diagnostics.py` | Builds shared Borda-consensus correctness summaries, class-risk tables, confidence-component matrices, confusion views, and the interactive confidence-flow diagram. |
-| `reporting/html.py` | Renders standalone styled HTML with key/value blocks, tables, semantic row colors, images, embeds, and links. |
-| `reporting/reports.py` | Assembles all step reports and the index, including metrics, CV rankings, selection explanations, Voting highlights, and artifact links. |
-
-## `visuals/`: generated figures and maps
-
-| File | Responsibility |
-|---|---|
-| `visuals/__init__.py` | Re-exports plotting, mapping, and interpretability helpers. |
-| `visuals/plots.py` | Creates data-quality, class-balance, distribution, correlation, CV, comparison, confusion-matrix, ROC, and prediction-fill plots. |
-| `visuals/maps.py` | Creates static and optional interactive maps for known labels, spatial splits, and predictions, with geometry sampling for large data. |
-| `visuals/interpretability.py` | Creates feature-importance charts and optional SHAP summaries, including multiclass per-class grids. |
-
-## Main dependency direction
+## Dependency direction
 
 ```text
-pipeline.py
-    -> steps/*
-        -> core/*
-        -> visuals/*
-        -> reporting/*
-            -> reporting/html.py
+pipeline.py -> numbered step entry files -> their libraries -> shared modules
+                         |---------------------------------> shared modules
+sensitivity/runner.py -> pipeline.py + sensitivity/libraries
 ```
 
-`core/` contains reusable computation. `steps/` coordinate core helpers and
-persistence. `reporting/` and `visuals/` format results but do not decide which
-model is selected.
+The workflow remains restartable through persisted artifacts. Source folder
+numbers do not change the existing generated run directories below.
 
 ## Generated project output tree
 
@@ -228,6 +163,7 @@ project_dir/
 |       |-- <model_name>_feature_importance.png
 |       `-- <model_name>_shap_summary.png         [optional]
 `-- 05_predict/
+    |-- member_probabilities.joblib
     |-- final_predictions.joblib
     |-- final_predictions_preview.csv
     |-- predict_summary.json
@@ -319,6 +255,7 @@ project_dir/
 | File | Contents |
 |---|---|
 | `final_predictions.joblib` | Complete output with predictions, filled target, class probabilities, rank-confidence diagnostics, independent model/data/geometry risks, declaration agreement, label-aware inspection need/check type, and explainable reasons. |
+| `member_probabilities.joblib` | Selected-model probabilities used to recalculate confidence without refitting. |
 | `final_predictions_preview.csv` | Full-row lightweight CSV with identifiers, target/prediction fields, rank-confidence diagnostics, declaration agreement, and inspection-priority fields. |
 | `predict_summary.json` | Prediction counts, confidence diagnostics, selected strategy, output path, and schema metadata. |
 | `data/inspection_*.csv` | Operational inspection summaries, matrices, predicted-crop rates, and the parcel audit queue used by the report. |
@@ -330,9 +267,8 @@ with the artifact name and configured schema version.
 
 ## Recommended reading order
 
-1. Start with `README.md` to configure and run the pipeline.
-2. Read `pipeline.py` and `steps/` to follow execution order.
-3. Use `core/config.py` as the configuration reference.
-4. Use `core/models.py`, `core/selection.py`, and `core/metrics.py` for model behavior and selection rules.
-5. Use `reporting/` and `visuals/` when changing reports or figures.
-6. Read `INCREMENTAL_WORKFLOW.md` before reusing artifacts across training runs.
+1. Read the [source guide](../../src/satellites/ml_classification/README.md).
+2. Follow `pipeline.py` and the five numbered step entry files.
+3. Follow explicit imports into each step's `libraries/` or `shared/`.
+4. Use [FILE_USAGE.md](../../src/satellites/ml_classification/FILE_USAGE.md) to find consumers of any file.
+5. Read `INCREMENTAL_WORKFLOW.md` before reusing artifacts across training runs.

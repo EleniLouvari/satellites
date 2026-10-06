@@ -24,7 +24,6 @@ dist/
 .coverage
 coverage.xml
 htmlcov/
-reports/
 outputs/**
 !outputs/README.md
 data/raw/

@@ -407,5 +407,5 @@ config = ClassificationPipelineConfig(
 ## See Also
 
 - [ML Classification Pipeline README](README.md)
-- [Configuration Guide](../../src/satellites/ml_classification/core/config.py)
+- [Configuration Guide](../../src/satellites/ml_classification/shared/config/config.py)
 - Example notebooks: `4_kozani_ml_classification.ipynb`, `4_axios_ml_classification.ipynb`

@@ -41,6 +41,10 @@ parcel_stats_pipeline = "src/_compat/parcel_stats_pipeline"
 where = ["src", "src/_compat"]
 namespaces = false
 
+[tool.setuptools.package-data]
+# Keep historical imports available while the wrappers are quarantined for testing.
+"satellites.ml_classification" = ["to_delete/core/*.py", "to_delete/steps/*.py", "to_delete/reporting/*.py", "to_delete/visuals/*.py", "to_delete/shared/*.py"]
+
 [tool.coverage.run]
 source = ["satellites"]
 data_file = "outputs/quality/.coverage"

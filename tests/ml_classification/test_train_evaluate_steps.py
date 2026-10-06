@@ -1,18 +1,18 @@
+import json
+import warnings
+from types import SimpleNamespace
+
 import numpy as np
 import pandas as pd
-from types import SimpleNamespace
-import warnings
-import json
-
 from sklearn.base import is_classifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import cross_val_predict
 
-from satellites.ml_classification.core.config import ClassificationPipelineConfig
-from satellites.ml_classification.core.models import ContiguousLabelClassifier, build_model_candidates
-from satellites.ml_classification.core.tensorflow_lstm_models import TemporalTensorBuilder
-from satellites.ml_classification.steps.train_step import TrainStep
-from satellites.ml_classification.steps.evaluate_step import EvaluateStep
+from satellites.ml_classification.shared.config.config import ClassificationPipelineConfig
+from satellites.ml_classification.shared.models.models import ContiguousLabelClassifier, build_model_candidates
+from satellites.ml_classification.shared.models.tensorflow_lstm_models import TemporalTensorBuilder
+from satellites.ml_classification.step_03_train.train import TrainStep
+from satellites.ml_classification.step_04_evaluate.evaluate import EvaluateStep
 
 
 def test_model_tune_params_can_be_overridden_per_model():
@@ -39,7 +39,7 @@ def test_every_model_candidate_uses_its_configured_tune_params(monkeypatch):
     config = ClassificationPipelineConfig(
         project_dir="test_project", target_column="label", feature_columns=["feature"], cv_folds=2
     )
-    from satellites.ml_classification.core import models as models_module
+    from satellites.ml_classification.shared.models import models as models_module
 
     monkeypatch.setattr(models_module, "_safe_import", lambda module_name: object())
     candidates = build_model_candidates(config, numeric_features=["feature"], categorical_features=[])
@@ -253,7 +253,7 @@ def test_build_model_candidates_includes_tensorflow_candidate_when_stack_availab
         cv_folds=2,
     )
 
-    from satellites.ml_classification.core import models as models_module
+    from satellites.ml_classification.shared.models import models as models_module
 
     def fake_safe_import(module_name: str):
         if module_name in {"tensorflow", "scikeras.wrappers"}:
@@ -277,7 +277,7 @@ def test_build_model_candidates_warns_for_unavailable_tensorflow_candidate(monke
         cv_folds=2,
     )
 
-    from satellites.ml_classification.core import models as models_module
+    from satellites.ml_classification.shared.models import models as models_module
 
     monkeypatch.setattr(models_module, "_safe_import", lambda module_name: None)
     with warnings.catch_warnings(record=True) as caught:
@@ -297,7 +297,7 @@ def test_build_model_candidates_includes_keras_lstm_when_stack_available(monkeyp
         cv_folds=2,
     )
 
-    from satellites.ml_classification.core import models as models_module
+    from satellites.ml_classification.shared.models import models as models_module
 
     def fake_safe_import(module_name: str):
         if module_name in {"tensorflow", "scikeras.wrappers"}:
@@ -611,15 +611,15 @@ def test_run_train_resumes_unfinished_models(monkeypatch, tmp_path):
         return {"ok": True}
 
     monkeypatch.setattr(
-        "satellites.ml_classification.steps.train_step.load_joblib",
+        "satellites.ml_classification.step_03_train.train.load_joblib",
         fake_load_joblib,
     )
     monkeypatch.setattr(
-        "satellites.ml_classification.steps.train_step.load_modeling_context",
+        "satellites.ml_classification.step_03_train.train.load_modeling_context",
         fake_context,
     )
     monkeypatch.setattr(
-        "satellites.ml_classification.steps.train_step.build_model_candidates",
+        "satellites.ml_classification.step_03_train.train.build_model_candidates",
         lambda *_args, **_kwargs: candidates,
     )
     monkeypatch.setattr(step, "_train_candidate", fake_train_candidate)
@@ -736,15 +736,15 @@ def test_run_train_recovers_trained_models_without_model_specs(monkeypatch, tmp_
         return {"ok": True}
 
     monkeypatch.setattr(
-        "satellites.ml_classification.steps.train_step.load_joblib",
+        "satellites.ml_classification.step_03_train.train.load_joblib",
         fake_load_joblib,
     )
     monkeypatch.setattr(
-        "satellites.ml_classification.steps.train_step.load_modeling_context",
+        "satellites.ml_classification.step_03_train.train.load_modeling_context",
         fake_context,
     )
     monkeypatch.setattr(
-        "satellites.ml_classification.steps.train_step.build_model_candidates",
+        "satellites.ml_classification.step_03_train.train.build_model_candidates",
         lambda *_args, **_kwargs: candidates,
     )
     monkeypatch.setattr(step, "_train_candidate", fake_train_candidate)

@@ -88,3 +88,18 @@ Old imports remain available through compatibility aliases after installation. U
 | `openeo_parcel_stats_pipeline.zonal_stats_job_manager` | `satellites.data_preparation.parcel_stats.job_manager` |
 | `openeo_parcel_stats_pipeline.zonal_stats_multiuser_manager` | `satellites.data_preparation.parcel_stats.multiuser` |
 | `parcel_stats_pipeline` | `satellites.data_preparation.parcel_stats` |
+
+## Numbered classification steps
+
+Classification implementations now live in `step_01_check/` through
+`step_05_predict/`, each with `libraries/`, and in `shared/`. The older canonical
+paths in the table above remain compatibility exports. For new code, use the
+[source guide](../src/satellites/ml_classification/README.md) and generated
+[file usage index](../src/satellites/ml_classification/FILE_USAGE.md) to locate the
+defining module. The public pipeline/config imports remain unchanged.
+
+The classification wrappers now live in
+[`ml_classification/to_delete/`](../src/satellites/ml_classification/to_delete/README.md).
+An optional package search path keeps their old import names working during
+testing. This folder also retains original source snapshots. Delete it only
+after testing and resolving any dependence on historical saved class paths.
