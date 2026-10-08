@@ -62,7 +62,7 @@ does not send a web referrer. Tiles still require internet access.
 To view an existing report from a notebook without rerunning any pipeline step:
 
 ```python
-from satellites.ml_classification.shared.reports.report_server import open_report
+from ml_classification.shared.reports.report_server import open_report
 
 open_report(config.check_dir / "report.html", root=config.project_dir)
 ```
@@ -72,7 +72,7 @@ process/notebook kernel. For reports from a finished script, run the standalone
 viewer from the repository root and leave it running while viewing:
 
 ```console
-python -I src/satellites/ml_classification/shared/reports/report_server.py /path/to/project/report_index.html
+python -I src/ml_classification/shared/reports/report_server.py /path/to/project/report_index.html
 ```
 
 The final dashboard combines the OpenStreetMap-backed study-area map,
@@ -95,7 +95,7 @@ Schema metadata:
 Minimal usage:
 
 ```python
-from satellites.ml_classification import (
+from ml_classification import (
     GeospatialClassificationPipeline,
     ClassificationPipelineConfig,
 )

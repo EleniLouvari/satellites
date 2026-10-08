@@ -1,6 +1,6 @@
 # Satellite parcel zonal statistics
 
-`satellites.data_preparation.parcel_stats` extracts Sentinel-1 and Sentinel-2 observations from the
+`data_preparation.parcel_stats` extracts Sentinel-1 and Sentinel-2 observations from the
 Copernicus Data Space Ecosystem (CDSE) openEO backend and calculates temporal
 statistics for parcel polygons.
 
@@ -15,8 +15,8 @@ The package provides two classes with the same processing and output options:
 
 | Class | Remote batching strategy | Recommended use |
 |---|---|---|
-| `SatelliteZonalStats` | Groups nearby parcels into 50 km grid cells and splits dense cells into batches of at most 5,000 parcels | General use and parcel-count-bounded jobs |
-| `JobManagerSatelliteZonalStats` | Creates one job per non-empty, fixed-size geographic tile and manages the jobs with openEO `MultiBackendJobManager` | Restartable tile jobs, explicit tile extents, and controlled remote concurrency |
+| `OpenEOZonalStats` | Groups nearby parcels into 50 km grid cells and splits dense cells into batches of at most 5,000 parcels | General use and parcel-count-bounded jobs |
+| `OpenEOJobManagerZonalStats` | Creates one job per non-empty, fixed-size geographic tile and manages the jobs with openEO `MultiBackendJobManager` | Restartable tile jobs, explicit tile extents, and controlled remote concurrency |
 
 The job-manager implementation does **not** balance jobs by parcel count. A tile
 containing 56,150 parcel representative points and neighboring tiles containing 2
@@ -25,21 +25,28 @@ determines the number of parcels assigned to each job.
 
 ## Internal architecture
 
-`SatelliteZonalStats` remains the backward-compatible public facade and
-orchestrator. Its processing responsibilities are separated into focused modules:
+`OpenEOZonalStats` is the public openEO orchestrator. Its processing
+responsibilities are separated into focused modules:
 
 | Module | Responsibility |
 |---|---|
-| `configuration.py` | Option validation, temporal intervals, sensor-variable selection, and cache signatures |
-| `parcel_batches.py` | Parcel geometry repair, normalization, and spatial batching |
-| `openeo_pipeline.py` | openEO authentication, cube graphs, remote jobs, downloads, and caching |
-| `raster_cleaning.py` | NetCDF variable selection, raster-level IQR removal, staged null filling, and cleaning audits |
-| `parcel_statistics.py` | Parcel masking, zonal reductions, and derived parcel statistics |
-| `zonal_stats.py` | Public construction, component orchestration, parallel local execution, and persistence |
+| `parcel_stats/core/configuration.py` | Option validation, temporal intervals, sensor-variable selection, and cache signatures |
+| `parcel_stats/core/parcel_batches.py` | Parcel geometry repair, normalization, and spatial batching |
+| `sources/openeo/cubes.py` | openEO authentication, cube graphs, remote jobs, downloads, and caching |
+| `parcel_stats/core/raster_cleaning.py` | NetCDF variable selection, raster-level IQR removal, staged null filling, and cleaning audits |
+| `parcel_stats/core/parcel_statistics.py` | Parcel masking, zonal reductions, and derived parcel statistics |
+| `parcel_stats/core/base.py` | Shared construction, configuration, logging and local workers |
+| `parcel_stats/core/streamed_raster.py` | Streamed cleaning, index checkpoints and parcel-window reads |
+| `parcel_stats/openeo.py` | openEO orchestration and output persistence |
+| `parcel_stats/job_manager.py` | Tile planning and restartable remote jobs |
 
-The component classes retain the established private method names through
-inheritance so `JobManagerSatelliteZonalStats` and existing integrations remain
-compatible while each implementation has a single scope.
+The shared core handles local processing; the openEO adapter handles acquisition.
+See the [detailed workflow](WORKFLOW.md) for execution order, method ownership,
+checkpoint recovery, multi-user scheduling, and output validation.
+
+For account assignment and concurrency, see
+[batches versus partitions: scheduling flowcharts](SCHEDULING.md).
+For spatial grouping, see [buffer clusters versus grid partitions and tiles](PARCEL_GROUPING.md).
 
 ## Processing flow
 
@@ -90,16 +97,23 @@ An active CDSE account and openEO OIDC authentication are required. On the first
 run, the openEO client may request interactive authentication. Later runs can use
 the refresh token stored by the client.
 
-To select a particular CDSE account in a notebook, pass its username and password
-from environment variables. Do not put credentials directly in notebook source:
+The Neuro fill notebook and multi-user examples load CDSE accounts from PostgreSQL
+using `load_openeo_users_from_db()`. Configure `DB_NAME`, `TBL_USERS`, and
+`POSTGRES_*` in the kernel environment and install the `database` extra; see
+[database account setup](CREDENTIALS.md). The loader does not read `.env` itself.
+
+For a single extractor, select an account from the loaded list and pass both
+credential arguments. Do not put credentials directly in notebook source:
 
 ```python
-import os
+from data_preparation.parcel_stats.multiuser import load_openeo_users_from_db
 
-extractor = SatelliteZonalStats(
+username, password = load_openeo_users_from_db()[0]
+
+extractor = OpenEOZonalStats(
     # ...the normal arguments...
-    openeo_username=os.environ["OPENEO_USERNAME"],
-    openeo_password=os.environ["OPENEO_PASSWORD"],
+    openeo_username=username,
+    openeo_password=password,
 )
 ```
 
@@ -129,7 +143,7 @@ Select the WGS84 UTM CRS containing the dissolved parcel centroid when the
 working CRS should be chosen automatically:
 
 ```python
-from satellites.data_preparation.parcel_stats import estimate_utm_epsg_from_parcels
+from data_preparation.parcel_stats import estimate_utm_epsg_from_parcels
 
 working_epsg = estimate_utm_epsg_from_parcels(parcels)
 parcels = parcels.to_crs(working_epsg)
@@ -154,7 +168,7 @@ These parameters apply to both classes.
 |---|---|---|
 | `parcels` | `GeoDataFrame` | Parcel polygons with a CRS |
 | `start_date` | string or `pandas.Timestamp` | Inclusive first date |
-| `end_date` | string or `pandas.Timestamp` | Inclusive last date; must not precede `start_date` |
+| `end_date` | string or `pandas.Timestamp` | Last reporting date; must not precede `start_date`. See the remote extent caveat below. |
 | `output_dir` | string or `Path` | Cache, log, and result directory |
 | `working_epsg` | integer | Projected CRS used for metric operations |
 
@@ -209,12 +223,17 @@ the temporal stage.
 |---|---:|---|
 | `temporal_period` | `"1M"` | Positive day, month, or year interval such as `15D`, `1M`, `2M`, `3M`, `1Y` |
 | `temporal_reducer` | `"median"` | `mean`, `median`, `min`, `max`, `sum`, or `"none"` / `None` to pool all acquisition pixels locally |
-| `spatial_statistics` | `None` | `mean`, `median`, `sd`, `min`, `max`, `p10`, `p25`, `p75`, `p90`; `mean` is always added. Legacy `count` is accepted but emits only the static parcel pixel count described below. |
+| `spatial_statistics` | `None` | `mean`, `median`, `sd`, `min`, `max`, `range`, `p10`, `p25`, `p75`, `p90`; `mean` is always added. Include `median` for the annual summary. `count` emits only the static parcel pixel count described below. |
 | `batch_workers` | `1` | Positive integer controlling base-class remote job waves and local statistics processes; for the manager it controls local statistics only |
 
 Temporal intervals start at `start_date`, are half-open internally, and the final
 interval is clipped after the inclusive `end_date`. For example, `1M` means
 one-month steps from the configured start date, not necessarily calendar months.
+
+The remote extent helper explicitly extends `end_date` by one day only when
+`temporal_reducer="none"`. Composite runs pass `end_date` unchanged; their remote
+request does not use the same final-day extension. See [temporal behavior in the
+detailed workflow](WORKFLOW.md#temporal-behavior).
 
 ### All valid pixels within each period
 
@@ -296,7 +315,7 @@ rerunning to load the new implementation and release arrays held by the old run.
 
 | Parameter | Default | Meaning |
 |---|---:|---|
-| `remove_outliers` | `False` | Replace pixel values outside parcel/variable/period IQR bounds with nulls |
+| `remove_outliers` | `False` | Replace values outside full-raster band/time-slice IQR bounds with nulls |
 | `iqr_quantiles` | `(0.25, 0.75)` | Lower and upper quantiles; must satisfy `0 <= lower < upper <= 1` |
 | `iqr_multiplier` | `1.5` | Non-negative multiplier used to extend the IQR bounds |
 | `iqr_min_valid_pixels` | `20` | Minimum valid raster pixels required before applying IQR filtering |
@@ -348,9 +367,9 @@ faster). Results vary with raster size and missingness, but this supports keepin
 ### Sentinel-1-only extraction
 
 ```python
-from satellites.data_preparation.parcel_stats import SatelliteZonalStats
+from data_preparation.parcel_stats import OpenEOZonalStats
 
-extractor = SatelliteZonalStats(
+extractor = OpenEOZonalStats(
     parcels=parcels,
     start_date="2023-01-01",
     end_date="2024-12-31",
@@ -382,9 +401,9 @@ cleaning_report = extractor.cleaning_report
 ### Sentinel-2 bands and indices
 
 ```python
-from satellites.data_preparation.parcel_stats import SatelliteZonalStats
+from data_preparation.parcel_stats import OpenEOZonalStats
 
-extractor = SatelliteZonalStats(
+extractor = OpenEOZonalStats(
     parcels=parcels,
     start_date="2024-03-01",
     end_date="2024-10-31",
@@ -403,7 +422,7 @@ result = extractor.run()
 
 ## Job-manager tile workflow
 
-`JobManagerSatelliteZonalStats` accepts every common parameter plus:
+`OpenEOJobManagerZonalStats` accepts every common parameter plus:
 
 | Parameter | Default | Meaning |
 |---|---:|---|
@@ -443,8 +462,9 @@ An individual parcel exceeding the limit with its buffer raises an error before
 submission. The limit controls requested spatial extent, not backend memory or
 pixel-count quotas, which also depend on bands, resolution and time range.
 
-Existing per-user queues distribute the cluster partitions. Fitted cubes have a
-separate cache namespace from regular grid cubes. The Neuro fill notebook uses
+The default shared queue distributes unsubmitted batches from every cluster
+partition across accounts. Fitted cubes have a separate cache namespace from
+regular grid cubes. The Neuro fill notebook uses
 this mode; other callers retain regular grid tiles unless they enable it.
 
 ### How regular-grid parcel ownership works
@@ -471,7 +491,7 @@ messages.
 Two helper functions are available:
 
 ```python
-from satellites.data_preparation.parcel_stats.job_manager import (
+from data_preparation.parcel_stats.job_manager import (
     compute_tile_buffer_metres,
     compute_tile_width,
 )
@@ -513,8 +533,8 @@ Increase `tile_buffer_metres` and retry.
 ### Complete manager example
 
 ```python
-from satellites.data_preparation.parcel_stats import JobManagerSatelliteZonalStats
-from satellites.data_preparation.parcel_stats.job_manager import (
+from data_preparation.parcel_stats import OpenEOJobManagerZonalStats
+from data_preparation.parcel_stats.job_manager import (
     compute_tile_buffer_metres,
     compute_tile_width,
 )
@@ -530,7 +550,7 @@ tile_size = compute_tile_width(
 )
 tile_buffer = compute_tile_buffer_metres(parcels, working_epsg)
 
-extractor = JobManagerSatelliteZonalStats(
+extractor = OpenEOJobManagerZonalStats(
     parcels=parcels,
     start_date="2023-01-01",
     end_date="2024-12-31",
@@ -565,10 +585,11 @@ The output directory contains:
 
 | Path | Contents |
 |---|---|
-| `satellite_parcel_ml_features.geoparquet` | One ML-ready row per parcel, with parcel attributes, geometry/CRS, static metrics, and dated temporal features |
+| `satellite_parcel_time_stats.geoparquet` | One ML-ready row per parcel, with parcel attributes, geometry/CRS, static metrics, and dated temporal features |
+| `satellite_parcel_annual_stats.geoparquet` | Mean, minimum, maximum and population standard deviation of each selected source's per-period parcel medians over the run |
 | `satellite_pixel_cleaning_report.csv` | Per-batch raster, period, and variable null counts after every cleaning/filling step |
 | `satellite_zonal_stats.log` | Overall orchestration and configuration |
-| `satellite_openeo.log` | openEO authentication, job creation, execution, and downloads |
+| `satellite_source.log` | openEO authentication, job creation, execution, and downloads |
 | `satellite_raster_filling.log` | Per-variable, per-period raster filling progress and counts |
 | `satellite_parcel_statistics.log` | Parcel-mask and aggregation progress |
 | `monthly_cubes/<signature>/batch_XXXXX_monthly.nc` | Cached temporal raster cubes |
@@ -601,7 +622,8 @@ The final GeoDataFrame has exactly one row per parcel. Core columns include:
   `meets_minimum_pixel_count`, and `batch_number`; per-band/per-period
   `*_count` columns are no longer emitted;
 - `expected_pixel_count`, calculated as intersected pixels x requested output
-  bands/indices x temporal periods, plus `temporal_filled_pixel_count` and
+  bands/indices x stored raster time steps (periods for composites; acquisition
+  timestamps for `temporal_reducer="none"`), plus `temporal_filled_pixel_count` and
   `spatial_filled_pixel_count` summed over those same slots. Spatial filling
   includes every configured neighborhood pass and final interpolation;
 - `temporal_filled_ratio` and `spatial_filled_ratio`, each using
@@ -627,8 +649,8 @@ The final GeoDataFrame has exactly one row per parcel. Core columns include:
 - dated temporal features such as `VV_mean__20240101`,
   `NDVI_median__20240201`, or `B04_p90__20240301`;
 - derived fields when their source statistics exist: range, variance,
-  coefficient of variation, IQR, Bowley skewness, p90-p10 spread, and valid-pixel
-  fractions, also suffixed with their period;
+  coefficient of variation, IQR, Bowley skewness, and p90-p10 spread, also
+  suffixed with their period;
 - parcel geometry in the configured projected `working_epsg`.
 
 The `feature__YYYYMMDD` naming matches the former ML-pipeline longitudinal
@@ -637,8 +659,8 @@ it no longer needs `period_start`, `reshape_time_series`, or `time_column`.
 
 The cache signature includes dates, processing configuration, parcel IDs, and
 parcel geometries. The manager also includes tile size and buffer. An identical
-run reuses completed raw and cleaned NetCDF files. After a batch finishes IQR
-outlier removal and null filling, its cleaned raster and audit are written
+run reuses completed raw and compatible local NetCDF checkpoints. After a batch
+finishes IQR outlier removal and null filling, its cleaned raster and audit are written
 atomically. Indices already present in an older raw NetCDF are ignored; configured
 indices are recalculated from cleaned physical bands and atomically stored in a
 separate `*_final.nc`. A restarted notebook resumes from the raw, cleaned, or final
@@ -646,12 +668,12 @@ stage available for each batch. Reuse requires the downloaded cube to contain al
 physical bands needed by the configured indices. Changing relevant inputs creates a different cache directory.
 
 Local cleaning checkpoints contain a separate cleaning signature. Changing the
-window sequence or interpolation settings reuses the original downloaded cube
+window sequence or kriging variogram settings reuses the original downloaded cube
 but rejects stale `*_cleaned.nc` and `*_final.nc` results and rebuilds them.
 
-Checkpoint NetCDF files store one `float32` variable named `cleaned` and one
-`uint8` variable named `observed_mask`; they do not duplicate the raster as a
-second observed-value array. In memory, observed values are reconstructed as
+Checkpoint NetCDF files store one `float32` variable named `cleaned` and two
+`uint8` variables named `observed_mask` and `temporal_filled_mask`; they do not
+duplicate the raster as a second observed-value array. Observed values are reconstructed as
 `where(observed_mask, cleaned, NaN)`. By default, `keep_cleaned_checkpoint=False`
 removes the intermediate `*_cleaned.nc` only after `*_final.nc` is committed.
 Set it to `True` to retain the intermediate physical-band raster. The raw cube

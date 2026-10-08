@@ -12,7 +12,7 @@ import xarray as xr
 from shapely.geometry import Point, Polygon
 from rasterio.transform import from_origin
 
-from satellites.data_preparation.parcel_stats.openeo import SatelliteZonalStats
+from data_preparation.parcel_stats.openeo import OpenEOZonalStats
 
 
 def test_explicit_openeo_credentials_use_password_oidc_flow() -> None:
@@ -25,7 +25,7 @@ def test_explicit_openeo_credentials_use_password_oidc_flow() -> None:
         def authenticate_oidc(self):
             calls.append(("default", {}))
 
-    extractor = object.__new__(SatelliteZonalStats)
+    extractor = object.__new__(OpenEOZonalStats)
     extractor.openeo_username = "user@example.com"
     extractor.openeo_password = "secret"
 
@@ -42,7 +42,7 @@ def test_missing_openeo_credentials_use_default_oidc_flow() -> None:
         def authenticate_oidc(self):
             calls.append("default")
 
-    extractor = object.__new__(SatelliteZonalStats)
+    extractor = object.__new__(OpenEOZonalStats)
     extractor.openeo_username = None
     extractor.openeo_password = None
 
@@ -52,13 +52,13 @@ def test_missing_openeo_credentials_use_default_oidc_flow() -> None:
 
 
 def test_openeo_credentials_must_be_supplied_together() -> None:
-    extractor = object.__new__(SatelliteZonalStats)
+    extractor = object.__new__(OpenEOZonalStats)
     with pytest.raises(ValueError, match="must be supplied together"):
         extractor._validate_openeo_credentials("user@example.com", None)
 
 
 def test_sentinel1_orbit_direction_is_normalized_and_validated() -> None:
-    extractor = object.__new__(SatelliteZonalStats)
+    extractor = object.__new__(OpenEOZonalStats)
 
     assert extractor._validate_sentinel1_orbit_direction(" ascending ") == "ASCENDING"
     assert extractor._validate_sentinel1_orbit_direction("descending") == "DESCENDING"
@@ -69,15 +69,15 @@ def test_sentinel1_orbit_direction_is_normalized_and_validated() -> None:
 
 
 def test_sentinel1_both_orbits_does_not_add_a_collection_filter() -> None:
-    extractor = object.__new__(SatelliteZonalStats)
+    extractor = object.__new__(OpenEOZonalStats)
     extractor.sentinel1_orbit_direction = "BOTH"
 
     assert extractor._sentinel1_load_options() == {}
 
 
-def _extractor(**overrides) -> SatelliteZonalStats:
+def _extractor(**overrides) -> OpenEOZonalStats:
     """Build a lightweight instance for testing pure array operations."""
-    extractor = object.__new__(SatelliteZonalStats)
+    extractor = object.__new__(OpenEOZonalStats)
     defaults = {
         "sentinel2_bands": ("B02",),
         "sentinel2_indices": (),
@@ -458,7 +458,7 @@ def test_parcel_fill_summary_sums_all_period_band_pixel_slots() -> None:
     )
     final = np.nan_to_num(observed, nan=9.0)
 
-    metrics = SatelliteZonalStats._summarize_parcel_filling(
+    metrics = OpenEOZonalStats._summarize_parcel_filling(
         observed, temporal_mask, final, intersected_pixel_count=2
     )
 
@@ -551,7 +551,7 @@ def test_geometry_complexity_is_zero_for_ideal_simple_metrics() -> None:
         }
     )
 
-    score = SatelliteZonalStats._calculate_geometry_complexity_score(metrics)
+    score = OpenEOZonalStats._calculate_geometry_complexity_score(metrics)
 
     assert score.iloc[0] == pytest.approx(0.0)
 

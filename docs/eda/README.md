@@ -7,7 +7,7 @@ See [FEATURE_SELECTION_GUIDE.md](FEATURE_SELECTION_GUIDE.md) for the full explan
 ## Minimal usage
 
 ```python
-from satellites.eda import EDAConfig, EDAPipeline
+from eda import EDAConfig, EDAPipeline
 
 config = EDAConfig(
     output_dir="outputs/eda",

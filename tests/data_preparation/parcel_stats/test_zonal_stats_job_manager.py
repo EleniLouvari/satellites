@@ -10,8 +10,8 @@ import pandas as pd
 import pytest
 from shapely.geometry import box
 
-from satellites.data_preparation.parcel_stats.job_manager import (
-    JobManagerSatelliteZonalStats,
+from data_preparation.parcel_stats.job_manager import (
+    OpenEOJobManagerZonalStats,
     compute_tile_buffer_metres,
     compute_tile_width,
 )
@@ -66,8 +66,8 @@ def test_tile_width_fills_two_remote_slots_in_every_user_partition() -> None:
     assert width == 10_000
 
 
-def _planner(parcels: gpd.GeoDataFrame) -> JobManagerSatelliteZonalStats:
-    planner = object.__new__(JobManagerSatelliteZonalStats)
+def _planner(parcels: gpd.GeoDataFrame) -> OpenEOJobManagerZonalStats:
+    planner = object.__new__(OpenEOJobManagerZonalStats)
     planner.parcels = parcels
     planner.working_epsg = 3857
     planner.tile_size_metres = 10
@@ -75,12 +75,14 @@ def _planner(parcels: gpd.GeoDataFrame) -> JobManagerSatelliteZonalStats:
     planner.fit_tiles_to_parcels = False
     planner.PARCEL_ID_FIELD = "parcel_id"
     planner.logger = logging.getLogger("test_job_manager_planner")
-    planner.openeo_logger = planner.logger
+    planner.source_logger = planner.logger
+    # Geometry-only fixture: give tabular cache lookups a stable namespace.
+    planner._statistics_signature = lambda: "test-planner"
     return planner
 
 
 def test_job_title_contains_the_run_identifier() -> None:
-    planner = object.__new__(JobManagerSatelliteZonalStats)
+    planner = object.__new__(OpenEOJobManagerZonalStats)
     planner.run_identifier = "kozani autumn 2026"
 
     title = planner._job_title({"tile_id": "tile_00003", "batch_number": 4})
@@ -89,19 +91,19 @@ def test_job_title_contains_the_run_identifier() -> None:
 
 
 def test_default_job_retry_limit_is_three() -> None:
-    assert JobManagerSatelliteZonalStats.DEFAULT_MAX_JOB_RETRIES == 3
+    assert OpenEOJobManagerZonalStats.DEFAULT_MAX_JOB_RETRIES == 3
 
 
 def test_run_identifier_rejects_empty_labels() -> None:
-    planner = object.__new__(JobManagerSatelliteZonalStats)
+    planner = object.__new__(OpenEOJobManagerZonalStats)
     with pytest.raises(ValueError, match="must not be empty"):
         planner._validate_run_identifier("   ")
 
 
 def test_error_job_is_reset_and_retry_is_persisted() -> None:
-    planner = object.__new__(JobManagerSatelliteZonalStats)
+    planner = object.__new__(OpenEOJobManagerZonalStats)
     planner.max_job_retries = 2
-    planner.openeo_logger = logging.getLogger("test_job_manager_retry")
+    planner.source_logger = logging.getLogger("test_job_manager_retry")
     job_db = _MemoryJobDatabase(
         pd.DataFrame(
             {
@@ -124,9 +126,9 @@ def test_error_job_is_reset_and_retry_is_persisted() -> None:
 
 
 def test_start_failure_retries_the_existing_job() -> None:
-    planner = object.__new__(JobManagerSatelliteZonalStats)
+    planner = object.__new__(OpenEOJobManagerZonalStats)
     planner.max_job_retries = 2
-    planner.openeo_logger = logging.getLogger("test_job_manager_start_retry")
+    planner.source_logger = logging.getLogger("test_job_manager_start_retry")
     job_db = _MemoryJobDatabase(
         pd.DataFrame(
             {
@@ -147,7 +149,7 @@ def test_start_failure_retries_the_existing_job() -> None:
 
 
 def test_restart_retry_reuses_remote_job_without_building_a_replacement() -> None:
-    planner = object.__new__(JobManagerSatelliteZonalStats)
+    planner = object.__new__(OpenEOJobManagerZonalStats)
     expected_job = object()
 
     class RecordingConnection:
@@ -168,9 +170,9 @@ def test_restart_retry_reuses_remote_job_without_building_a_replacement() -> Non
 
 
 def test_failed_job_is_not_reset_after_retry_limit() -> None:
-    planner = object.__new__(JobManagerSatelliteZonalStats)
+    planner = object.__new__(OpenEOJobManagerZonalStats)
     planner.max_job_retries = 2
-    planner.openeo_logger = logging.getLogger("test_job_manager_retry_limit")
+    planner.source_logger = logging.getLogger("test_job_manager_retry_limit")
     job_db = _MemoryJobDatabase(
         pd.DataFrame(
             {
@@ -212,7 +214,7 @@ def test_sentinel1_only_tile_graph_does_not_load_sentinel2(temporal_reducer) -> 
             calls.append(("load_collection", collection, kwargs))
             return RecordingCube()
 
-    extractor = object.__new__(JobManagerSatelliteZonalStats)
+    extractor = object.__new__(OpenEOJobManagerZonalStats)
     extractor.sentinel2_bands = ()
     extractor.sentinel2_indices = ()
     extractor.sentinel1_bands = ("VV", "VH")
@@ -369,9 +371,9 @@ def test_fitted_plan_rejects_single_parcel_larger_than_limit(tmp_path) -> None:
 
 
 def test_fitted_plan_uses_separate_cache_namespace(monkeypatch) -> None:
-    from satellites.data_preparation.parcel_stats.openeo import SatelliteZonalStats
+    from data_preparation.parcel_stats.openeo import OpenEOZonalStats
 
-    monkeypatch.setattr(SatelliteZonalStats, "_run_signature", lambda self: "base")
+    monkeypatch.setattr(OpenEOZonalStats, "_run_signature", lambda self: "base")
     planner = _planner(gpd.GeoDataFrame())
     grid_signature = planner._run_signature()
     planner.fit_tiles_to_parcels = True
@@ -383,7 +385,7 @@ def test_fitted_plan_uses_separate_cache_namespace(monkeypatch) -> None:
 
 def test_fitted_constructor_rejects_buffer_that_leaves_no_room_for_parcels() -> None:
     with pytest.raises(ValueError, match="must exceed twice"):
-        JobManagerSatelliteZonalStats(tile_size_metres=10, tile_buffer_metres=5, fit_tiles_to_parcels=True)
+        OpenEOJobManagerZonalStats(tile_size_metres=10, tile_buffer_metres=5, fit_tiles_to_parcels=True)
 
 
 def test_fitted_plan_accepts_necessary_singleton_jobs(tmp_path) -> None:

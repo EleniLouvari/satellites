@@ -1,5 +1,49 @@
 # Reorganization validation
 
+## Direct `src/` layout validation — 2026-10-07
+
+The four import packages now live directly under `src/`: `data_preparation`,
+`eda`, `ml_classification`, and `shared`. Source imports, dynamic import strings,
+notebooks, tests, packaging, coverage settings, scripts, and documentation were
+updated. The enclosing namespace and references to deleted compatibility
+packages are no longer part of package discovery.
+
+Validation results:
+
+- All Python source/test/script files and code cells in all eight notebooks parse.
+- Every absolute internal source import resolves to an existing module path.
+- The generated ML file-usage index matches the current source tree.
+- The built wheel contains all 139 package Python modules under the four new
+  package roots. Public openEO, Planet, EDA, ML, and shared I/O imports work
+  directly from the wheel in an isolated interpreter, without the source tree.
+- The collectable suite reports **328 passed and 4 failed**. Package-location,
+  model/configuration round-trip, spawned-worker, and import-isolation tests pass.
+
+The four failures are previously documented outdated tests in
+`tests/ml_classification/test_train_evaluate_steps.py`: an instance method called
+with the old signature, the old `probability_cache_test` keyword, and two mock
+configurations missing `log_path`. The already uncollectable
+`tests/ml_classification/test_rank_confidence.py` was explicitly excluded because
+its `core.rank_confidence_calibration` implementation is absent. No test skip was
+added to project configuration.
+
+Command used with the existing `eo_spatial` Python environment:
+
+```powershell
+python -m pytest tests -q --ignore=tests/ml_classification/test_rank_confidence.py -p no:cacheprovider --basetemp outputs/quality/pytest_flat_src --junitxml=outputs/quality/flat_src_tests.xml
+```
+
+The wheel was built without downloading dependencies using the existing
+`gdal3133_python3147` environment. The `eo_spatial` build attempt exposed an
+unrelated installed `pbr` plugin requiring missing `pkg_resources`; that
+environment was not modified. Runtime wheel imports were verified in `eo_spatial`.
+
+Reinstall editable installations and restart kernels after this move. Existing
+pickle/joblib artifacts storing previous custom-class paths may need regeneration;
+external saved models were not rewritten. See the [import guide](import_migration.md).
+
+## Previous reorganization validation
+
 Validation used Python 3.13 from the existing `axhub_spatial` Conda environment,
 through a workspace-local `.venv-checks` environment sharing its installed
 dependencies. The external Conda environment was not modified.

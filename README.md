@@ -7,12 +7,12 @@ restartable geospatial classification.
 
 | Directory | Purpose |
 | --- | --- |
-| `src/satellites/data_preparation/sources/` | openEO cube acquisition, Planet delivery downloads, HUB catalog access |
-| `src/satellites/data_preparation/parcel_stats/` | Shared local statistics engine and source-specific workflows |
-| `src/satellites/data_preparation/features/` | Temporal reduction, elevation, soil, and nearest-lake features |
-| `src/satellites/eda/` | EDA, feature-screening diagnostics, plots, and HTML reports |
-| `src/satellites/ml_classification/` | Check, prepare, train, evaluate, predict, and seed sensitivity |
-| `src/satellites/shared/` | Reusable I/O, logging, geometry, and data-cleaning utilities |
+| `src/data_preparation/sources/` | openEO cube acquisition, Planet delivery downloads, HUB catalog access |
+| `src/data_preparation/parcel_stats/` | Shared local statistics engine and source-specific workflows |
+| `src/data_preparation/features/` | Temporal reduction, elevation, soil, and nearest-lake features |
+| `src/eda/` | EDA, feature-screening diagnostics, plots, and HTML reports |
+| `src/ml_classification/` | Check, prepare, train, evaluate, predict, and seed sensitivity |
+| `src/shared/` | Reusable I/O, logging, geometry, and data-cleaning utilities |
 | `notebooks/projects/volvi/` | Numbered project workflow notebooks |
 | `notebooks/experiments/` | Exploratory ML and sensitivity notebooks |
 | `notebooks/maintenance/` | openEO job inspection and code-quality notebooks |
@@ -22,12 +22,11 @@ restartable geospatial classification.
 | `scripts/` | Development checks |
 | `data/reference/` | Reference data such as the Planet tile grid |
 | `outputs/` | Generated run artifacts and quality reports, ignored by Git |
-| `src/_compat/` | Old import paths forwarding to maintained implementations |
 
 Classification source is organized into `step_01_check/` through `step_05_predict/`,
 each with its own `libraries/`, plus classification-specific `shared/` modules.
-See the [source guide](src/satellites/ml_classification/README.md) and
-[file usage index](src/satellites/ml_classification/FILE_USAGE.md) to trace implementations.
+See the [source guide](src/ml_classification/README.md) and
+[file usage index](src/ml_classification/FILE_USAGE.md) to trace implementations.
 
 ## Installation
 
@@ -39,13 +38,15 @@ python -m pip install --no-deps --no-build-isolation -e .
 ```
 
 This command requires setuptools in that environment and does not upgrade the
-installed scientific stack. It enables both canonical and compatibility imports
-from any working directory, without notebook `sys.path` edits.
+installed scientific stack. It enables imports from `data_preparation`, `eda`,
+`ml_classification`, and `shared` from any working directory, without notebook
+`sys.path` edits. Reinstall after moving the source packages, then restart the
+notebook kernel or Python process to load the new module paths.
 
 For a new Python 3.12+ environment, install the dependency groups you need:
 
 ```powershell
-python -m pip install -e ".[acquisition,ml,interpolation,notebooks,gis-utilities,dev]"
+python -m pip install -e ".[acquisition,database,ml,interpolation,notebooks,gis-utilities,dev]"
 ```
 
 `neural` adds TensorFlow; `gis-utilities` supports the geometry/tabular helpers
@@ -54,21 +55,26 @@ utilities have additional dependencies from the historical environment; they
 are not loaded by the maintained pipeline entry points. See
 [migration notes](docs/repository_structure.md) before changing existing environments.
 
+`database` adds the PostgreSQL driver and SQLAlchemy for database-backed openEO
+accounts. The Neuro fill notebook uses `load_openeo_users_from_db()` with
+`DB_NAME`, `TBL_USERS`, and `POSTGRES_*` settings in the kernel environment.
+See [openEO account setup](docs/data_preparation/openeo/CREDENTIALS.md).
+
 ## Public APIs
 
 ```python
-from satellites.data_preparation.parcel_stats import (
+from data_preparation.parcel_stats import (
     OpenEOZonalStats,
     OpenEOJobManagerZonalStats,
     PlanetBasemapZonalStats,
 )
-from satellites.data_preparation.features import append_parcel_elevation
-from satellites.eda import EDAConfig, EDAPipeline
-from satellites.ml_classification import (
+from data_preparation.features import append_parcel_elevation
+from eda import EDAConfig, EDAPipeline
+from ml_classification import (
     ClassificationPipelineConfig,
     GeospatialClassificationPipeline,
 )
-from satellites.ml_classification.sensitivity import ClassificationSensitivityRunner
+from ml_classification.sensitivity import ClassificationSensitivityRunner
 ```
 
 The data flow is imagery acquisition → parcel statistics → environmental and

@@ -1,13 +1,13 @@
 # Repository structure and migration
 
-The repository has one installable package, `satellites`, with separate data
-preparation, EDA, and classification areas. Notebooks, tests, documentation,
-reference data, and generated results are outside the maintained source package.
+The installable distribution contains four top-level packages directly under
+`src/`: `data_preparation`, `eda`, `ml_classification`, and `shared`. Notebooks,
+tests, documentation, and generated results live outside these packages.
 
 ## Source boundaries
 
 ```text
-src/satellites/
+src/
   data_preparation/
     sources/
       openeo/cubes.py             authentication, cube graphs, remote jobs
@@ -43,16 +43,14 @@ src/satellites/
       models/                    models.py, modeling_context.py and TensorFlow implementations
       reports/                   common report rendering, viewer, diagnostics and dashboard
     sensitivity/runner.py        sensitivity helpers live in libraries/
-    to_delete/                   previous wrappers and original source snapshots
   shared/
     io.py logging.py constants.py formatting.py
     geometry.py raster.py tabular.py spatial_statistics.py s3.py
     data_cleaning/
     notebook.py                  explicit notebook setup
-    legacy/                      old convenience imports and EDA class
 ```
 
-`PlanetBasemapZonalStats` and `SatelliteZonalStats` now share `ParcelStatsBase`.
+`PlanetBasemapZonalStats` and `OpenEOZonalStats` share `ParcelStatsBase`.
 Planet no longer subclasses the openEO workflow. The base retains the historical
 sensor configuration names for constructor/cache compatibility, but imports no
 acquisition service. The public parcel-statistics package loads source classes
@@ -62,34 +60,29 @@ EDA and classification consume tables and shared helpers. They do not import
 acquisition code or each other. Shared cleaning stays below the pipelines;
 temporal reduction and environmental enrichment belong to data preparation.
 
-## Installation and compatibility
+## Installation and imports
 
-Install the repository into the environment used by your Jupyter kernel:
+Install or reinstall the repository into the environment used by your Jupyter
+kernel after changing the source layout:
 
 ```powershell
 python -m pip install --no-deps --no-build-isolation -e .
 ```
 
-Existing geospatial environments can be reused. `pyproject.toml` declares the
-maintained pipeline dependencies and optional acquisition, ML, neural,
-interpolation, notebook, GIS-utility, and development groups. The broad historical
-`import_libraries` API still needs its historical environment; the installation
-does not reconstruct every dependency of those legacy convenience imports.
+Restart the Python process or notebook kernel afterward. Import directly from
+`data_preparation`, `eda`, `ml_classification`, and `shared`; there is no enclosing
+Python namespace or compatibility package. See the [import guide](import_migration.md).
+The distribution name in package metadata remains unchanged.
 
-See the complete [import map](import_migration.md). Old module paths are retained
-in `src/_compat/`, with two standalone compatibility modules at the `src` root.
-These aliases resolve to canonical module objects rather than duplicate class
-implementations. This preserves old nested imports, private symbols, monkeypatch
-targets, and import paths carried by existing Python pickles/joblib models.
+For source-tree development, `PYTHONPATH` needs only `src`. Pytest and VS Code
+already use this directory. Package discovery includes the four top-level
+packages and their subpackages; coverage measures the same four packages.
 
-Class names, public constructor arguments, output filenames, log namespaces and
-cache signatures remain stable. `OpenEOZonalStats` continues to alias
-`SatelliteZonalStats`. Code explicitly testing whether a Planet extractor is an
-instance of the openEO class should now check `ParcelStatsBase` instead.
-
-An editable installation is the normal entry point. If using raw `PYTHONPATH`,
-include both `src` and `src/_compat` for old imports. The maintained package only
-needs `src`. Pytest configures both paths for source-tree development.
+Constructor arguments, output filenames, log namespaces and cache signatures
+remain unchanged by the directory move. Python pickle/joblib artifacts store
+module paths, so previously serialized custom classes may need regeneration
+under the new imports. Raster caches and tabular output files do not depend on
+Python class import paths.
 
 ## Notebooks, reference data and artifacts
 
@@ -120,8 +113,8 @@ scripts use the active Python environment, resolve the repository relative to
 their own location, and place reports in `outputs/quality/`. The code-check script
 reports failures through its exit code and does not automatically modify source.
 
-Migration tests in `tests/test_repository_layout.py` cover historical module
-identity, loading fitted-model/configuration pickles with old module paths,
+Layout tests in `tests/test_repository_layout.py` cover top-level package
+locations, fitted-model/configuration serialization with current module paths,
 Windows-style spawned-worker serialization, and import-side-effect isolation.
 The local Planet suite covers data discovery, downloaded-manifest processing,
 cleaning checkpoints and resume behavior.

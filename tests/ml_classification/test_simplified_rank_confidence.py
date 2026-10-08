@@ -3,9 +3,9 @@ from copy import deepcopy
 import numpy as np
 import pytest
 
-from satellites.ml_classification.shared.class_reliability import combine_confidence_components, get_class_reliability
-from satellites.ml_classification.step_04_evaluate.libraries.class_reliability import calculate_oof_class_reliability
-from satellites.ml_classification.shared.rank_confidence import (
+from ml_classification.shared.class_reliability import combine_confidence_components, get_class_reliability
+from ml_classification.step_04_evaluate.libraries.class_reliability import calculate_oof_class_reliability
+from ml_classification.shared.rank_confidence import (
     assign_confidence_levels,
     calculate_rank_confidence,
     probabilities_to_ranks,

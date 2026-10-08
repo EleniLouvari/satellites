@@ -2,7 +2,7 @@ import geopandas as gpd
 import numpy as np
 from shapely.geometry import box
 
-from satellites.data_preparation.features.temporal import reduce_annual_median_features
+from data_preparation.features.temporal import reduce_annual_median_features
 
 
 def test_reduce_annual_median_features_preserves_static_data_geometry_and_crs() -> None:

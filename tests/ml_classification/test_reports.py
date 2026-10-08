@@ -4,11 +4,11 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from satellites.ml_classification.shared.reports.report_helpers import _prepare_cv_results_table
-from satellites.ml_classification.shared.reports.report_html import _render_table
-from satellites.ml_classification.step_03_train.libraries import report as train_reports_module
-from satellites.ml_classification.step_04_evaluate.libraries import report as reports_module
-from satellites.ml_classification.step_04_evaluate.libraries.report import (
+from ml_classification.shared.reports.report_helpers import _prepare_cv_results_table
+from ml_classification.shared.reports.report_html import _render_table
+from ml_classification.step_03_train.libraries import report as train_reports_module
+from ml_classification.step_04_evaluate.libraries import report as reports_module
+from ml_classification.step_04_evaluate.libraries.report import (
     _build_average_metrics_section,
     _prepare_analytical_metrics,
 )

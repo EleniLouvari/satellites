@@ -6,8 +6,8 @@ import geopandas as gpd
 import pytest
 from shapely.geometry import Point
 
-from satellites.data_preparation.parcel_stats import multiuser as manager
-from satellites.data_preparation.parcel_stats import partition_scheduler
+from data_preparation.parcel_stats import multiuser as manager
+from data_preparation.parcel_stats import partition_scheduler
 
 
 def _result(parcel_id: int, index: int) -> gpd.GeoDataFrame:
@@ -151,13 +151,6 @@ def test_partition_count_builds_one_grid_cell_per_user() -> None:
 
     assert len(parts) == 4
     assert sorted(parcel_id for part in parts for parcel_id in part["parcel_id"]) == [1, 2, 3, 4]
-
-
-def test_load_users_rejects_duplicate_accounts(monkeypatch) -> None:
-    monkeypatch.setenv("OPENEO_USERS", "same,password1;same,password2")
-
-    with pytest.raises(ValueError, match="duplicate usernames"):
-        manager.load_openeo_users_from_env()
 
 
 def test_parallel_extractions_rejects_more_than_two_jobs_per_user() -> None:

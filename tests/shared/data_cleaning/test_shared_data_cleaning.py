@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 from shapely.geometry import Point
 
-from satellites.shared.data_cleaning import OutlierAnalysis, fill_categorical_with_KNN, fill_null_values_using_interpolation
+from shared.data_cleaning import OutlierAnalysis, fill_categorical_with_KNN, fill_null_values_using_interpolation
 
 
 def test_nearest_interpolation_fills_a_missing_point() -> None:

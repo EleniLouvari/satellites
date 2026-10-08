@@ -6,9 +6,9 @@ import pandas as pd
 import pytest
 from sklearn.model_selection import StratifiedKFold, cross_val_predict
 
-from satellites.ml_classification.shared.models import models as models
-from satellites.ml_classification.shared.config.config import ClassificationPipelineConfig
-from satellites.ml_classification.step_03_train.train import TrainStep
+from ml_classification.shared.models import models as models
+from ml_classification.shared.config.config import ClassificationPipelineConfig
+from ml_classification.step_03_train.train import TrainStep
 
 
 @pytest.mark.parametrize("n_classes", [2, 3])

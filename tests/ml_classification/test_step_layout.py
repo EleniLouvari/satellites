@@ -17,13 +17,13 @@ from sklearn.linear_model import LogisticRegression
 
 matplotlib.use("Agg")
 
-from satellites.ml_classification import ClassificationPipelineConfig, GeospatialClassificationPipeline
-from satellites.ml_classification.sensitivity import ClassificationSensitivityRunner, SensitivityResult
-from satellites.ml_classification.shared.logging import TeeStream
-from satellites.ml_classification.shared.models.models import ContiguousLabelClassifier
+from ml_classification import ClassificationPipelineConfig, GeospatialClassificationPipeline
+from ml_classification.sensitivity import ClassificationSensitivityRunner, SensitivityResult
+from ml_classification.shared.logging import TeeStream
+from ml_classification.shared.models.models import ContiguousLabelClassifier
 
-PACKAGE = Path(__file__).resolve().parents[2] / "src/satellites/ml_classification"
-PREFIX = "satellites.ml_classification."
+PACKAGE = Path(__file__).resolve().parents[2] / "src/ml_classification"
+PREFIX = "ml_classification."
 LEGACY = {"core", "steps", "reporting", "visuals", "to_delete"}
 
 
@@ -76,53 +76,32 @@ def test_implementation_dependencies_follow_step_ownership():
         visit(name, ())
 
 
-@pytest.mark.parametrize(
-    "old_module",
-    [
-        "satellites.ml_classification.core.models",
-        "ml_classification_pipeline.core.models",
-        "ml_classification.ml_classification_pipeline.core.models",
-        "satellites.ml_classification.shared.models",
-    ],
-)
-def test_fitted_models_saved_under_previous_paths_still_load(old_module, monkeypatch):
-    historical = importlib.import_module(old_module)
-    canonical = importlib.import_module("satellites.ml_classification.shared.models.models")
-    assert historical.ContiguousLabelClassifier is canonical.ContiguousLabelClassifier
-    if old_module != "satellites.ml_classification.shared.models":
-        assert historical is canonical
+def test_fitted_model_round_trip_preserves_predictions():
     data = pd.DataFrame({"feature": [0.0, 0.2, 0.8, 1.0]})
     estimator = ContiguousLabelClassifier(LogisticRegression(), num_classes=2).fit(data, np.array([0, 0, 1, 1]))
     expected = estimator.predict_proba(data)
-    with monkeypatch.context() as context:
-        context.setattr(ContiguousLabelClassifier, "__module__", old_module)
-        serialized = pickle.dumps(estimator)
-    restored = pickle.loads(serialized)
+    restored = pickle.loads(pickle.dumps(estimator))
     assert type(restored) is ContiguousLabelClassifier
     np.testing.assert_allclose(restored.predict_proba(data), expected)
 
 
 @pytest.mark.parametrize(
-    "old_module, class_name",
+    "module_name, class_name",
     [
-        ("satellites.ml_classification.shared.config", "ClassificationPipelineConfig"),
-        ("satellites.ml_classification.shared.tensorflow_models", "TensorFlowDenseClassifier"),
-        ("satellites.ml_classification.shared.tensorflow_lstm_models", "KerasLSTMClassifier"),
+        ("ml_classification.shared.config.config", "ClassificationPipelineConfig"),
+        ("ml_classification.shared.models.tensorflow_models", "TensorFlowDenseClassifier"),
+        ("ml_classification.shared.models.tensorflow_lstm_models", "KerasLSTMClassifier"),
     ],
 )
-def test_objects_saved_with_flat_shared_paths_still_load(old_module, class_name, monkeypatch, tmp_path):
-    """Preserve artifacts produced while testing the previous shared layout."""
-    cls = getattr(importlib.import_module(old_module), class_name)
+def test_objects_round_trip_with_current_module_paths(module_name, class_name, tmp_path):
+    cls = getattr(importlib.import_module(module_name), class_name)
     kwargs = (
         {"project_dir": tmp_path, "target_column": "label", "feature_columns": ["value"]}
         if class_name == "ClassificationPipelineConfig"
         else {"random_state": 42}
     )
     original = cls(**kwargs)
-    with monkeypatch.context() as context:
-        context.setattr(cls, "__module__", old_module)
-        serialized = pickle.dumps(original)
-    restored = pickle.loads(serialized)
+    restored = pickle.loads(pickle.dumps(original))
     assert type(restored) is cls
     if class_name == "ClassificationPipelineConfig":
         assert restored.train_dir == original.train_dir

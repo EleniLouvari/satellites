@@ -14,12 +14,12 @@ import rasterio
 from rasterio.transform import from_origin
 from shapely.geometry import box
 
-from satellites.data_preparation.sources.planet.delivery import (
+from data_preparation.sources.planet.delivery import (
     build_local_planet_manifest,
     discover_planet_delivery_tiles,
     download_planet_delivery_tiles,
 )
-from satellites.data_preparation.parcel_stats.planet import PlanetBasemapZonalStats
+from data_preparation.parcel_stats.planet import PlanetBasemapZonalStats
 
 
 @pytest.fixture
@@ -160,7 +160,7 @@ def test_incomplete_order_rejected(tmp_path):
 
 
 def test_submicrometre_seam_is_tolerated_but_real_gap_rejected():
-    from satellites.data_preparation.parcel_stats.planet import _require_coverage
+    from data_preparation.parcel_stats.planet import _require_coverage
 
     parcels = gpd.GeoDataFrame(geometry=[box(0.5, 0.2, 1.5, 0.8)], crs=2100)
     tiles = gpd.GeoDataFrame(geometry=[box(0, 0, 1, 1), box(1 + 1e-8, 0, 2, 1)], crs=2100)

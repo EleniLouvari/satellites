@@ -15,16 +15,12 @@ from collections import defaultdict
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-PACKAGE = REPO / "src/satellites/ml_classification"
-PREFIX = "satellites.ml_classification"
-LEGACY = {"to_delete"}
+PACKAGE = REPO / "src/ml_classification"
+PREFIX = "ml_classification"
 
 
 def module_name(path: Path) -> str:
     parts = list(path.relative_to(REPO / "src").with_suffix("").parts)
-    if parts[:3] == ["satellites", "ml_classification", "to_delete"]:
-        # The package's temporary search path exposes these under their old names.
-        parts.pop(2)
     if parts[-1] == "__init__":
         parts.pop()
     return ".".join(parts)
@@ -66,8 +62,6 @@ def generate() -> str:
     consumers: dict[str, set[Path]] = defaultdict(set)
     for directory in ("src", "tests", "scripts"):
         for path in (REPO / directory).rglob("*.py"):
-            if path.is_relative_to(PACKAGE / "to_delete" / "_archive"):
-                continue
             source = path.read_text(encoding="utf-8-sig")
             package = module_name(path) if path.is_relative_to(REPO / "src") else ""
             if path.name != "__init__.py":
@@ -91,41 +85,26 @@ def generate() -> str:
         "Start with [README.md](README.md) for execution order and artifact producers/consumers.",
         "",
         "This index lists direct, statically discoverable importers, including tests, notebooks,",
-        "function-local imports, and literal compatibility aliases. It is not a runtime call graph.",
+        "function-local imports, and literal dynamic imports. It is not a runtime call graph.",
         "Inherited step methods are called by `pipeline.py`; shared helper calls are visible in",
-        "each step's explicit imports. Pickle/joblib can resolve historical class paths without",
-        "a source import. Optional dependencies and external notebooks may add other consumers.",
+        "each step's explicit imports. Optional dependencies and external notebooks may add",
+        "other consumers.",
         "",
     ]
-    for legacy, title in ((False, "Maintained implementations"), (True, "Compatibility modules awaiting deletion")):
-        lines += [f"## {title}", "", "| File | Responsibility | Direct importers |", "| --- | --- | --- |"]
-        for path in files:
-            relative = path.relative_to(PACKAGE)
-            if (relative.parts[0] in LEGACY) != legacy:
-                continue
-            tree = ast.parse(path.read_text(encoding="utf-8-sig"))
-            description = (ast.get_docstring(tree) or "Package marker.").splitlines()[0].replace("|", "\\|")
-            users = consumers[module_name(path)]
-            imported_by = "<br>".join(link(p) for p in sorted(users))
-            if not imported_by:
-                imported_by = (
-                    "Package initialization"
-                    if path.name == "__init__.py"
-                    else "No static importer; public/CLI or compatibility entry point"
-                )
-            lines.append(f"| {link(path)} | {description} | {imported_by} |")
-        lines.append("")
-    lines += [
-        "## Historical namespaces",
-        "",
-        "The small packages under `src/_compat/ml_classification*` forward historical imports",
-        "to this package. During testing, `to_delete/` supplies the old `core`, `steps`,",
-        "`reporting`, and `visuals` names through an optional package search path.",
-        "`to_delete/shared/` preserves former flat shared-module names, including modeling context and reports.",
-        "Maintained code uses the numbered step packages and `shared/` directly.",
-        "The source snapshots in `to_delete/_archive/` are recovery copies, excluded from this index.",
-        "",
-    ]
+    lines += ["## Maintained implementations", "", "| File | Responsibility | Direct importers |", "| --- | --- | --- |"]
+    for path in files:
+        tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+        description = (ast.get_docstring(tree) or "Package marker.").splitlines()[0].replace("|", "\\|")
+        users = consumers[module_name(path)]
+        imported_by = "<br>".join(link(p) for p in sorted(users))
+        if not imported_by:
+            imported_by = (
+                "Package initialization"
+                if path.name == "__init__.py"
+                else "No static importer; public/CLI entry point"
+            )
+        lines.append(f"| {link(path)} | {description} | {imported_by} |")
+    lines.append("")
     return "\n".join(lines)
 
 
@@ -137,7 +116,7 @@ def main() -> None:
     rendered = generate()
     if args.check:
         if not output.exists() or output.read_text(encoding="utf-8") != rendered:
-            raise SystemExit("ML file-usage index is stale: run python scripts/generate_ml_code_map.py")
+            raise SystemExit("Error: ML file-usage index is stale: run python scripts/generate_ml_code_map.py")
         print("ML file-usage index is current.")
     else:
         output.write_text(rendered, encoding="utf-8")

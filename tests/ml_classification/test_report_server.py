@@ -10,9 +10,9 @@ from urllib.request import urlopen
 
 import pytest
 
-from satellites.ml_classification.shared.reports import report_server as server
-from satellites.ml_classification.shared.reports.report_html import _to_report_relative_path, write_html_report
-from satellites.ml_classification.shared.reports.report_index import write_index_report
+from ml_classification.shared.reports import report_server as server
+from ml_classification.shared.reports.report_html import _to_report_relative_path, write_html_report
+from ml_classification.shared.reports.report_index import write_index_report
 
 
 def test_standalone_viewer_starts_without_pipeline_imports():
@@ -153,7 +153,7 @@ def test_report_still_saved_when_viewer_cannot_start(monkeypatch, tmp_path):
     def fail(*args, **kwargs):
         raise OSError("Port unavailable")
 
-    monkeypatch.setattr("satellites.ml_classification.shared.reports.report_html.open_report", fail)
+    monkeypatch.setattr("ml_classification.shared.reports.report_html.open_report", fail)
     report = tmp_path / "report.html"
     write_html_report(report, "Saved", "", [{"title": "Summary", "open_html_report": True}])
     assert "Saved" in report.read_text(encoding="utf-8")

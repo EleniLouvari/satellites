@@ -1,7 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0.."
-set "SRC_DIR=src\satellites"
+set "SRC_DIR=src"
 set "REPORT_DIR=outputs\quality"
 set "CHECK_FAILED=0"
 if not exist "%REPORT_DIR%" mkdir "%REPORT_DIR%"

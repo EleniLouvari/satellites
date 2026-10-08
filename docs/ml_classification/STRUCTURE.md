@@ -1,6 +1,6 @@
 # ML Classification Pipeline Structure
 
-This document describes the source-code layout of `satellites.ml_classification`,
+This document describes the source-code layout of `ml_classification`,
 the responsibility of every maintained file, and the output directory created
 when the pipeline runs. Runtime caches such as `__pycache__` are intentionally
 omitted.
@@ -26,7 +26,7 @@ all intermediate objects in memory.
 The maintained source is organized by workflow step:
 
 ```text
-src/satellites/ml_classification/
+src/ml_classification/
   pipeline.py
   step_01_check/       check.py + libraries/
   step_02_prepare/     prepare.py + libraries/
@@ -55,9 +55,9 @@ class reliability and combining confidence remain in `shared/class_reliability.p
 Prediction owns `libraries/inspection_priority/`, containing `scoring.py`,
 `diagnostics.py`, and `plots.py`. The root `pipeline.py` remains the orchestrator.
 
-- [Source guide and artifact lineage](../../src/satellites/ml_classification/README.md)
-- [Generated file responsibilities and direct importers](../../src/satellites/ml_classification/FILE_USAGE.md)
-- [Configuration](../../src/satellites/ml_classification/shared/config/config.py)
+- [Source guide and artifact lineage](../../src/ml_classification/README.md)
+- [Generated file responsibilities and direct importers](../../src/ml_classification/FILE_USAGE.md)
+- [Configuration](../../src/ml_classification/shared/config/config.py)
 
 The former `core/`, `steps/`, `reporting/`, and `visuals/` directories are held in
 `to_delete/` as compatibility wrappers until testing is complete. Original source
@@ -267,8 +267,8 @@ with the artifact name and configured schema version.
 
 ## Recommended reading order
 
-1. Read the [source guide](../../src/satellites/ml_classification/README.md).
+1. Read the [source guide](../../src/ml_classification/README.md).
 2. Follow `pipeline.py` and the five numbered step entry files.
 3. Follow explicit imports into each step's `libraries/` or `shared/`.
-4. Use [FILE_USAGE.md](../../src/satellites/ml_classification/FILE_USAGE.md) to find consumers of any file.
+4. Use [FILE_USAGE.md](../../src/ml_classification/FILE_USAGE.md) to find consumers of any file.
 5. Read `INCREMENTAL_WORKFLOW.md` before reusing artifacts across training runs.

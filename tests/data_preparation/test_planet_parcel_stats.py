@@ -7,7 +7,7 @@ import pytest
 import rasterio
 from rasterio.transform import from_origin
 from shapely.geometry import box
-from satellites.data_preparation.parcel_stats.planet import PlanetBasemapZonalStats
+from data_preparation.parcel_stats.planet import PlanetBasemapZonalStats
 
 
 @pytest.fixture
@@ -84,14 +84,14 @@ def test_zero_denominator_is_null(tmp_path):
     extractor = PlanetBasemapZonalStats(
         parcels, "2024-01-01", "2024-02-29", tmp_path / "out", 2100, parcel_id_field="parcel_code"
     )
-    result = extractor._calculate_local_sentinel2_index({"B8": np.array([0.0, 6.0]), "B6": np.array([0.0, 2.0])}, "NDVI")
+    result = extractor._calculate_local_optical_index({"B8": np.array([0.0, 6.0]), "B6": np.array([0.0, 2.0])}, "NDVI")
     assert np.isnan(result[0])
     assert result[1] == pytest.approx(0.5)
 
 
 def test_catalog_cross_year_and_download_resume(tmp_path, monkeypatch):
-    from satellites.data_preparation.parcel_stats.planet import download_monthly_tiles
-    from satellites.data_preparation.sources.hub import catalog_s3_checks
+    from data_preparation.parcel_stats.planet import download_monthly_tiles
+    from data_preparation.sources.hub import catalog_s3_checks
 
     queries, downloads = [], []
 
@@ -173,7 +173,7 @@ def test_planet_index_formulas(index, expected):
         name: np.array([value], dtype="float32")
         for name, value in {"B2": 0.1, "B4": 0.3, "B6": 0.2, "B7": 0.4, "B8": 0.6}.items()
     }
-    assert extractor._calculate_local_sentinel2_index(bands, index)[0] == pytest.approx(expected)
+    assert extractor._calculate_local_optical_index(bands, index)[0] == pytest.approx(expected)
 
 
 def test_ndmi_rejected(tmp_path):
@@ -297,7 +297,7 @@ def test_streaming_failure_cleanup_and_restart(tmp_path):
 
 def test_download_cache_validates_mode_and_local_file(tmp_path):
     from pathlib import Path
-    from satellites.data_preparation.parcel_stats.planet import download_monthly_tiles
+    from data_preparation.parcel_stats.planet import download_monthly_tiles
 
     _, manifest, tiles = streaming_inputs(tmp_path)
     catalog = LocalTileCatalog(manifest, tmp_path / "scratch")
@@ -482,11 +482,9 @@ def test_external_mask_change_invalidates_raw_cube(tmp_path):
 
 
 def test_source_neutral_api_and_optical_roles():
-    from satellites.data_preparation.parcel_stats import OpenEOZonalStats, OpenEOJobManagerZonalStats
-    from satellites.data_preparation.parcel_stats import SatelliteZonalStats, JobManagerSatelliteZonalStats
+    from data_preparation.parcel_stats import OpenEOZonalStats, OpenEOJobManagerZonalStats
 
-    assert OpenEOZonalStats is SatelliteZonalStats
-    assert OpenEOJobManagerZonalStats is JobManagerSatelliteZonalStats
+    assert issubclass(OpenEOJobManagerZonalStats, OpenEOZonalStats)
     red = np.array([0.2, 0.0], dtype="float32")
     nir = np.array([0.6, 0.0], dtype="float32")
     sentinel = OpenEOZonalStats.__new__(OpenEOZonalStats)
@@ -497,7 +495,6 @@ def test_source_neutral_api_and_optical_roles():
     np.testing.assert_allclose(actual, expected, equal_nan=True)
     assert actual[0] == pytest.approx(0.5)
     assert np.isnan(actual[1])
-    np.testing.assert_allclose(planet._calculate_local_sentinel2_index({"B6": red, "B8": nir}, "NDVI"), actual, equal_nan=True)
     planet.sentinel2_bands = ("B6", "B8")
     planet.sentinel2_indices = ("NDVI",)
     assert planet.optical_bands == ("B6", "B8")
@@ -536,14 +533,11 @@ def test_source_neutral_logs_and_worker_restore(tmp_path):
     )
     for attribute in ("logger", "source_logger", "filling_logger", "parcel_logger"):
         assert getattr(extractor, attribute).name.startswith("parcel_stats_pipeline.")
-    assert extractor.openeo_logger is extractor.source_logger
     assert (extractor.output_dir / "satellite_source.log").is_file()
-    assert not (extractor.output_dir / "satellite_openeo.log").exists()
     log = (extractor.output_dir / extractor.LOG_FILE_NAME).read_text(encoding="utf-8")
     assert "Source=Planet Basemaps" in log
-    assert "satellites.data_preparation.parcel_stats" not in log
+    assert "data_preparation.parcel_stats" not in log
     assert "Sentinel-1" not in log
     restored = pickle.loads(pickle.dumps(extractor))
     for attribute in ("logger", "source_logger", "filling_logger", "parcel_logger"):
         assert getattr(restored, attribute).name.startswith("parcel_stats_pipeline.worker.")
-    assert restored.openeo_logger is restored.source_logger

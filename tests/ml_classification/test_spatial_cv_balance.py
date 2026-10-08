@@ -8,8 +8,8 @@ import pytest
 from sklearn.dummy import DummyClassifier
 from sklearn.model_selection import cross_val_predict
 
-from satellites.ml_classification.shared.config.config import ClassificationPipelineConfig
-from satellites.ml_classification.step_02_prepare.prepare import PrepareStep
+from ml_classification.shared.config.config import ClassificationPipelineConfig
+from ml_classification.step_02_prepare.prepare import PrepareStep
 
 
 def _folds(tmp_path, sizes, labels=None, method="by_group"):

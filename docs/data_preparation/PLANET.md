@@ -121,9 +121,9 @@ put passwords or access tokens in notebook source.
 import os
 import geopandas as gpd
 
-from satellites.data_preparation.sources.hub.catalog_library import CatalogSearchUtils
-from satellites.data_preparation.parcel_stats.planet import PlanetBasemapZonalStats
-from satellites.data_preparation.parcel_stats import estimate_utm_epsg_from_parcels
+from data_preparation.sources.hub.catalog_library import CatalogSearchUtils
+from data_preparation.parcel_stats.planet import PlanetBasemapZonalStats
+from data_preparation.parcel_stats import estimate_utm_epsg_from_parcels
 
 parcels = gpd.read_file("parcels.gpkg")
 tiles = gpd.read_file("planet_quad_grid.gpkg")
@@ -175,7 +175,7 @@ Processing steps:
 ## Retain downloads for repeated experiments
 
 ```python
-from satellites.data_preparation.parcel_stats.planet import download_monthly_tiles
+from data_preparation.parcel_stats.planet import download_monthly_tiles
 
 manifest = download_monthly_tiles(
     catalog, tiles, "2024-01-01", "2024-12-31", "downloads/planet",
@@ -248,10 +248,10 @@ Live HUB asset contents and throughput require a separate representative data ru
 ## Source-neutral naming
 
 New workflows can import `PlanetBasemapZonalStats`, `OpenEOZonalStats` and
-`OpenEOJobManagerZonalStats` from `satellites.data_preparation.parcel_stats`. Existing imports
+`OpenEOJobManagerZonalStats` from `data_preparation.parcel_stats`. Existing imports
 remain valid. Shared optical processing uses native band IDs mapped to spectral
 roles, so Planet bands no longer need Sentinel-2 aliases for index algebra.
-See [naming and compatibility](README.md).
+See the [public API and naming guide](README.md).
 
 ### Notebook input and scratch paths
 

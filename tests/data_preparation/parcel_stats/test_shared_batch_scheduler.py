@@ -13,8 +13,8 @@ import pytest
 from openeo.extra.job_management import create_job_db, get_job_db
 from shapely.geometry import box
 
-from satellites.data_preparation.parcel_stats import batch_scheduler as scheduler
-from satellites.data_preparation.parcel_stats.multiuser import run_parallel_extractions
+from data_preparation.parcel_stats import batch_scheduler as scheduler
+from data_preparation.parcel_stats.multiuser import run_parallel_extractions
 
 
 def test_batch_views_preserve_concurrent_updates_and_isolate_rows(tmp_path):
@@ -96,7 +96,7 @@ def _parcels():
 def test_plans_before_acquisition_preserves_caches_and_job_owners(tmp_path, monkeypatch):
     config = _config(tmp_path)
     options = dict(config, parcels=_parcels(), output_dir=tmp_path / "partition_1", run_identifier="test_part1")
-    extractor = scheduler.JobManagerSatelliteZonalStats(**options)
+    extractor = scheduler.OpenEOJobManagerZonalStats(**options)
     cube_dir = extractor.output_dir / "monthly_cubes" / extractor._run_signature()
     cube_dir.mkdir(parents=True)
     plans = extractor._build_tile_plan(cube_dir)
@@ -121,7 +121,7 @@ def test_plans_before_acquisition_preserves_caches_and_job_owners(tmp_path, monk
         finalized.extend(number for number, _, _ in batches)
 
     monkeypatch.setattr(scheduler, "_drain_batches", drain)
-    monkeypatch.setattr(scheduler.JobManagerSatelliteZonalStats, "run_from_batches", finalize)
+    monkeypatch.setattr(scheduler.OpenEOJobManagerZonalStats, "run_from_batches", finalize)
     assert run_parallel_extractions([_parcels()], [("second", "pw"), ("first", "pw")], config) is None
     assert sorted(acquired) == [2, 3]
     assert finalized == [1, 2, 3]
@@ -131,7 +131,7 @@ def test_plans_before_acquisition_preserves_caches_and_job_owners(tmp_path, monk
 
 def test_legacy_jobs_are_pinned_and_missing_owner_is_rejected(tmp_path, monkeypatch):
     config = _config(tmp_path)
-    extractor = scheduler.JobManagerSatelliteZonalStats(
+    extractor = scheduler.OpenEOJobManagerZonalStats(
         **dict(config, parcels=_parcels(), output_dir=tmp_path / "partition_1", run_identifier="test_part1"),
     )
     cube_dir = extractor.output_dir / "monthly_cubes" / extractor._run_signature()
@@ -147,7 +147,7 @@ def test_legacy_jobs_are_pinned_and_missing_owner_is_rejected(tmp_path, monkeypa
         assert shared.qsize() == 2
 
     monkeypatch.setattr(scheduler, "_drain_batches", drain)
-    monkeypatch.setattr(scheduler.JobManagerSatelliteZonalStats, "run_from_batches", lambda *a: None)
+    monkeypatch.setattr(scheduler.OpenEOJobManagerZonalStats, "run_from_batches", lambda *a: None)
     run_parallel_extractions([_parcels()], [("first", "pw")], config)
     db = get_job_db(db.path)
     db.df["openeo_user"] = "missing-account"
@@ -163,7 +163,7 @@ def test_duplicate_accounts_rejected_for_direct_callers():
 
 @pytest.mark.parametrize("status", ["not_started", "start_failed", "finished", "error"])
 def test_batch_runner_restores_or_retries_without_losing_ownership(tmp_path, monkeypatch, status):
-    extractor = scheduler.JobManagerSatelliteZonalStats(**dict(_config(tmp_path), parcels=_parcels()))
+    extractor = scheduler.OpenEOJobManagerZonalStats(**dict(_config(tmp_path), parcels=_parcels()))
     plan = extractor._build_tile_plan(tmp_path)[0]
     row = scheduler._job_row(extractor, plan)
     row.update(status=status, id="original" if status != "not_started" else "", backend_name="cdse")
@@ -214,7 +214,7 @@ def test_batch_runner_restores_or_retries_without_losing_ownership(tmp_path, mon
 
 def test_cached_only_run_never_authenticates(tmp_path, monkeypatch):
     config = _config(tmp_path)
-    extractor = scheduler.JobManagerSatelliteZonalStats(
+    extractor = scheduler.OpenEOJobManagerZonalStats(
         **dict(config, parcels=_parcels(), output_dir=tmp_path / "partition_1", run_identifier="test_part1"),
     )
     cube_dir = extractor.output_dir / "monthly_cubes" / extractor._run_signature()
@@ -226,7 +226,7 @@ def test_cached_only_run_never_authenticates(tmp_path, monkeypatch):
         pytest.fail("Cached-only runs must not contact openEO")
 
     monkeypatch.setattr(scheduler.openeo, "connect", unexpected_connection)
-    monkeypatch.setattr(scheduler.JobManagerSatelliteZonalStats, "run_from_batches", lambda *a: None)
+    monkeypatch.setattr(scheduler.OpenEOJobManagerZonalStats, "run_from_batches", lambda *a: None)
     run_parallel_extractions([_parcels()], [("first", "pw"), ("second", "pw")], config)
 
 
@@ -238,6 +238,6 @@ def test_failed_acquisition_prevents_incomplete_partition_results(tmp_path, monk
         pytest.fail("Do not write incomplete partition results")
 
     monkeypatch.setattr(scheduler, "_drain_batches", fail)
-    monkeypatch.setattr(scheduler.JobManagerSatelliteZonalStats, "run_from_batches", unexpected_finalize)
+    monkeypatch.setattr(scheduler.OpenEOJobManagerZonalStats, "run_from_batches", unexpected_finalize)
     with pytest.raises(RuntimeError, match="download failed"):
         run_parallel_extractions([_parcels()], [("first", "pw")], _config(tmp_path))

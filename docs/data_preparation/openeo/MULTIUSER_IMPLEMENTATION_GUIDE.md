@@ -1,27 +1,41 @@
 # Multi-user extraction implementation guide
 
-The multi-user layer combines spatial grid partitioning with the two-job openEO
-account limit. It exposes `2 × number_of_unique_users` remote slots without
-allowing multiple local job managers to compete for the same account.
+The multi-user layer plans spatial partitions and shares their unsubmitted tile
+batches across accounts. The implementation allows one or two remote slots per
+account, exposing at most `2 × number_of_unique_users` simultaneous remote jobs.
+
+See [scheduling workflows and flowcharts](SCHEDULING.md) for the differences
+between `scheduling="batches"` and `scheduling="partitions"`.
+See [parcel grouping with buffers or tiles](PARCEL_GROUPING.md) for choosing and
+creating the spatial partitions supplied to either scheduler.
 
 ## Planning flow
 
 ```text
-OPENEO_USERS
-    -> one grid partition per user
-    -> choose tile width using every actual partition
-    -> one sequential partition queue per user
-    -> one active job manager per user
-    -> up to two remote tile jobs per active manager
+PostgreSQL account table (DB_NAME + TBL_USERS)
+    -> load_openeo_users_from_db(): validate and sort unique accounts
+    -> grid or cluster partitions
+    -> plan all tile batches using every actual partition
+    -> reuse cached cubes and pin existing jobs to their account
+    -> share unsubmitted batches across accounts (up to two slots each)
+    -> complete remote downloads
+    -> local processing and persistence per partition
+    -> explicit merge of saved time-statistics files
 ```
 
 ## Public functions
 
-### `load_openeo_users_from_env()`
+### `load_openeo_users_from_db()`
 
-Parses `OPENEO_USERS` entries in `username,password;username,password` format.
-Empty credentials and duplicate usernames are rejected so the number of users
-is a truthful concurrency count.
+Reads `username` and `password` columns from the PostgreSQL table configured by
+`DB_NAME` and `TBL_USERS`, using `POSTGRES_*` connection settings. Missing settings,
+empty tables, missing columns, blank/non-text credentials and duplicate usernames
+are rejected before scheduling. Usernames are trimmed and compared ignoring case;
+passwords are preserved exactly. The connection closes after the read and accounts
+are sorted by case-insensitive username.
+
+See [database account setup](CREDENTIALS.md) for dependencies, table requirements,
+environment loading and restoring the original account order for legacy runs.
 
 ### `split_geodataframe_by_grid(...)`
 
@@ -66,10 +80,16 @@ handled by `compute_tile_buffer_metres`, not by the width selection.
 
 ### `run_parallel_extractions(spatial_parts, users_list, config)`
 
-Partitions are assigned round-robin to user queues. User queues execute in
-parallel, but each individual queue processes its partitions sequentially. Each
-active partition creates one `JobManagerSatelliteZonalStats`, whose
-`openeo_parallel_jobs=2` setting fills that account's two remote slots.
+The default `scheduling="batches"` creates an `OpenEOJobManagerZonalStats` per
+partition, plans all jobs, then lets account slots pull unsubmitted batches
+from one shared queue. Existing job IDs remain pinned to their saved username;
+each slot resumes its owned jobs before taking new work. Job database writes
+are locked per partition. After downloads complete, local partition processing
+runs with at most one partition per account and each partition's `batch_workers`.
+
+With `scheduling="partitions"`, partitions instead enter round-robin account
+queues and each account processes its partitions sequentially. Local raster work
+is serialized within each process; explicit batch workers use separate processes.
 
 The function returns `None`; each partition persists its result under
 `output_dir/partition_<n>/satellite_parcel_time_stats.geoparquet`. Values above

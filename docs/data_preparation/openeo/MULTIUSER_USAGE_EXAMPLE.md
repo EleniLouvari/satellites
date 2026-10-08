@@ -4,23 +4,23 @@ The workflow plans all partition tiles first, then shares unsubmitted batches
 across all users, with up to two remote jobs per account. For `N` unique accounts, the maximum intended remote
 concurrency is therefore `2 × N`.
 
-Set the credentials before starting Python or the notebook kernel:
-
-```powershell
-$env:OPENEO_USERS="user1@example.com,password1;user2@example.com,password2"
-```
+Configure the PostgreSQL account table and kernel environment using
+[database account setup](CREDENTIALS.md): install the `database` extra, set
+`DB_NAME`, `TBL_USERS`, and the `POSTGRES_*` connection settings, and provide one
+unique CDSE account per row with `username` and `password` columns. The loader
+does not read `.env` automatically.
 
 Then run:
 
 ```python
 from pathlib import Path
 
-from satellites.data_preparation.parcel_stats.job_manager import (
+from data_preparation.parcel_stats.job_manager import (
     compute_tile_buffer_metres,
     compute_tile_width,
 )
-from satellites.data_preparation.parcel_stats.multiuser import (
-    load_openeo_users_from_env,
+from data_preparation.parcel_stats.multiuser import (
+    load_openeo_users_from_db,
     merge_and_save_results,
     run_parallel_extractions,
     split_geodataframe_by_grid,
@@ -31,7 +31,7 @@ OUTPUT_DIR = Path("C:/work_dir/example/1_parcel_stats")
 OPENEO_JOBS_PER_USER = 2
 
 # gdf_parcels must already be loaded and contain a unique parcel_code column.
-users_list = load_openeo_users_from_env()
+users_list = load_openeo_users_from_db()
 spatial_parts = split_geodataframe_by_grid(
     gdf_parcels,
     partition_count=len(users_list),
@@ -98,10 +98,12 @@ strategy; the notebook keeps the same entry point.
   There is no partition-wide or fixed-wave barrier between remote batches.
 - Cached NetCDFs are reused. Job IDs, retries and the account username persist
   in each partition's existing `monthly_cubes/<signature>/tile_jobs.parquet`.
-  Passwords are not saved in the database.
+  Passwords are not saved in these local job files; they come from PostgreSQL.
 - Existing remote jobs stay with their owning account. When first resuming an
   older run without saved usernames, keep the original account list and order:
   ownership is inferred from the previous round-robin partition assignment.
+  The database loader sorts by username; explicitly restore the original order
+  when migrating such runs, following the [account ordering example](CREDENTIALS.md#account-ordering-and-restarting-jobs).
 - Local statistics start after acquisition completes. At most one partition
   per account is processed locally at a time, each using `batch_workers`.
   Partition paths, batch numbering and the merge call are unchanged.

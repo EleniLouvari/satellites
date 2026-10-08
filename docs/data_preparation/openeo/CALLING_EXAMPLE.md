@@ -2,15 +2,16 @@
 
 This snippet assumes the notebook variables such as `gdf_parcels`,
 `parcel_id_column`, dates, bands, indices, statistics, and output paths have
-already been defined.
+already been defined. Configure `DB_NAME`, `TBL_USERS`, and `POSTGRES_*` in the
+kernel environment first; see [database account setup](CREDENTIALS.md).
 
 ```python
-from satellites.data_preparation.parcel_stats.job_manager import (
+from data_preparation.parcel_stats.job_manager import (
     compute_tile_buffer_metres,
     compute_tile_width,
 )
-from satellites.data_preparation.parcel_stats.multiuser import (
-    load_openeo_users_from_env,
+from data_preparation.parcel_stats.multiuser import (
+    load_openeo_users_from_db,
     merge_and_save_results,
     run_parallel_extractions,
     split_geodataframe_by_grid,
@@ -19,7 +20,7 @@ from satellites.data_preparation.parcel_stats.multiuser import (
 OPENEO_JOBS_PER_USER = 2
 
 # Load users first so the grid has one initial partition per account.
-users_list = load_openeo_users_from_env()
+users_list = load_openeo_users_from_db()
 spatial_parts = split_geodataframe_by_grid(
     gdf_parcels,
     partition_count=len(users_list),
@@ -74,8 +75,8 @@ extraction_config = {
     "spatial_fill_window_sizes": (3, 5, 7),
 }
 
-# User queues run concurrently. A user processes its partitions sequentially,
-# while its job manager keeps up to two openEO jobs active.
+# Accounts pull unsubmitted tile batches from a shared queue, with up to two
+# remote jobs per account. Existing jobs resume on their owning account.
 run_parallel_extractions(
     spatial_parts=spatial_parts,
     users_list=users_list,

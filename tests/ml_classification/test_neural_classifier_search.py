@@ -8,9 +8,9 @@ import pytest
 from sklearn.base import clone, is_classifier
 from sklearn.pipeline import Pipeline
 
-from satellites.ml_classification.shared.models.tensorflow_lstm_models import KerasLSTMClassifier
-from satellites.ml_classification.shared.models.tensorflow_models import TensorFlowDenseClassifier
-from satellites.ml_classification.step_03_train.train import TrainStep
+from ml_classification.shared.models.tensorflow_lstm_models import KerasLSTMClassifier
+from ml_classification.shared.models.tensorflow_models import TensorFlowDenseClassifier
+from ml_classification.step_03_train.train import TrainStep
 
 
 @pytest.mark.parametrize("estimator_class", [TensorFlowDenseClassifier, KerasLSTMClassifier])

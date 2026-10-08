@@ -16,6 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 acquisition = ["openeo", "boto3", "pystac-client", "h5netcdf", "netCDF4", "dask[array]", "openpyxl"]
+database = ["psycopg2-binary", "sqlalchemy"]
 ml = ["xgboost", "lightgbm", "imbalanced-learn", "shap"]
 neural = ["tensorflow"]
 interpolation = ["pykrige"]
@@ -23,30 +24,16 @@ notebooks = ["jupyterlab", "ipykernel"]
 gis-utilities = ["ipython", "networkx", "dill", "fiona", "skimpy", "libpysal", "esda", "splot", "statsmodels", "ruptures"]
 dev = ["pytest", "pytest-cov", "ruff", "radon", "pydocstyle", "bandit"]
 
-[tool.setuptools]
-py-modules = ["import_libraries", "global_variables"]
-
 [tool.setuptools.package-dir]
 "" = "src"
-common_libraries = "src/_compat/common_libraries"
-eda_pipeline = "src/_compat/eda_pipeline"
-hub_catalog = "src/_compat/hub_catalog"
-ml_classification = "src/_compat/ml_classification"
-ml_classification_pipeline = "src/_compat/ml_classification_pipeline"
-ml_classification_sensitivity = "src/_compat/ml_classification_sensitivity"
-openeo_parcel_stats_pipeline = "src/_compat/openeo_parcel_stats_pipeline"
-parcel_stats_pipeline = "src/_compat/parcel_stats_pipeline"
 
 [tool.setuptools.packages.find]
-where = ["src", "src/_compat"]
+where = ["src"]
+include = ["data_preparation*", "eda*", "ml_classification*", "shared*"]
 namespaces = false
 
-[tool.setuptools.package-data]
-# Keep historical imports available while the wrappers are quarantined for testing.
-"satellites.ml_classification" = ["to_delete/core/*.py", "to_delete/steps/*.py", "to_delete/reporting/*.py", "to_delete/visuals/*.py", "to_delete/shared/*.py"]
-
 [tool.coverage.run]
-source = ["satellites"]
+source = ["data_preparation", "eda", "ml_classification", "shared"]
 data_file = "outputs/quality/.coverage"
 
 [tool.coverage.xml]

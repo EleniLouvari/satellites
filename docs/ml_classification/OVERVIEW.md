@@ -6,7 +6,7 @@ and a runner for measuring sensitivity to the random seed.
 
 ## Package layout
 
-- `src/satellites/ml_classification/` contains `step_01_check/` through
+- `src/ml_classification/` contains `step_01_check/` through
   `step_05_predict/`. Each step has an entry file and its own `libraries/`.
 - `shared/` contains classification code used by multiple steps.
 - `shared/config/` holds `base.py`, `config.py`, and `tune_params.py`; `shared/models/` holds
@@ -22,8 +22,8 @@ and a runner for measuring sensitivity to the random seed.
 - `to_delete/` holds the former `core/`, `steps/`, `reporting/`, and `visuals/`
   wrappers and original source snapshots until testing is complete. The wrappers
   still support existing imports and saved models during this transition.
-- The [source guide](../../src/satellites/ml_classification/README.md) and
-  [file usage index](../../src/satellites/ml_classification/FILE_USAGE.md)
+- The [source guide](../../src/ml_classification/README.md) and
+  [file usage index](../../src/ml_classification/FILE_USAGE.md)
   explain ownership, dependencies, and artifact consumers.
 - `docs/ml_classification/output_template/` documents generated run folders.
   The pipeline creates these directories automatically beneath `project_dir`.
@@ -47,7 +47,7 @@ dataframe again.
 Install the repository into the active Python environment (see the root README):
 
 ```python
-from satellites.ml_classification import (
+from ml_classification import (
     ClassificationPipelineConfig,
     GeospatialClassificationPipeline,
 )
@@ -172,8 +172,8 @@ default check-step reset will overwrite earlier runs.
 ```python
 from pathlib import Path
 
-from satellites.ml_classification import ClassificationPipelineConfig
-from satellites.ml_classification.sensitivity import ClassificationSensitivityRunner
+from ml_classification import ClassificationPipelineConfig
+from ml_classification.sensitivity import ClassificationSensitivityRunner
 
 run_root = Path("outputs/example/run_001/sensitivity")
 

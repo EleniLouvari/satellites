@@ -7,21 +7,21 @@ agricultural parcels.
 
 ### Three Core Pipelines
 
-1. **Satellite Zonal Statistics** (`src/satellites/data_preparation/parcel_stats/`)
+1. **Satellite Zonal Statistics** (`src/data_preparation/parcel_stats/`)
    - Extracts Sentinel-1/2 observations from Copernicus Data Space via openEO
    - Computes temporal statistics for parcel geometries
    - Outputs: one ML-ready row per parcel, dated feature columns (e.g., `NDVI_median__20240701`)
    - Two implementations: `SatelliteZonalStats` (batch-grouped), `JobManagerSatelliteZonalStats` (tile-based)
    - Processing: IQR cleaning → null filling (temporal, 3x3, 5x5) → index calculation → zonal masking → persistence as GeoParquet
 
-2. **ML Classification Pipeline** (`src/satellites/ml_classification/`)
+2. **ML Classification Pipeline** (`src/ml_classification/`)
    - Five-step restartable workflow: Check → Prepare → Train → Evaluate → Predict
    - Each step writes outputs to numbered folders (`01_check/` through `05_predict/`) and HTML reports
    - Input: one row per entity (DataFrame or GeoDataFrame); output: class predictions with probabilities
    - Handles spatial splitting, class balancing, soft-voting ensembles, probability optimization
    - Supports hyperparameter tuning with configurable model candidates
 
-3. **EDA Pipeline** (`src/satellites/eda/`)
+3. **EDA Pipeline** (`src/eda/`)
    - Exploratory data analysis reports; mostly used in notebooks
 
 ### Key Integration Point
@@ -45,12 +45,12 @@ Zonal stats pipeline output → ML classification pipeline input. Features must 
 ### Notebook Environment Setup
 
 Install the repository into the active kernel environment with `python -m pip install --no-deps --no-build-isolation -e .`.
-Use explicit `satellites.*` imports; do not add `sys.path` edits or wildcard imports.
-Compatibility modules in `src/_compat/` are only for existing consumers.
+Use explicit imports from `data_preparation`, `eda`, `ml_classification`, and
+`shared`; do not add `sys.path` edits, compatibility aliases, or wildcard imports.
 
 ### Pipeline Usage Pattern (See `notebooks/projects/volvi/4_ml_classification.ipynb`)
 ```python
-from satellites.ml_classification import (
+from ml_classification import (
     GeospatialClassificationPipeline, ClassificationPipelineConfig
 )
 
@@ -94,10 +94,10 @@ pipeline.run_predict()  # Refit + predict all rows
 - Full predictions in `05_predict/final_predictions.joblib`; CSV preview in `05_predict/final_predictions_preview.csv`
 
 ### Random Seed Control
-- Default seed in `satellites.shared.constants`; notebook setup is explicit (`SEED_NUMBER = 42`)
+- Default seed in `shared.constants`; notebook setup is explicit (`SEED_NUMBER = 42`)
 - TensorFlow, NumPy, random, hash all seeded; CUDA disabled
 - OMP/threading limited to 4 intra-op threads for reproducibility
-- `satellites/ml_classification/sensitivity/` reruns full pipeline over multiple seeds
+- `ml_classification/sensitivity/` reruns full pipeline over multiple seeds
 
 ### Spatial Splitting (GeoDataFrame Projects)
 - `spatial_split=True` + `spatial_split_method="by_group"`: hold out complete grid cells
@@ -113,7 +113,7 @@ pipeline.run_predict()  # Refit + predict all rows
 
 ## Common Libraries
 
-All reusable utilities live in `src/satellites/shared/`:
+All reusable utilities live in `src/shared/`:
 - `io.py`: read/write GeoParquet, CSV, NetCDF
 - `geometry.py`: geometry repair, CRS transforms
 - `raster.py`: IQR cleaning, spatial interpolation (nearest, IDW, kriging)
@@ -152,11 +152,11 @@ Predictions + probabilities + review flags (confidence < threshold)
 
 ## Key Files to Know
 
-- **Entry config**: `src/satellites/shared/constants.py` (seed, null lists, plot themes)
-- **Pipeline core**: `src/satellites/ml_classification/pipeline.py`
-- **Step implementations**: `src/satellites/ml_classification/steps/`
-- **Zonal stats entry**: `src/satellites/data_preparation/parcel_stats/openeo.py`
-- **Common utilities**: `src/satellites/shared/`
+- **Entry config**: `src/shared/constants.py` (seed, null lists, plot themes)
+- **Pipeline core**: `src/ml_classification/pipeline.py`
+- **Step implementations**: `src/ml_classification/steps/`
+- **Zonal stats entry**: `src/data_preparation/parcel_stats/openeo.py`
+- **Common utilities**: `src/shared/`
 
 
 ## General Notes
@@ -173,6 +173,11 @@ Predictions + probabilities + review flags (confidence < threshold)
   naming conventions, code structure, and documentation style (130 characters max per line).
 - When new functionality is added, ensure that it follows the ruff and radon rules. New code should be tested for cyclomatic
   complexity and maintainability index, and refactored if necessary to meet the project's standards.
+- When writing new code, ensure it is consistent with the existing project structure and conventions.
+- In all error handling, provide clear and informative messages to aid in debugging and maintenance. Add the 'Error: ' prefix to all error messages.
+- Use double quotes for string literals consistently throughout the codebase.
+- Use f-strings for string formatting instead of concatenation or the `%` operator.
+- Use double quotes for strings in lists, tuples, and dictionaries as well.
 
 ## Repository organization
 

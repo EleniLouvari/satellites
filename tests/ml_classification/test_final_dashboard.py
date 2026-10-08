@@ -12,7 +12,7 @@ import pandas as pd
 import pytest
 from shapely.geometry import Point
 
-from satellites.ml_classification.shared.reports.final_dashboard import (
+from ml_classification.shared.reports.final_dashboard import (
     _build_cv_rows,
     _build_map_html,
     _build_performance_rows,
@@ -21,7 +21,7 @@ from satellites.ml_classification.shared.reports.final_dashboard import (
     _save_monthly_index_boxplots,
     write_pipeline_final_dashboard,
 )
-from satellites.ml_classification.shared.reports.report_index import write_index_report
+from ml_classification.shared.reports.report_index import write_index_report
 
 
 def test_build_phenology_rows_uses_monthly_medians_per_modeled_class():
@@ -142,7 +142,7 @@ def test_monthly_index_boxplots_use_month_rows_and_ndvi_ndwi_columns(monkeypatch
         return real_boxplot(*args, **kwargs)
 
     monkeypatch.setattr(
-        "satellites.ml_classification.shared.reports.final_dashboard.sns.boxplot",
+        "ml_classification.shared.reports.final_dashboard.sns.boxplot",
         record_boxplot,
     )
 
@@ -218,7 +218,7 @@ def test_write_pipeline_final_dashboard_exports_report_and_seasonal_peak_graph(m
         crs="EPSG:4326",
     )
     monkeypatch.setattr(
-        "satellites.ml_classification.shared.reports.final_dashboard.load_joblib",
+        "ml_classification.shared.reports.final_dashboard.load_joblib",
         lambda _path: parcels,
     )
     config = SimpleNamespace(

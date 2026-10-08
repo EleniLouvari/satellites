@@ -1,6 +1,6 @@
 # Project Template
 
-This is the runtime artifact layout expected by `satellites.ml_classification`.
+This is the runtime artifact layout expected by `ml_classification`.
 
 Folders:
 

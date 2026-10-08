@@ -9,7 +9,10 @@ __pycache__/*
 **/cache
 tmp/
 cache/
-*.env
+.env
+*.env*
+.env*
+.env.*
 *.sesskey
 .venv/
 .venv-checks/

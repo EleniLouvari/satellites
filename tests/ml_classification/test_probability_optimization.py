@@ -3,9 +3,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from satellites.ml_classification.shared.config.config import ClassificationPipelineConfig
-from satellites.ml_classification.shared.probabilities import apply_class_probability_multipliers
-from satellites.ml_classification.step_04_evaluate.libraries.probability_optimization import optimize_probability_multipliers
+from ml_classification.shared.config.config import ClassificationPipelineConfig
+from ml_classification.shared.probabilities import apply_class_probability_multipliers
+from ml_classification.step_04_evaluate.libraries.probability_optimization import optimize_probability_multipliers
 
 
 def _config(**overrides):

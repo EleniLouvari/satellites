@@ -10,13 +10,13 @@ from uuid import uuid4
 import matplotlib.image as mpimg
 import pandas as pd
 
-from satellites.ml_classification.shared.reports.confidence_diagnostics import (
+from ml_classification.shared.reports.confidence_diagnostics import (
     export_prediction_confidence_diagnostics,
     prepare_confidence_diagnostics,
 )
-from satellites.ml_classification.step_05_predict.libraries.inspection_priority.scoring import calculate_inspection_metrics
-from satellites.ml_classification.step_05_predict.libraries.inspection_priority.plots import save_inspection_relationship_plot
-from satellites.ml_classification.step_05_predict.libraries.report import write_predict_report
+from ml_classification.step_05_predict.libraries.inspection_priority.scoring import calculate_inspection_metrics
+from ml_classification.step_05_predict.libraries.inspection_priority.plots import save_inspection_relationship_plot
+from ml_classification.step_05_predict.libraries.report import write_predict_report
 
 
 def _prediction_rows() -> pd.DataFrame:

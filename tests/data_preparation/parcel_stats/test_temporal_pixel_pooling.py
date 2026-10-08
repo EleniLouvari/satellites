@@ -7,7 +7,7 @@ import pytest
 import xarray as xr
 from shapely.geometry import box
 
-from satellites.data_preparation.parcel_stats.openeo import SatelliteZonalStats
+from data_preparation.parcel_stats.openeo import OpenEOZonalStats
 
 
 def _extractor(tmp_path, **overrides):
@@ -31,7 +31,7 @@ def _extractor(tmp_path, **overrides):
         fill_nulls=False,
         keep_cleaned_checkpoint=True,
     )
-    return SatelliteZonalStats(**(options | overrides))
+    return OpenEOZonalStats(**(options | overrides))
 
 
 def _write_cube(path, times, **bands):
@@ -175,7 +175,7 @@ def test_existing_composites_still_reduce_only_spatial_pixels(tmp_path):
 @pytest.mark.parametrize("remove_outliers", [False, True])
 @pytest.mark.parametrize("temporal_windows", [None, (3,), (3, 5)])
 def test_streamed_cleaning_matches_full_cube_with_filling(tmp_path, monkeypatch, fill_mode, remove_outliers, temporal_windows):
-    from satellites.data_preparation.parcel_stats.core import streamed_raster
+    from data_preparation.parcel_stats.core import streamed_raster
 
     extractor = _extractor(
         tmp_path,

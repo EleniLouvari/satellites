@@ -5,22 +5,22 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from satellites.ml_classification.step_04_evaluate.libraries.class_reliability import calculate_oof_class_reliability
-from satellites.ml_classification.shared.config.config import ClassificationPipelineConfig
-from satellites.ml_classification.shared.rank_confidence import (
+from ml_classification.step_04_evaluate.libraries.class_reliability import calculate_oof_class_reliability
+from ml_classification.shared.config.config import ClassificationPipelineConfig
+from ml_classification.shared.rank_confidence import (
     aggregate_rank_scores,
     assign_confidence_levels,
     classify_ensemble_rank_based,
     probabilities_to_ranks,
 )
-from satellites.ml_classification.core.rank_confidence_calibration import (
+from ml_classification.core.rank_confidence_calibration import (
     apply_calibration_to_parcel_frame,
     fit_class_aware_confidence_calibration,
 )
-from satellites.ml_classification.step_03_train.train import TrainStep
-from satellites.ml_classification.step_04_evaluate.evaluate import EvaluateStep
-from satellites.ml_classification.step_05_predict.libraries.refit import fit_and_predict_selected_strategy
-from satellites.ml_classification.step_05_predict.predict import PredictStep
+from ml_classification.step_03_train.train import TrainStep
+from ml_classification.step_04_evaluate.evaluate import EvaluateStep
+from ml_classification.step_05_predict.libraries.refit import fit_and_predict_selected_strategy
+from ml_classification.step_05_predict.predict import PredictStep
 
 CLASSES = ["a", "b", "c", "d"]
 
@@ -263,7 +263,7 @@ def test_selected_strategy_returns_member_probabilities(monkeypatch):
             return np.repeat(np.array([[0.7, 0.3]]), len(x), axis=0)
 
     monkeypatch.setattr(
-        "satellites.ml_classification.shared.models.models.build_estimator_by_name", lambda *_args, **_kwargs: Estimator()
+        "ml_classification.shared.models.models.build_estimator_by_name", lambda *_args, **_kwargs: Estimator()
     )
     frame = pd.DataFrame({"feature": [1.0, 2.0]})
 
@@ -297,7 +297,7 @@ def test_selected_strategy_rejects_model_class_order_mismatch(monkeypatch):
             return np.repeat(np.array([[0.7, 0.3]]), len(x), axis=0)
 
     monkeypatch.setattr(
-        "satellites.ml_classification.shared.models.models.build_estimator_by_name",
+        "ml_classification.shared.models.models.build_estimator_by_name",
         lambda *_args, **_kwargs: Estimator(),
     )
     frame = pd.DataFrame({"feature": [1.0, 2.0]})

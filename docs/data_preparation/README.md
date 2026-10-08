@@ -3,7 +3,7 @@
 Use the source-neutral public package for new workflows:
 
 ```python
-from satellites.data_preparation.parcel_stats import (
+from data_preparation.parcel_stats import (
     OpenEOZonalStats,
     OpenEOJobManagerZonalStats,
     PlanetBasemapZonalStats,
@@ -32,23 +32,27 @@ which translates native band IDs to roles such as `red`, `nir` and `swir_1`.
 Future optical adapters should define their own roles and supported indices;
 missing spectral coverage must not be replaced with an unrelated band.
 
-## Compatibility
+## Implementation
 
-`OpenEOZonalStats` is an alias of the original `SatelliteZonalStats`;
-`OpenEOJobManagerZonalStats` aliases `JobManagerSatelliteZonalStats`.
-Existing imports, class identity, constructor arguments, saved output names and
-cache signatures remain unchanged. Implementations now live in
-`satellites.data_preparation.parcel_stats`, with service-independent processing
-in `core/` and separate openEO and Planet workflows. Old module paths forward
-to these implementations through compatibility shims.
+`OpenEOZonalStats` and `OpenEOJobManagerZonalStats` are the canonical class names.
+Only the current class names are exported. Implementations live in
+`data_preparation.parcel_stats`, with service-independent processing
+in `core/` and separate openEO and Planet workflows.
 
-The shared constructor still stores optical configuration in legacy
-`sentinel2_*` fields. Read-only `optical_*` properties expose the same values
-without duplicating state. Planet's legacy constant aliases bridge that
-constructor; they do not imply Sentinel-2 imagery. The old private
-`_calculate_local_sentinel2_index` method delegates to the optical implementation.
+The openEO constructor uses sensor-specific `sentinel2_*` fields. The shared
+engine reads `optical_*` properties and calculates indices through
+`_calculate_local_optical_index`, using each adapter's spectral band roles.
 
-See [Planet usage](planet.md) for local/downloaded inputs.
+See the [detailed openEO workflow](openeo/WORKFLOW.md) for acquisition through
+parcel features, or [Planet usage](PLANET.md) for local/downloaded inputs.
+
+The multi-user openEO notebook loads accounts from PostgreSQL. See
+[database account setup](openeo/CREDENTIALS.md) for dependencies, connection
+settings, required table columns and restart ordering.
+
+For a step-by-step explanation of local `.nc` processing, temporary `.partial.nc`
+files, cleaning, parcel statistics, and restart behavior, see
+[How NetCDF processing works](NETCDF_PROCESSING.md).
 
 ## Logs and persisted filenames
 
@@ -63,13 +67,10 @@ radar inputs are selected.
 - `satellite_parcel_statistics.log`: parcel aggregation and checkpoints.
 
 Workers add `.worker-<process-id>` to their individual file names.
-New runs no longer create `satellite_openeo.log`. Existing log files are left in
-place. `openeo_logger` remains a compatibility alias for `source_logger`.
-Actual openEO backend connection and job messages still identify that service.
+Acquisition code uses `source_logger`.
+Actual openEO backend connection and job messages identify that service.
 
 Result tables, cleaning reports and raster checkpoints retain their existing
 source-neutral `satellite_*`, batch and temporal filenames, preserving resume
 behavior. Planet-specific manifests and delivery inventories retain `planet_*`
-names because they describe Planet assets. Python traceback paths and imports
-can still contain the legacy implementation package name; these are not progress
-messages and changing them would require relocating the compatibility package.
+names because they describe Planet assets.

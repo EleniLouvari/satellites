@@ -4,7 +4,7 @@ import geopandas as gpd
 import pytest
 from shapely.geometry import box
 
-from satellites.data_preparation.parcel_stats import estimate_utm_epsg_from_parcels
+from data_preparation.parcel_stats import estimate_utm_epsg_from_parcels
 
 
 @pytest.mark.parametrize(

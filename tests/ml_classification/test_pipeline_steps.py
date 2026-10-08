@@ -5,11 +5,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from satellites.ml_classification.pipeline import GeospatialClassificationPipeline
-from satellites.ml_classification.shared.config.base import PipelineStepBase
-from satellites.ml_classification.shared.config.config import ClassificationPipelineConfig
-from satellites.ml_classification.step_02_prepare.prepare import PrepareStep
-from satellites.ml_classification.step_05_predict.predict import PredictStep
+from ml_classification.pipeline import GeospatialClassificationPipeline
+from ml_classification.shared.config.base import PipelineStepBase
+from ml_classification.shared.config.config import ClassificationPipelineConfig
+from ml_classification.step_02_prepare.prepare import PrepareStep
+from ml_classification.step_05_predict.predict import PredictStep
 
 
 def _config(tmp_path: Path, **overrides):

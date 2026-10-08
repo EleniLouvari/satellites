@@ -6,11 +6,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from satellites.eda import EDAConfig, EDAPipeline
-from satellites.eda.core import build_eda_artifacts
-from satellites.eda.reporting import html as html_module
-from satellites.eda.visuals import create_eda_plots
-from satellites.eda.visuals import plots as plots_module
+from eda import EDAConfig, EDAPipeline
+from eda.core import build_eda_artifacts
+from eda.reporting import html as html_module
+from eda.visuals import create_eda_plots
+from eda.visuals import plots as plots_module
 
 
 def test_build_eda_artifacts_from_a_dataframe() -> None:
@@ -326,7 +326,7 @@ def test_qq_plot_uses_validity_ranked_global_feature_limit(tmp_path, monkeypatch
         captured_columns.extend(columns)
         output_path.touch()
 
-    monkeypatch.setattr("satellites.eda.visuals.plots._plot_qq_plots", capture_qq_columns)
+    monkeypatch.setattr("eda.visuals.plots._plot_qq_plots", capture_qq_columns)
     plot_paths = create_eda_plots(data, artifacts, config)
 
     assert captured_columns == ["best_feature", "second_feature"]
