@@ -7,7 +7,8 @@ those members support that already-selected class.
 
 from __future__ import annotations
 
-from typing import Any, Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 import numpy as np
 from scipy.stats import rankdata

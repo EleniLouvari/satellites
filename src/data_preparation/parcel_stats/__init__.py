@@ -9,7 +9,6 @@ from importlib import import_module
 _EXPORTS = {
     "OpenEOZonalStats": (".openeo", "OpenEOZonalStats"),
     "OpenEOJobManagerZonalStats": (".job_manager", "OpenEOJobManagerZonalStats"),
-    "PlanetBasemapZonalStats": (".planet", "PlanetBasemapZonalStats"),
     "ParcelStatsBase": (".core.base", "ParcelStatsBase"),
     "ParcelBatchPlanner": (".core.parcel_batches", "ParcelBatchPlanner"),
     "RasterCleaner": (".core.raster_cleaning", "RasterCleaner"),

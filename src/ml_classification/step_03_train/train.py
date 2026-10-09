@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any
 
@@ -105,7 +106,7 @@ class TrainStep(PipelineStepBase):
             supports_predict_proba = hasattr(estimator, "predict_proba")
         except Exception:
             # Keep fallback from candidate metadata if model loading fails.
-            pass
+            logging.getLogger(__name__).debug("Error: _build_recovered_model_spec failed; using its fallback.", exc_info=True)
         return {
             "best_params": {},
             "supports_predict_proba": supports_predict_proba,
@@ -201,9 +202,8 @@ class TrainStep(PipelineStepBase):
             "INFO",
         )
 
-    def _summarize_search(
-        self, candidate: Any, search: HalvingRandomSearchCV, results_df: pd.DataFrame
-    ) -> tuple[dict, list[dict]]:
+    @staticmethod
+    def _summarize_search(candidate: Any, search: HalvingRandomSearchCV, results_df: pd.DataFrame) -> tuple[dict, list[dict]]:
         """Extract the model summary and per-fold scores from the winning search row."""
         return summarize_search(candidate, search, results_df)
 
@@ -240,6 +240,7 @@ class TrainStep(PipelineStepBase):
             succeeded = True
             return summary, fold_rows, model_spec, None
         except Exception as exc:
+            logging.getLogger(__name__).debug("Error: _train_candidate failed; using its fallback.", exc_info=True)
             # Capture failure details and return so other candidates can continue training.
             print_formatted_txt(f"Skipping model '{candidate.name}' because training failed: {exc}", "WARNING")
             failure = {"model": candidate.name, "error_type": exc.__class__.__name__, "error_message": str(exc)}
@@ -315,53 +316,18 @@ class TrainStep(PipelineStepBase):
         """Train candidate models with CV search and save ranked training artifacts."""
         # Start model training across configured candidate estimators.
         print_formatted_txt("Training models...", "SUBSECTION")
-        train_df = load_joblib(self.config.prepare_dir / "train_dataset.joblib")
-        context = load_modeling_context(self.config)
-        prepare_summary = context["prepare_summary"]
-        active_features = context["active_features"]
-        numeric_features = context["numeric_features"]
-        categorical_features = context["categorical_features"]
-        label_encoder = context["label_encoder"]
-
-        X_train = train_df[active_features].copy()
-        y_train = label_encoder.transform(train_df[self.config.target_column].astype(str))
-        cv = [(np.array(fold["train_index"]), np.array(fold["valid_index"])) for fold in prepare_summary["cv_folds"]]
-
-        num_classes = len(prepare_summary["target_labels"])
-        candidates = build_model_candidates(self.config, numeric_features, categorical_features, num_classes=num_classes)
+        train_state = self._prepare_run_train_state()
+        existing_model_specs = self._load_incremental_model_specs()
+        self._recover_incremental_model_specs(
+            train_state["candidates"], existing_model_specs, train_state["numeric_features"], train_state["categorical_features"]
+        )
         training_rows: list[dict[str, Any]] = []
         failed_rows: list[dict[str, Any]] = []
         best_fold_rows: list[dict[str, Any]] = []
         model_specs: dict[str, dict[str, Any]] = {}
+        skipped_models: list[str] = []
 
-        # Load existing model_specs to implement incremental training behavior.
-        # This allows re-running with a different subset of models without retraining shared models.
-        existing_model_specs: dict[str, dict[str, Any]] = {}
-        existing_model_specs_path = self.config.train_dir / "model_specs.json"
-        skipped_models = []
-        if existing_model_specs_path.exists() and not self.config.force_retrain_models:
-            existing_model_specs = load_json(existing_model_specs_path)
-            print_formatted_txt("Incremental training enabled: checking for previously trained models", "INFO")
-
-        # Recover reusable model specs directly from model artifact folders when
-        # model_specs.json is missing or incomplete (common after interrupted runs).
-        recovered_models = []
-        if not self.config.force_retrain_models:
-            for candidate in candidates:
-                if candidate.name in existing_model_specs:
-                    continue
-                if not self._is_model_fully_trained(candidate.name, candidate.supports_predict_proba):
-                    continue
-                existing_model_specs[candidate.name] = self._build_recovered_model_spec(
-                    candidate, numeric_features=numeric_features, categorical_features=categorical_features
-                )
-                recovered_models.append(candidate.name)
-            if recovered_models:
-                print_formatted_txt(
-                    f"Recovered {len(recovered_models)} trained models from artifact folders: {recovered_models}", "INFO"
-                )
-
-        for candidate in candidates:
+        for candidate in train_state["candidates"]:
             # Check if this model was already trained and we're not forcing retraining.
             if (
                 candidate.name in existing_model_specs
@@ -384,7 +350,12 @@ class TrainStep(PipelineStepBase):
                 continue
 
             summary, fold_rows, model_spec, failure = self._train_candidate(
-                candidate, X_train, y_train, cv, numeric_features, categorical_features
+                candidate,
+                train_state["X_train"],
+                train_state["y_train"],
+                train_state["cv"],
+                train_state["numeric_features"],
+                train_state["categorical_features"],
             )
             if failure is not None:
                 failed_rows.append(failure)
@@ -400,6 +371,62 @@ class TrainStep(PipelineStepBase):
             )
 
         return self._finalize_training(training_rows, failed_rows, best_fold_rows, model_specs, skipped_models)
+
+    def _prepare_run_train_state(self) -> dict[str, Any]:
+        """Load training inputs and candidate-model definitions for run_train."""
+        train_df = load_joblib(self.config.prepare_dir / "train_dataset.joblib")
+        context = load_modeling_context(self.config)
+        prepare_summary = context["prepare_summary"]
+        active_features = context["active_features"]
+        numeric_features = context["numeric_features"]
+        categorical_features = context["categorical_features"]
+        label_encoder = context["label_encoder"]
+        x_train = train_df[active_features].copy()
+        y_train = label_encoder.transform(train_df[self.config.target_column].astype(str))
+        cv = [(np.array(fold["train_index"]), np.array(fold["valid_index"])) for fold in prepare_summary["cv_folds"]]
+        num_classes = len(prepare_summary["target_labels"])
+        candidates = build_model_candidates(self.config, numeric_features, categorical_features, num_classes=num_classes)
+        return {
+            "X_train": x_train,
+            "y_train": y_train,
+            "cv": cv,
+            "candidates": candidates,
+            "numeric_features": numeric_features,
+            "categorical_features": categorical_features,
+        }
+
+    def _load_incremental_model_specs(self) -> dict[str, dict[str, Any]]:
+        """Load existing model specs when incremental training is enabled."""
+        specs_path = self.config.train_dir / "model_specs.json"
+        if self.config.force_retrain_models or not specs_path.exists():
+            return {}
+        print_formatted_txt("Incremental training enabled: checking for previously trained models", "INFO")
+        return load_json(specs_path)
+
+    def _recover_incremental_model_specs(
+        self,
+        candidates: list[Any],
+        existing_model_specs: dict[str, dict[str, Any]],
+        numeric_features: list[str],
+        categorical_features: list[str],
+    ) -> None:
+        """Recover reusable model specs directly from trained model artifact folders."""
+        if self.config.force_retrain_models:
+            return
+        recovered_models = []
+        for candidate in candidates:
+            if candidate.name in existing_model_specs:
+                continue
+            if not self._is_model_fully_trained(candidate.name, candidate.supports_predict_proba):
+                continue
+            existing_model_specs[candidate.name] = self._build_recovered_model_spec(
+                candidate, numeric_features=numeric_features, categorical_features=categorical_features
+            )
+            recovered_models.append(candidate.name)
+        if recovered_models:
+            print_formatted_txt(
+                f"Recovered {len(recovered_models)} trained models from artifact folders: {recovered_models}", "INFO"
+            )
 
     def _create_train_reports(self) -> str:
         """Regenerate train-step plots and HTML report from persisted artifacts."""

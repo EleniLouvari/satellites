@@ -212,7 +212,7 @@ class OutlierAnalysis:
             rows.append(
                 {
                     "column": column,
-                    "count": int(len(clean)),
+                    "count": len(clean),
                     "iqr_lower_bound": self._round(lower),
                     "iqr_upper_bound": self._round(upper),
                     "iqr_outlier_count": int(iqr_mask.sum()),

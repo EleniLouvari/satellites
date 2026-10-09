@@ -56,7 +56,7 @@ class SpatialTrainTestSplitter:
         groups = self.build_spatial_groups(labeled_df)
         unique_group_count = int(groups.nunique())
         # Approximate the requested test fraction with one held-out fold (for example, 0.2 -> 5 folds).
-        requested_splits = max(2, int(round(1.0 / float(test_size))))
+        requested_splits = max(2, round(1.0 / float(test_size)))
         # Never request more folds than there are independently assignable spatial groups.
         n_splits = min(requested_splits, unique_group_count)
         if n_splits < 2:
@@ -211,7 +211,7 @@ class SpatialTrainTestSplitter:
         # Keep only cells that actually intersect the dataset footprint.
         grid_gdf = gpd.GeoDataFrame({"cell_id": poly_ids}, geometry=polygons, crs=points_gdf.crs)
         # Dropping empty cells reduces the assignment loop from the full grid to occupied regions.
-        union_geom = points_gdf.geometry.unary_union
+        union_geom = points_gdf.geometry.union_all()
         grid_gdf = grid_gdf[grid_gdf.geometry.intersects(union_geom)].copy().reset_index(drop=True)
         if grid_gdf.empty:
             raise ValueError("Error: Spatial grid creation failed: no intersecting cells found.")

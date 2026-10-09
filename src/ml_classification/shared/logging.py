@@ -8,7 +8,7 @@ import time
 import traceback
 from contextlib import contextmanager, nullcontext, redirect_stderr, redirect_stdout
 from contextvars import ContextVar
-from datetime import datetime
+from datetime import UTC, datetime
 from functools import wraps
 from pathlib import Path
 
@@ -44,7 +44,7 @@ class TeeStream:
         The console belongs to the caller and the log file is managed by
         tee_output. A handler can retain this wrapper after that context exits.
         """
-        return None
+        return
 
 
 def _strip_ansi(text: str) -> str:
@@ -60,7 +60,7 @@ def append_log(message: str, level: str = "INFO", log_path: str | Path | None = 
     if resolved_log_path is None:
         return
     resolved_log_path.parent.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = datetime.now(UTC).astimezone().strftime("%Y-%m-%d %H:%M:%S")
     clean_message = _strip_ansi(str(message))
     with resolved_log_path.open("a", encoding="utf-8") as log_file:
         log_file.write(f"[{timestamp}] [{level}] {clean_message}\n")
@@ -82,7 +82,7 @@ def tee_output(log_path: str | Path):
 def print_formatted_txt(msg: str, txt_format: str = "SECTION") -> None:
     """Print color-formatted text and persist the same message to logs."""
     # Keep terminal messaging and log records synchronized.
-    print("")
+    print()
     if msg.lower().startswith("start"):
         print(100 * "-")
     format_dict = {
@@ -100,7 +100,7 @@ def print_formatted_txt(msg: str, txt_format: str = "SECTION") -> None:
     append_log(msg, level=txt_format)
     if msg.lower().startswith("end"):
         print(100 * "*")
-        print("")
+        print()
 
 
 def calculate_time_duration(begin_time: float, end_time: float) -> str:
@@ -114,26 +114,26 @@ def calculate_time_duration(begin_time: float, end_time: float) -> str:
 
 def time_decorator(func):
     """Wrap a function with runtime logging, timing, and error capture."""
-
     # Preserve function metadata while adding execution instrumentation.
     @wraps(func)
     def wrapper(*args, **kwargs):
         """Execute the wrapped function inside logging and timing contexts."""
         # Attach step-level logs when a config object is available on self.
         config = getattr(args[0], "config", None) if args else None
-        log_context = tee_output(config.log_path) if config is not None else nullcontext()
+        log_path = getattr(config, "log_path", None) if config is not None else None
+        log_context = tee_output(log_path) if log_path is not None else nullcontext()
         with log_context:
-            log_token = ACTIVE_LOG_PATH.set(config.log_path) if config is not None else None
+            log_token = ACTIVE_LOG_PATH.set(log_path) if log_path is not None else None
             begin_time = time.time()
-            begin_datetime = datetime.fromtimestamp(begin_time)
+            begin_datetime = datetime.fromtimestamp(begin_time, UTC).astimezone()
             text2 = f"Function <{func.__name__}> started on {begin_datetime.strftime('%Y-%m-%d %H:%M:%S')}"
             text1 = "=" * (len(text2) + 6)
             print_formatted_txt(text1 + "\n" + text2, "RUN")
             try:
                 output = func(*args, **kwargs)
-                append_log(f"{func.__name__} returned: {repr(output)}", level="INFO")
+                append_log(f"{func.__name__} returned: {output!r}", level="INFO")
                 end_time = time.time()
-                end_datetime = datetime.fromtimestamp(end_time)
+                end_datetime = datetime.fromtimestamp(end_time, UTC).astimezone()
                 duration = calculate_time_duration(begin_time, end_time)
                 text1 = (
                     f"Execution time of function <{func.__name__}> ended on "

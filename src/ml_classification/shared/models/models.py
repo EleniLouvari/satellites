@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import importlib
+import logging
 import warnings
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 import numpy as np
 import pandas as pd
@@ -494,4 +495,5 @@ def _safe_import(module_name: str):
     try:
         return importlib.import_module(module_name)
     except Exception:
+        logging.getLogger(__name__).debug("Error: _safe_import failed; using its fallback.", exc_info=True)
         return None

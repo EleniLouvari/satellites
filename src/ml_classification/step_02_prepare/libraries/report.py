@@ -12,6 +12,7 @@ from ml_classification.shared.reports.report_html import write_html_report
 def write_prepare_report(config, prepare_summary: dict[str, Any], train_df: pd.DataFrame, test_df: pd.DataFrame) -> None:
     """Write the step-2 preparation report with split and fold diagnostics."""
     # Build compact summary tables for split statistics and fold sizes.
+    # Keep full fold index arrays out of the HTML summary; their sizes are shown below.
     summary_kv = {key: value for key, value in prepare_summary.items() if key != "cv_folds"}
     folds_df = pd.DataFrame(
         [
@@ -19,12 +20,14 @@ def write_prepare_report(config, prepare_summary: dict[str, Any], train_df: pd.D
                 "fold": fold["fold"],
                 "train_rows": len(fold["train_index"]),
                 "valid_rows": len(fold["valid_index"]),
+                # Validation fractions use only the training partition, excluding the reserved test set.
                 "valid_fraction": len(fold["valid_index"]) / len(train_df),
                 "target_valid_fraction": 1 / config.cv_folds,
             }
             for fold in prepare_summary["cv_folds"]
         ]
     )
+    # Show label coverage as well as row counts to reveal classes missing from either split.
     split_preview = pd.DataFrame(
         {
             "split": ["train", "test"],

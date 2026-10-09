@@ -182,74 +182,135 @@ def _render_table(
     cell_styles_where: list[dict[str, Any]] | None = None,
 ) -> str:
     """Render a dataframe as an HTML table with optional semantic row/cell styling."""
-    # Limit table preview size to keep reports responsive.
+    # Keep report pages responsive by capping rendered rows.
     if table.empty:
         return "<p class='muted'>No rows to display.</p>"
     preview = table.copy()
     if len(preview) > 50:
         preview = preview.head(50)
-    highlight_column = highlight_rows_where.get("column") if highlight_rows_where else None
-    highlight_values = set(highlight_rows_where.get("values", [])) if highlight_rows_where else set()
+
     allowed_row_styles = {"success", "muted"}
     allowed_cell_styles = {"danger", "success", "warning"}
-    column_widths = []
-    for idx, column in enumerate(preview.columns):
-        values = [len(str(column))] + [len(_stringify(value)) for value in preview.iloc[:, idx]]
-        width_ch = max(values)
-        width_ch += 1 if idx > 0 else (1 if compact_first_column else 2)
-        column_widths.append(width_ch)
+    highlight_column = highlight_rows_where.get("column") if highlight_rows_where else None
+    highlight_values = set(highlight_rows_where.get("values", [])) if highlight_rows_where else set()
 
-    table_classes = "data-table compact-first-col" if compact_first_column else "data-table"
-    parts = [f"<div class='table-scroll table-scroll-data'><table class='{table_classes}'>", "<colgroup>"]
-    for idx, _ in enumerate(preview.columns):
-        parts.append(f"<col style='width: {column_widths[idx]}ch;'>")
+    parts = [
+        f"<div class='table-scroll table-scroll-data'><table class='{_table_css_class(compact_first_column)}'>",
+        "<colgroup>",
+    ]
+    for width_ch in _column_widths(preview, compact_first_column):
+        parts.append(f"<col style='width: {width_ch}ch;'>")
     parts.append("</colgroup><thead><tr>")
     for column in preview.columns:
         parts.append(f"<th>{escape(str(column))}</th>")
     parts.append("</tr></thead><tbody>")
+
     for _, row in preview.iterrows():
-        is_highlighted = highlight_column in preview.columns and row[highlight_column] in highlight_values
-        row_class = "row-highlight" if is_highlighted else ""
-        if not row_class:
-            for style_rule in row_styles_where or []:
-                style_column = style_rule.get("column")
-                style_values = set(style_rule.get("values", []))
-                style_name = style_rule.get("style")
-                if style_name in allowed_row_styles and style_column in preview.columns and row[style_column] in style_values:
-                    row_class = f"row-{style_name}"
-                    break
+        row_class = _resolve_row_class(
+            row=row,
+            columns=preview.columns,
+            highlight_column=highlight_column,
+            highlight_values=highlight_values,
+            row_styles_where=row_styles_where,
+            allowed_row_styles=allowed_row_styles,
+        )
         class_attr = f" class='{row_class}'" if row_class else ""
         parts.append(f"<tr{class_attr}>")
         for column in preview.columns:
-            cell_style = (column_styles or {}).get(str(column))
-            numeric_styles = (numeric_cell_styles or {}).get(str(column), {})
-            if numeric_styles and pd.notna(row[column]):
-                # Display tables can contain placeholders such as "n/a" for
-                # unsupported classes; these have no numeric sign to style.
-                numeric_value = pd.to_numeric(row[column], errors="coerce")
-                if pd.notna(numeric_value):
-                    sign = "positive" if numeric_value > 0 else "negative" if numeric_value < 0 else "zero"
-                    numeric_style = numeric_styles.get(sign)
-                    if numeric_style in allowed_cell_styles:
-                        cell_style = numeric_style
-            for style_rule in cell_styles_where or []:
-                style_column = style_rule.get("column")
-                style_values = set(style_rule.get("values", []))
-                target_columns = set(style_rule.get("target_columns", []))
-                style_name = style_rule.get("style")
-                if (
-                    style_name in allowed_cell_styles
-                    and style_column in preview.columns
-                    and row[style_column] in style_values
-                    and str(column) in target_columns
-                ):
-                    cell_style = style_name
-                    break
+            cell_style = _resolve_cell_style(
+                row=row,
+                column=column,
+                columns=preview.columns,
+                column_styles=column_styles,
+                numeric_cell_styles=numeric_cell_styles,
+                cell_styles_where=cell_styles_where,
+                allowed_cell_styles=allowed_cell_styles,
+            )
             cell_class = f" class='cell-{cell_style}'" if cell_style in allowed_cell_styles else ""
             parts.append(f"<td{cell_class}>{escape(_stringify(row[column]))}</td>")
         parts.append("</tr>")
     parts.append("</tbody></table></div>")
     return "".join(parts)
+
+
+def _table_css_class(compact_first_column: bool) -> str:
+    """Return table CSS classes for layout tuning."""
+    return "data-table compact-first-col" if compact_first_column else "data-table"
+
+
+def _column_widths(preview: pd.DataFrame, compact_first_column: bool) -> list[int]:
+    """Compute monospace character widths for each rendered table column."""
+    widths: list[int] = []
+    for idx, _ in enumerate(preview.columns):
+        values = [len(str(preview.columns[idx]))] + [len(_stringify(value)) for value in preview.iloc[:, idx]]
+        width_ch = max(values)
+        width_ch += 1 if idx > 0 else (1 if compact_first_column else 2)
+        widths.append(width_ch)
+    return widths
+
+
+def _resolve_row_class(
+    row: pd.Series,
+    columns,
+    highlight_column: str | None,
+    highlight_values: set[Any],
+    row_styles_where: list[dict[str, Any]] | None,
+    allowed_row_styles: set[str],
+) -> str:
+    """Resolve semantic row class with highlight taking precedence."""
+    if highlight_column in columns and row[highlight_column] in highlight_values:
+        return "row-highlight"
+    for style_rule in row_styles_where or []:
+        style_column = style_rule.get("column")
+        style_values = set(style_rule.get("values", []))
+        style_name = style_rule.get("style")
+        if style_name in allowed_row_styles and style_column in columns and row[style_column] in style_values:
+            return f"row-{style_name}"
+    return ""
+
+
+def _resolve_cell_style(
+    row: pd.Series,
+    column: Any,
+    columns,
+    column_styles: dict[str, str] | None,
+    numeric_cell_styles: dict[str, dict[str, str]] | None,
+    cell_styles_where: list[dict[str, Any]] | None,
+    allowed_cell_styles: set[str],
+) -> str | None:
+    """Resolve semantic cell class from base, numeric-sign, and rule-based styles."""
+    cell_style = (column_styles or {}).get(str(column))
+    numeric_styles = (numeric_cell_styles or {}).get(str(column), {})
+    numeric_style = _resolve_numeric_sign_style(row[column], numeric_styles, allowed_cell_styles)
+    if numeric_style is not None:
+        cell_style = numeric_style
+
+    # Rule-based styles are evaluated last so explicit conditional rules can override sign-based styling.
+    for style_rule in cell_styles_where or []:
+        style_column = style_rule.get("column")
+        style_values = set(style_rule.get("values", []))
+        target_columns = set(style_rule.get("target_columns", []))
+        style_name = style_rule.get("style")
+        if (
+            style_name in allowed_cell_styles
+            and style_column in columns
+            and row[style_column] in style_values
+            and str(column) in target_columns
+        ):
+            return style_name
+    return cell_style
+
+
+def _resolve_numeric_sign_style(value: Any, numeric_styles: dict[str, str], allowed_cell_styles: set[str]) -> str | None:
+    """Return sign-based style for numeric-like values, skipping placeholders such as 'n/a'."""
+    if not numeric_styles or pd.isna(value):
+        return None
+    numeric_value = pd.to_numeric(value, errors="coerce")
+    if pd.isna(numeric_value):
+        return None
+    sign = "positive" if numeric_value > 0 else "negative" if numeric_value < 0 else "zero"
+    numeric_style = numeric_styles.get(sign)
+    return numeric_style if numeric_style in allowed_cell_styles else None
 
 
 def _render_images(images: list[dict[str, str]], report_dir: Path) -> str:

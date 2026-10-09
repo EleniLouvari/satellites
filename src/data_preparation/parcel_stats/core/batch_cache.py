@@ -36,6 +36,7 @@ class BatchResultCache:
 
     def _batch_available(self, netcdf_path):
         """Return whether a raw cube or saved statistics make acquisition unnecessary."""
+        # Either artifact can satisfy downstream processing, depending on cleanup mode.
         return Path(netcdf_path).is_file() or self._has_batch_statistics(netcdf_path)
 
     def _save_batch_statistics(self, netcdf_path, result, report):

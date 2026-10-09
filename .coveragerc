@@ -1,0 +1,13 @@
+[run]
+branch = True
+source = src
+omit =
+    src/tests/*
+    */__init__.py
+    src/common/s2_angs/s2_sensor_angs.py
+    */netCDF4/_netCDF4.pyx
+
+[report]
+show_missing = True
+skip_covered = False
+precision = 1

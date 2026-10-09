@@ -9,8 +9,8 @@ import pandas as pd
 from sklearn.metrics import classification_report, confusion_matrix, precision_recall_fscore_support, roc_auc_score
 
 from ml_classification.shared.logging import print_formatted_txt
-from ml_classification.step_04_evaluate.libraries.metrics import score_predictions
 from ml_classification.shared.persistence import load_joblib, save_frame_csv
+from ml_classification.step_04_evaluate.libraries.metrics import score_predictions
 from ml_classification.step_04_evaluate.libraries.plots import (
     save_binary_curve_plots,
     save_binary_evaluation_panel,
@@ -41,76 +41,92 @@ def to_geo_classifier_result_row(
     y_true: pd.Series, y_pred: np.ndarray, probabilities: np.ndarray | None, labels: list[str], model_name: str
 ) -> dict[str, Any]:
     """Build legacy GeoDataFrameClassifier-style metric rows for reporting."""
-    # Branch metric formatting for binary versus multiclass reporting outputs.
-    binary_problem = len(labels) == 2
-    if binary_problem:
-        conf_matrix = confusion_matrix(y_true, y_pred, labels=labels)
-        if conf_matrix.shape == (2, 2):
-            tn, fp, fn, tp = conf_matrix.ravel()
-        else:
-            tn = fp = fn = tp = 0
-        # Compute confusion-derived metrics safely (avoid division-by-zero).
-        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-        f1 = (2 * tp) / (2 * tp + fp + fn) if (2 * tp + fp + fn) > 0 else 0.0
-        # Overall accuracy across examples.
-        accuracy = float(np.mean(np.asarray(y_true) == np.asarray(y_pred)))
-        # Compute binary AUC when probabilities available; handle invalid cases.
-        auc = np.nan
-        if probabilities is not None and probabilities.shape[1] >= 2:
-            try:
-                auc = float(roc_auc_score(y_true, probabilities[:, 1]))
-            except ValueError:
-                auc = np.nan
-        return {
-            "model": model_name,
-            "roc_auc": (100 * auc) if not np.isnan(auc) else "Undefined",
-            "accuracy": 100 * accuracy,
-            "precision": 100 * precision,
-            "recall": 100 * recall,
-            "f1_score": 100 * f1,
-            "true_positives": int(tp),
-            "false_positives": int(fp),
-            "true_negatives": int(tn),
-            "false_negatives": int(fn),
-        }
+    if len(labels) == 2:
+        return _binary_geo_classifier_result_row(y_true, y_pred, probabilities, labels, model_name)
+    return _multiclass_geo_classifier_result_row(y_true, y_pred, probabilities, labels, model_name)
 
+
+def _binary_geo_classifier_result_row(
+    y_true: pd.Series, y_pred: np.ndarray, probabilities: np.ndarray | None, labels: list[str], model_name: str
+) -> dict[str, Any]:
+    """Build binary reporting metrics for the legacy GeoDataFrameClassifier row format."""
+    conf_matrix = confusion_matrix(y_true, y_pred, labels=labels)
+    tn, fp, fn, tp = conf_matrix.ravel() if conf_matrix.shape == (2, 2) else (0, 0, 0, 0)
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    f1 = (2 * tp) / (2 * tp + fp + fn) if (2 * tp + fp + fn) > 0 else 0.0
+    accuracy = float(np.mean(np.asarray(y_true) == np.asarray(y_pred)))
+    auc = _binary_auc(y_true, probabilities)
+    return {
+        "model": model_name,
+        "roc_auc": (100 * auc) if not np.isnan(auc) else "Undefined",
+        "accuracy": 100 * accuracy,
+        "precision": 100 * precision,
+        "recall": 100 * recall,
+        "f1_score": 100 * f1,
+        "true_positives": int(tp),
+        "false_positives": int(fp),
+        "true_negatives": int(tn),
+        "false_negatives": int(fn),
+    }
+
+
+def _binary_auc(y_true: pd.Series, probabilities: np.ndarray | None) -> float:
+    """Return binary ROC AUC when probability columns are available."""
+    if probabilities is None or probabilities.shape[1] < 2:
+        return np.nan
+    try:
+        return float(roc_auc_score(y_true, probabilities[:, 1]))
+    except ValueError:
+        return np.nan
+
+
+def _multiclass_geo_classifier_result_row(
+    y_true: pd.Series, y_pred: np.ndarray, probabilities: np.ndarray | None, labels: list[str], model_name: str
+) -> dict[str, Any]:
+    """Build multiclass reporting metrics for the legacy GeoDataFrameClassifier row format."""
     precision_arr, recall_arr, f1_arr, _ = precision_recall_fscore_support(
         y_true, y_pred, average=None, labels=labels, zero_division=0
     )
-    # Per-class precision/recall/f1 and overall accuracy for multiclass problems.
     accuracy = float(np.mean(np.asarray(y_true) == np.asarray(y_pred)))
-    roc_auc_str = "Undefined"
-    if probabilities is not None:
-        try:
-            # Compute per-class ROC AUC with one-vs-rest approach when possible.
-            auc_per_class = roc_auc_score(y_true, probabilities, labels=labels, multi_class="ovr", average=None)
-            roc_auc_str = ", ".join([f"class {idx} ({100 * score:.2f})" for idx, score in enumerate(auc_per_class)])
-        except ValueError:
-            roc_auc_str = "Undefined"
-    precision_str = ", ".join([f"class {idx} ({100 * score:.2f})" for idx, score in enumerate(precision_arr)])
-    recall_str = ", ".join([f"class {idx} ({100 * score:.2f})" for idx, score in enumerate(recall_arr)])
-    f1_str = ", ".join([f"class {idx} ({100 * score:.2f})" for idx, score in enumerate(f1_arr)])
     return {
         "model": model_name,
         "accuracy": 100 * accuracy,
         "f1_score": 100 * float(np.mean(f1_arr)),
         "precision": 100 * float(np.mean(precision_arr)),
         "recall": 100 * float(np.mean(recall_arr)),
-        "f1_score_class": f1_str,
-        "precision_class": precision_str,
-        "recall_class": recall_str,
-        "roc_auc_class": roc_auc_str,
+        "f1_score_class": _format_per_class_scores(f1_arr),
+        "precision_class": _format_per_class_scores(precision_arr),
+        "recall_class": _format_per_class_scores(recall_arr),
+        "roc_auc_class": _multiclass_auc_string(y_true, probabilities, labels),
     }
 
 
+def _format_per_class_scores(scores: np.ndarray) -> str:
+    """Format per-class scores as 'class idx (XX.XX)' text."""
+    return ", ".join([f"class {idx} ({100 * score:.2f})" for idx, score in enumerate(scores)])
+
+
+def _multiclass_auc_string(y_true: pd.Series, probabilities: np.ndarray | None, labels: list[str]) -> str:
+    """Format one-vs-rest AUC values for multiclass reporting."""
+    if probabilities is None:
+        return "Undefined"
+    try:
+        auc_per_class = roc_auc_score(y_true, probabilities, labels=labels, multi_class="ovr", average=None)
+    except ValueError:
+        return "Undefined"
+    return _format_per_class_scores(np.asarray(auc_per_class, dtype=float))
+
+
 def model_artifact_path(config, model_name):
+    """Return the persisted best-model artifact path for a model name."""
     # Prefer model artefact inside model-specific folder, fallback to top-level train dir.
     path = config.train_model_dir(model_name) / "best_model.joblib"
     return path if path.exists() else config.train_dir / f"{model_name}_best_model.joblib"
 
 
 def save_model_evaluation_plot(config, model_name, y_test, predictions, probabilities, labels):
+    """Save confusion and ROC-style evaluation plots for one evaluated model."""
     # If no probabilities, only save confusion matrix for the model.
     if probabilities is None:
         save_confusion_matrix_plot(
@@ -135,6 +151,7 @@ def save_model_evaluation_plot(config, model_name, y_test, predictions, probabil
 
 
 def evaluate_base_models(config, inputs):
+    """Evaluate all selected fitted models and collect metrics and artifacts."""
     # Evaluate each trained model on train/test splits, collecting metrics and artifacts.
     context = inputs["context"]
     labels = context["labels"]

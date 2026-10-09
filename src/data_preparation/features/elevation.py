@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 import geopandas as gpd
 import numpy as np
@@ -16,7 +16,6 @@ from rasterio.merge import merge
 from shared.io import read_data, write_data
 
 from .spatial_context import validate_projected_metric_crs
-
 
 WORK_PATH = Path("C:/work_dir")
 DEM_DIR = WORK_PATH / "dem"
@@ -33,6 +32,7 @@ def find_dem_tiles(dem_dir: Path, mosaic_path: Path) -> list[Path]:
         raise FileNotFoundError(f"Error: DEM directory does not exist: {dem_dir}")
 
     mosaic_resolved = mosaic_path.resolve()
+    # Exclude the generated mosaic so re-runs keep the original tile inputs only.
     tiles = sorted(
         path
         for path in dem_dir.glob("DEM*.tif")
@@ -44,6 +44,7 @@ def find_dem_tiles(dem_dir: Path, mosaic_path: Path) -> list[Path]:
 def _validate_dem_tiles(tile_paths: Iterable[Path]) -> None:
     """Fail early when source rasters cannot form a meaningful elevation mosaic."""
     paths = list(tile_paths)
+    # Use the first raster as the schema contract for all remaining tiles.
     with rasterio.open(paths[0]) as reference:
         expected_crs = reference.crs
         expected_count = reference.count
@@ -82,6 +83,7 @@ def create_dem_mosaic(tile_paths: list[Path], mosaic_path: Path, overwrite: bool
     mosaic_path.parent.mkdir(parents=True, exist_ok=True)
     sources = [rasterio.open(path) for path in tile_paths]
     try:
+        # Stream into a tiled GeoTIFF on disk to avoid holding the full mosaic in memory.
         merge(
             sources,
             nodata=MOSAIC_NODATA,
@@ -123,6 +125,7 @@ def _mean_elevation_for_geometry(
     except (WindowError, ValueError):
         return np.nan, 0
 
+    # Read only the parcel window, then mask to exact geometry coverage.
     elevation = dem.read(1, window=window, masked=True)
     if elevation.size == 0:
         return np.nan, 0
@@ -174,6 +177,7 @@ def append_parcel_elevation(
             print(f"Reprojecting parcel geometries from {parcels.crs} to {dem.crs} for zonal statistics.")
             working_geometry = parcels.to_crs(dem.crs).geometry
 
+        # Pre-allocate output arrays so parcel order is preserved exactly.
         means = np.full(len(parcels), np.nan, dtype=np.float64)
         counts = np.zeros(len(parcels), dtype=np.int32)
         for position, geometry in enumerate(working_geometry):
@@ -189,6 +193,7 @@ def append_parcel_elevation(
     if result.crs != original_crs or not result.geometry.equals(parcels.geometry):
         raise RuntimeError("Error: Elevation feature creation unexpectedly changed the original parcel geometry or CRS.")
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    # Publish atomically: only complete files are ever visible at output_path.
     temporary_path = output_path.with_name(f".{output_path.stem}.tmp{output_path.suffix}")
     try:
         write_data(result, str(temporary_path))

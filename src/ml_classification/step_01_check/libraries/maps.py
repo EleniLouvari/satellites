@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pandas as pd
@@ -42,6 +43,7 @@ def save_interactive_label_map(
     try:
         import folium
     except Exception:
+        logging.getLogger(__name__).debug("Error: save_interactive_label_map failed; using its fallback.", exc_info=True)
         return
     plot_df = df.loc[geometry.notna(), ["geometry", label_column]].copy()
     if plot_df.empty:
@@ -50,11 +52,12 @@ def save_interactive_label_map(
     try:
         plot_df = plot_df.to_crs(epsg=4326)
     except Exception:
+        logging.getLogger(__name__).debug("Error: save_interactive_label_map failed; using its fallback.", exc_info=True)
         return
     labels = sorted(plot_df[label_column].astype(str).unique())
     palette = sns.color_palette("tab20", n_colors=max(3, len(labels)))
     color_map = {
-        label: "#{:02x}{:02x}{:02x}".format(int(color[0] * 255), int(color[1] * 255), int(color[2] * 255))
+        label: f"#{int(color[0] * 255):02x}{int(color[1] * 255):02x}{int(color[2] * 255):02x}"
         for label, color in zip(labels, palette)
     }
     centroid = plot_df.geometry.union_all().centroid

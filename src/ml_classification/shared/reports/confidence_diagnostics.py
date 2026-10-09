@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import itertools
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mtick
@@ -90,6 +92,7 @@ def prepare_confidence_diagnostics(predictions: pd.DataFrame, target_column: str
         "prediction_top1_agreement",
     }
     analysis_columns = [column for column in [*base_columns, *sorted(optional_columns)] if column in predictions.columns]
+    # Unknown reference labels cannot establish correctness and must stay out of this audit population.
     diagnostics = predictions.loc[
         predictions[target_column].notna() & predictions[prediction_column].notna(), analysis_columns
     ].copy()
@@ -101,6 +104,7 @@ def prepare_confidence_diagnostics(predictions: pd.DataFrame, target_column: str
         diagnostics["predicted_label"]
     )
 
+    # Consensus and correctness are independent axes: models can agree on an incorrect prediction.
     conditions = [
         diagnostics["borda_agrees_prediction"] & diagnostics["prediction_correct"],
         diagnostics["borda_agrees_prediction"] & ~diagnostics["prediction_correct"],
@@ -117,6 +121,7 @@ def prepare_confidence_diagnostics(predictions: pd.DataFrame, target_column: str
 
 def _confidence_audit(diagnostics: pd.DataFrame) -> pd.DataFrame:
     """Return the Borda-agreement cohort used by the confidence audit."""
+    # The needs-check audit focuses on errors despite Borda agreement, not every prediction error.
     audit = diagnostics.loc[diagnostics["borda_agrees_prediction"]].copy()
     audit["audit_error"] = ~audit["prediction_correct"]
     audit["audit_group"] = pd.Categorical(
@@ -153,7 +158,7 @@ def _diagnostic_summary(diagnostics: pd.DataFrame) -> tuple[dict[str, Any], pd.D
     need_to_check = borda_agree & ~diagnostics["prediction_correct"]
     borda_rows = int(borda_agree.sum())
     summary = {
-        "validation_rows_with_reference": int(len(diagnostics)),
+        "validation_rows_with_reference": len(diagnostics),
         "correct_predictions": int(diagnostics["prediction_correct"].sum()),
         "incorrect_predictions": int((~diagnostics["prediction_correct"]).sum()),
         "prediction_accuracy": float(diagnostics["prediction_correct"].mean()) if len(diagnostics) else np.nan,
@@ -367,6 +372,7 @@ def _save_joint_behavior(confidence_audit: pd.DataFrame, output_path: Path, prob
     if joint_data.empty:
         return None
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    # Suppress sparse risk hexagons so tiny samples do not dominate the empirical error-rate display.
     minimum_hex_rows = min(20, max(1, len(joint_data) // 10))
     fig, axes = plt.subplots(1, 2, figsize=(16, 6.5), sharex=True, sharey=True)
     risk_hex = axes[0].hexbin(
@@ -517,6 +523,7 @@ def _save_confusion_heatmap(confusion: pd.DataFrame, output_path: Path) -> Path 
     if confusion.empty:
         return None
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    # Color shows within-row error share while annotations retain the exact confusion counts.
     row_share = confusion.div(confusion.sum(axis=1).replace(0, np.nan), axis=0)
     fig, ax = plt.subplots(figsize=(14, 10))
     sns.heatmap(
@@ -569,6 +576,7 @@ def _save_reason_sankey(need_to_check: pd.DataFrame, output_path: Path) -> Path 
     )
     node_labels: list[str] = []
     node_colors: list[str] = []
+    # Key nodes by stage and value so repeated labels such as HIGH remain distinct across components.
     node_lookup: dict[tuple[str, str], int] = {}
     stage_colors = ("#2e6f95", "#7a9a48", "#d99a2b", "#c66b3d")
     for stage_index, (column, prefix) in enumerate(stages):
@@ -581,7 +589,7 @@ def _save_reason_sankey(need_to_check: pd.DataFrame, output_path: Path) -> Path 
     sources: list[int] = []
     targets: list[int] = []
     values: list[int] = []
-    for (left_column, _), (right_column, _) in zip(stages[:-1], stages[1:]):
+    for (left_column, _), (right_column, _) in itertools.pairwise(stages):
         flows = (
             plot.assign(
                 **{
@@ -628,71 +636,123 @@ def export_prediction_confidence_diagnostics(
     probability_threshold: float = 0.60,
 ) -> ConfidenceDiagnosticsArtifacts | None:
     """Build source tables and save the requested confidence diagnostics."""
+    selected = _validated_selected_visuals(include)
+    if not _has_required_diagnostic_columns(predictions, target_column, prediction_column):
+        return None
+    diagnostics = prepare_confidence_diagnostics(predictions, target_column, prediction_column)
+    if diagnostics.empty:
+        return None
+    audit_context = _diagnostic_audit_context(diagnostics)
+    plots_dir, data_dir = _diagnostic_output_directories(Path(output_dir))
+    tables = _diagnostic_tables(audit_context)
+    _write_diagnostic_tables(tables, data_dir)
+    images = _diagnostic_images(selected, audit_context, plots_dir, probability_threshold)
+    embeds = _diagnostic_embeds(selected, audit_context, plots_dir)
+    return ConfidenceDiagnosticsArtifacts(summary=audit_context["summary"], images=images, embeds=embeds, tables=tables)
+
+
+def _validated_selected_visuals(include: Iterable[str]) -> set[str]:
+    """Validate requested visual names and return as a set."""
     selected = set(include)
     unknown_visuals = sorted(selected.difference(_AVAILABLE_VISUALS))
     if unknown_visuals:
         raise ValueError(f"Error: Unsupported confidence diagnostic visuals: {unknown_visuals}")
-    base_required = {target_column, prediction_column, "prediction_borda_winner"}
-    if not base_required.issubset(predictions.columns):
-        return None
+    return selected
 
-    diagnostics = prepare_confidence_diagnostics(predictions, target_column, prediction_column)
-    if diagnostics.empty:
-        return None
+
+def _has_required_diagnostic_columns(predictions: pd.DataFrame, target_column: str, prediction_column: str) -> bool:
+    """Check whether the minimum required diagnostic columns exist."""
+    return {target_column, prediction_column, "prediction_borda_winner"}.issubset(predictions.columns)
+
+
+def _diagnostic_audit_context(diagnostics: pd.DataFrame) -> dict[str, Any]:
+    """Build a reusable context with all derived diagnostic summary tables."""
     confidence_audit = _confidence_audit(diagnostics)
     need_to_check = confidence_audit.loc[confidence_audit["audit_error"]].copy()
     summary, group_summary = _diagnostic_summary(diagnostics)
     class_risk = _class_risk_table(diagnostics)
-    median_summary = _confidence_median_summary(confidence_audit)
-    reason_matrix = _reason_matrix(need_to_check)
-    confusion = _confusion_matrix(need_to_check)
+    return {
+        "summary": summary,
+        "confidence_audit": confidence_audit,
+        "need_to_check": need_to_check,
+        "group_summary": group_summary,
+        "class_risk": class_risk,
+        "median_summary": _confidence_median_summary(confidence_audit),
+        "reason_matrix": _reason_matrix(need_to_check),
+        "confusion": _confusion_matrix(need_to_check),
+    }
 
-    root = Path(output_dir)
+
+def _diagnostic_output_directories(root: Path) -> tuple[Path, Path]:
+    """Create and return plot/data output directories."""
     plots_dir = root / "plots"
     data_dir = root / "data"
     plots_dir.mkdir(parents=True, exist_ok=True)
     data_dir.mkdir(parents=True, exist_ok=True)
-    tables = {
-        "diagnostic_group_summary": group_summary,
-        "confidence_metric_median_summary": median_summary,
-        "need_to_check_by_predicted_class": class_risk,
-        "need_to_check_reason_matrix": reason_matrix,
-        "need_to_check_confusion": confusion,
-    }
-    for name, table in tables.items():
-        table.to_csv(data_dir / f"{name}.csv", index=name.endswith("matrix") or name.endswith("confusion"))
+    return plots_dir, data_dir
 
+
+def _diagnostic_tables(context: dict[str, Any]) -> dict[str, pd.DataFrame]:
+    """Return diagnostic tables keyed by output file stem."""
+    return {
+        "diagnostic_group_summary": context["group_summary"],
+        "confidence_metric_median_summary": context["median_summary"],
+        "need_to_check_by_predicted_class": context["class_risk"],
+        "need_to_check_reason_matrix": context["reason_matrix"],
+        "need_to_check_confusion": context["confusion"],
+    }
+
+
+def _write_diagnostic_tables(tables: dict[str, pd.DataFrame], data_dir: Path) -> None:
+    """Persist diagnostic tables as CSV files."""
+    # Preserve category indexes for matrices; ordinary summary tables already carry explicit label columns.
+    for name, table in tables.items():
+        table.to_csv(data_dir / f"{name}.csv", index=name.endswith(("matrix", "confusion")))
+
+
+def _diagnostic_images(
+    selected: set[str], context: dict[str, Any], plots_dir: Path, probability_threshold: float
+) -> dict[str, Path]:
+    """Build selected diagnostic static image artifacts."""
     image_builders = {
-        "overview": (_save_diagnostic_overview, group_summary, plots_dir / "borda_consensus_correctness_overview.png"),
-        "class_rate": (_save_class_risk, class_risk, plots_dir / "need_to_check_rate_by_predicted_class.png"),
-        "reason_heatmap": (_save_reason_heatmap, reason_matrix, plots_dir / "need_to_check_confidence_components.png"),
-        "confusion": (_save_confusion_heatmap, confusion, plots_dir / "need_to_check_class_confusion.png"),
-        "distribution": (_save_distribution_comparison, confidence_audit, plots_dir / "confidence_metric_distributions.png"),
+        "overview": (_save_diagnostic_overview, context["group_summary"], plots_dir / "borda_consensus_correctness_overview.png"),
+        "class_rate": (_save_class_risk, context["class_risk"], plots_dir / "need_to_check_rate_by_predicted_class.png"),
+        "reason_heatmap": (_save_reason_heatmap, context["reason_matrix"], plots_dir / "need_to_check_confidence_components.png"),
+        "confusion": (_save_confusion_heatmap, context["confusion"], plots_dir / "need_to_check_class_confusion.png"),
+        "distribution": (
+            _save_distribution_comparison,
+            context["confidence_audit"],
+            plots_dir / "confidence_metric_distributions.png",
+        ),
     }
     images: dict[str, Path] = {}
     for name, (builder, table, output_path) in image_builders.items():
-        if name in selected:
-            saved_path = builder(table, output_path)
-            if saved_path is not None:
-                images[name] = saved_path
-
+        if name not in selected:
+            continue
+        saved_path = builder(table, output_path)
+        if saved_path is not None:
+            images[name] = saved_path
     if "joint_behavior" in selected:
         joint_path = _save_joint_behavior(
-            confidence_audit, plots_dir / "probability_borda_joint_behavior.png", probability_threshold
+            context["confidence_audit"], plots_dir / "probability_borda_joint_behavior.png", probability_threshold
         )
         if joint_path is not None:
             images["joint_behavior"] = joint_path
     if "class_confidence_risk" in selected:
         class_confidence_path = _save_class_confidence_risk(
-            class_risk, plots_dir / "class_confidence_risk.png", probability_threshold
+            context["class_risk"], plots_dir / "class_confidence_risk.png", probability_threshold
         )
         if class_confidence_path is not None:
             images["class_confidence_risk"] = class_confidence_path
+    return images
 
+
+def _diagnostic_embeds(selected: set[str], context: dict[str, Any], plots_dir: Path) -> dict[str, Path]:
+    """Build selected HTML embed artifacts."""
     embeds: dict[str, Path] = {}
-    if "reason_sankey" in selected:
-        sankey_path = _save_reason_sankey(need_to_check, plots_dir / "need_to_check_confidence_flow.html")
-        if sankey_path is not None:
-            embeds["reason_sankey"] = sankey_path
-
-    return ConfidenceDiagnosticsArtifacts(summary=summary, images=images, embeds=embeds, tables=tables)
+    if "reason_sankey" not in selected:
+        return embeds
+    sankey_path = _save_reason_sankey(context["need_to_check"], plots_dir / "need_to_check_confidence_flow.html")
+    if sankey_path is not None:
+        embeds["reason_sankey"] = sankey_path
+    return embeds

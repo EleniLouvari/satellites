@@ -1,4 +1,7 @@
-"""Small formatting helpers without scientific or notebook dependencies."""
+"""Small formatting helpers without scientific or notebook dependencies."""
+
+# Keep this helper focused on a single transformation so the reporting pipeline stays easy to follow.
+
 
 
 def human_bytes(n: int) -> str:

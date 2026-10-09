@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import os
 import webbrowser
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -35,6 +36,7 @@ _servers: dict[Path, ThreadingHTTPServer] = {}
 _server_lock = Lock()
 _opened_reports: set[Path] = set()
 _browser_lock = Lock()
+_DISABLE_AUTO_OPEN_ENV = "SATELLITES_DISABLE_HTML_REPORT_OPEN"
 
 
 def _report_location(report_path: str | Path, root: str | Path | None) -> tuple[Path, str]:
@@ -65,11 +67,12 @@ def report_url(report_path: str | Path, *, root: str | Path | None = None) -> st
 def open_report(report_path: str | Path, *, root: str | Path | None = None, once: bool = False) -> str:
     """Open a report over HTTP, optionally only once per path in this process."""
     url = report_url(report_path, root=root)
+    if os.environ.get(_DISABLE_AUTO_OPEN_ENV, "").strip().lower() in {"1", "true", "yes", "on"}:
+        return url
     report = Path(report_path).resolve()
     with _browser_lock:
-        if not once or report not in _opened_reports:
-            if webbrowser.open(url) is not False:
-                _opened_reports.add(report)
+        if (not once or report not in _opened_reports) and webbrowser.open(url) is not False:
+            _opened_reports.add(report)
     return url
 
 

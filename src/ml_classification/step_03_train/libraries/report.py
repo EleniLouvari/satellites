@@ -16,6 +16,7 @@ from ml_classification.shared.reports.report_html import write_html_report
 
 def _supports_probability(value: Any) -> bool:
     """Normalize boolean-like values loaded directly or through CSV."""
+    # CSV strings such as "False" must not inherit Python's truthiness for nonempty strings.
     if isinstance(value, str):
         return value.strip().lower() in {"true", "1", "yes"}
     return bool(value)
@@ -26,7 +27,9 @@ def _configured_strategy_models(config, training_summary_df: pd.DataFrame) -> li
     if training_summary_df.empty or "model" not in training_summary_df.columns:
         return []
 
+    # Mirror the production CV ordering so highlighted candidates match the configured strategy.
     ranked_df = training_summary_df.sort_values(["cv_ranking_metric", "best_cv_score"], ascending=[False, False])
+    # Only probability-capable candidates can participate in the inferred strategy.
     if "supports_predict_proba" in ranked_df.columns:
         ranked_df = ranked_df[ranked_df["supports_predict_proba"].map(_supports_probability)]
     ranked_models = ranked_df["model"].astype(str).tolist()
@@ -56,6 +59,7 @@ def write_train_report(
     params_df = pd.DataFrame(
         [{"model": model_name, "best_params": spec["best_params"]} for model_name, spec in model_specs.items()]
     )
+    # These are expected members from training results; evaluation later persists the frozen selection.
     strategy_models = _configured_strategy_models(config, training_summary_df)
     cv_results_table = _prepare_cv_results_table(training_summary_df, strategy_models)
     scoring_primary = config.scoring_primary

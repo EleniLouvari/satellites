@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -10,7 +11,7 @@ import pandas as pd
 import seaborn as sns
 from matplotlib.patches import Patch
 
-from ml_classification.shared.reports.plotting import _save_figure as _save_figure
+from ml_classification.shared.reports.plotting import _save_figure as _save_figure  # noqa: PLC0414 - explicit public re-export
 
 
 def save_predicted_labels_map(
@@ -89,6 +90,7 @@ def _select_largest_polygons(df: pd.DataFrame, max_geometries: int) -> pd.DataFr
             working = area_df.to_crs(epsg=3857)
         areas = np.asarray(working.geometry.area)
     except Exception:
+        logging.getLogger(__name__).debug("Error: _select_largest_polygons failed; using its fallback.", exc_info=True)
         areas = np.asarray(area_df.geometry.area)
     area_df["_plot_area"] = areas
     area_df = area_df.nlargest(max_geometries, "_plot_area").drop(columns=["_plot_area"])

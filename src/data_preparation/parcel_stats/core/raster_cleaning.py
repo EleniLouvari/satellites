@@ -14,10 +14,11 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 import xarray as xr
-from shared.data_cleaning import fill_null_values_using_interpolation
 from rasterio.transform import xy
 from scipy.ndimage import distance_transform_edt
 from shapely.geometry import Point
+
+from shared.data_cleaning import fill_null_values_using_interpolation
 
 
 class RasterCleaner:
@@ -298,7 +299,6 @@ class RasterCleaner:
         fill_allowed: np.ndarray,
     ) -> None:
         """Log the null count before one raster-filling stage."""
-
         logger = getattr(self, "filling_logger", None) or getattr(self, "logger", None)
         if logger is None or variable_name is None or periods is None:
             return
@@ -324,7 +324,6 @@ class RasterCleaner:
         fill_allowed: np.ndarray,
     ) -> None:
         """Log pixels filled and nulls remaining after one raster stage."""
-
         logger = getattr(self, "filling_logger", None) or getattr(self, "logger", None)
         if logger is None or variable_name is None or periods is None:
             return
@@ -423,6 +422,151 @@ class RasterCleaner:
             )
         return filled, after_counts
 
+    @staticmethod
+    def _validate_fill_period_labels(variable_values: np.ndarray, periods: Sequence[str] | None) -> None:
+        """Validate optional period labels passed to variable filling."""
+        if periods is not None and len(periods) != variable_values.shape[0]:
+            raise ValueError(f"Error: Expected {variable_values.shape[0]} period labels for filling, received {len(periods)}.")
+
+    @staticmethod
+    def _empty_fill_stage_counts(period_count: int) -> dict[str, np.ndarray]:
+        """Return zeroed stage-count arrays for periods with no eligible pixels."""
+        empty_counts = np.zeros(period_count, dtype="int64")
+        return {
+            "after_temporal_fill": empty_counts.copy(),
+            "after_3x3_fill": empty_counts.copy(),
+            "after_5x5_fill": empty_counts.copy(),
+            "after_7x7_fill": empty_counts.copy(),
+            "after_9x9_fill": empty_counts.copy(),
+            "after_interpolation": empty_counts.copy(),
+        }
+
+    def _handle_no_eligible_pixels(
+        self,
+        variable_values: np.ndarray,
+        return_null_counts: bool,
+        variable_name: str | None,
+        batch_number: int | None,
+    ) -> np.ndarray | tuple[np.ndarray, dict[str, np.ndarray]]:
+        """Return a copy and zero audit counts when the raster has no eligible pixels."""
+        logger = getattr(self, "filling_logger", None) or getattr(self, "logger", None)
+        if logger is not None and variable_name is not None:
+            logger.info(
+                "Skipping raster filling for batch %s, variable %s: the raster has no eligible pixels.",
+                batch_number,
+                variable_name,
+            )
+        result = variable_values.copy()
+        counts = self._empty_fill_stage_counts(variable_values.shape[0])
+        return (result, counts) if return_null_counts else result
+
+    def _build_fill_inputs(
+        self, variable_values: np.ndarray, eligible_mask: np.ndarray, eligible_count: int
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Build fill-eligibility flags and initial stage inputs."""
+        observed_counts = np.isfinite(variable_values[:, eligible_mask]).sum(axis=1)
+        fill_allowed = observed_counts / eligible_count >= self.minimum_observed_fraction_for_fill
+        initial_null_counts = (eligible_count - observed_counts).astype("int64")
+        fill_source = variable_values.copy()
+        # Rejected slices are hidden as temporal sources to avoid contaminating strong periods.
+        fill_source[~fill_allowed] = np.nan
+        return observed_counts, fill_allowed, initial_null_counts, fill_source
+
+    def _log_low_coverage_periods(
+        self,
+        logger,
+        variable_name: str | None,
+        periods: Sequence[str] | None,
+        batch_number: int | None,
+        fill_allowed: np.ndarray,
+        observed_counts: np.ndarray,
+        eligible_count: int,
+        initial_null_counts: np.ndarray,
+    ) -> None:
+        """Log periods skipped due to low observed-pixel coverage."""
+        if logger is None or variable_name is None or periods is None:
+            return
+        for time_index, period_start in enumerate(periods):
+            if not fill_allowed[time_index]:
+                logger.info(
+                    "Skipping raster filling for batch %s, variable %s, period %s: "
+                    "observed fraction %.4f is below the minimum %.4f; %s null pixels remain.",
+                    batch_number,
+                    variable_name,
+                    period_start,
+                    observed_counts[time_index] / eligible_count,
+                    self.minimum_observed_fraction_for_fill,
+                    int(initial_null_counts[time_index]),
+                )
+
+    def _run_spatial_fill_stages(
+        self,
+        filled: np.ndarray,
+        current_counts: np.ndarray,
+        variable_values: np.ndarray,
+        eligible_mask: np.ndarray,
+        fill_allowed: np.ndarray,
+        variable_name: str | None,
+        periods: Sequence[str] | None,
+        batch_number: int | None,
+    ) -> tuple[np.ndarray, np.ndarray, dict[str, np.ndarray]]:
+        """Run configured spatial fill windows and collect null-count audits."""
+        null_counts: dict[str, np.ndarray] = {}
+        window_sizes = getattr(self, "spatial_fill_window_sizes", (3, 5))
+        for window_size in window_sizes:
+            if current_counts.any():
+
+                def operation(values, size=window_size):
+                    return self._fill_spatial_neighbors(values, eligible_mask, window_size=size)
+
+                stage = f"{window_size}x{window_size} spatial fill"
+                filled, current_counts = self._run_fill_stage(
+                    stage,
+                    filled,
+                    operation,
+                    variable_values,
+                    eligible_mask,
+                    fill_allowed,
+                    current_counts,
+                    variable_name,
+                    periods,
+                    batch_number,
+                )
+            null_counts[f"after_{window_size}x{window_size}_fill"] = current_counts.copy()
+
+        for window_size in (3, 5, 7, 9):
+            null_counts.setdefault(f"after_{window_size}x{window_size}_fill", current_counts.copy())
+        return filled, current_counts, null_counts
+
+    def _run_optional_interpolation(
+        self,
+        filled: np.ndarray,
+        current_counts: np.ndarray,
+        variable_values: np.ndarray,
+        eligible_mask: np.ndarray,
+        fill_allowed: np.ndarray,
+        transform,
+        cube_crs,
+        variable_name: str | None,
+        periods: Sequence[str] | None,
+        batch_number: int | None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Run interpolation when nulls still remain after temporal and spatial filling."""
+        if not current_counts.any():
+            return filled, current_counts
+        return self._run_interpolation_stage(
+            filled,
+            variable_values,
+            eligible_mask,
+            fill_allowed,
+            current_counts,
+            transform,
+            cube_crs,
+            variable_name,
+            periods,
+            batch_number,
+        )
+
     def _fill_variable_cube(
         self,
         variable_values: np.ndarray,
@@ -435,50 +579,26 @@ class RasterCleaner:
         batch_number: int | None = None,
     ) -> np.ndarray | tuple[np.ndarray, dict[str, np.ndarray]]:
         """Run temporal, 3x3, 5x5, and configured interpolation filling."""
-        if periods is not None and len(periods) != variable_values.shape[0]:
-            raise ValueError(f"Error: Expected {variable_values.shape[0]} period labels for filling, received {len(periods)}.")
+        self._validate_fill_period_labels(variable_values, periods)
         eligible_count = int(eligible_mask.sum())
         if eligible_count == 0:
-            logger = getattr(self, "filling_logger", None) or getattr(self, "logger", None)
-            if logger is not None and variable_name is not None:
-                logger.info(
-                    "Skipping raster filling for batch %s, variable %s: the raster has no eligible pixels.",
-                    batch_number,
-                    variable_name,
-                )
-            result = variable_values.copy()
-            empty_counts = np.zeros(variable_values.shape[0], dtype="int64")
-            counts = {
-                "after_temporal_fill": empty_counts.copy(),
-                "after_3x3_fill": empty_counts.copy(),
-                "after_5x5_fill": empty_counts.copy(),
-                "after_7x7_fill": empty_counts.copy(),
-                "after_9x9_fill": empty_counts.copy(),
-                "after_interpolation": empty_counts.copy(),
-            }
-            return (result, counts) if return_null_counts else result
+            return self._handle_no_eligible_pixels(variable_values, return_null_counts, variable_name, batch_number)
 
-        observed_counts = np.isfinite(variable_values[:, eligible_mask]).sum(axis=1)
-        # Rejected slices are also hidden as temporal sources to prevent weak periods contaminating others.
-        fill_allowed = observed_counts / eligible_count >= self.minimum_observed_fraction_for_fill
-        initial_null_counts = (eligible_count - observed_counts).astype("int64")
-        fill_source = variable_values.copy()
-        fill_source[~fill_allowed] = np.nan
+        observed_counts, fill_allowed, initial_null_counts, fill_source = self._build_fill_inputs(
+            variable_values, eligible_mask, eligible_count
+        )
 
         logger = getattr(self, "filling_logger", None) or getattr(self, "logger", None)
-        if logger is not None and variable_name is not None and periods is not None:
-            for time_index, period_start in enumerate(periods):
-                if not fill_allowed[time_index]:
-                    logger.info(
-                        "Skipping raster filling for batch %s, variable %s, period %s: "
-                        "observed fraction %.4f is below the minimum %.4f; %s null pixels remain.",
-                        batch_number,
-                        variable_name,
-                        period_start,
-                        observed_counts[time_index] / eligible_count,
-                        self.minimum_observed_fraction_for_fill,
-                        int(initial_null_counts[time_index]),
-                    )
+        self._log_low_coverage_periods(
+            logger,
+            variable_name,
+            periods,
+            batch_number,
+            fill_allowed,
+            observed_counts,
+            eligible_count,
+            initial_null_counts,
+        )
 
         temporal_stage = f"temporal fill ({self.temporal_fill_mode})"
         filled, current_counts = self._run_fill_stage(
@@ -495,31 +615,29 @@ class RasterCleaner:
         )
         null_counts = {"after_temporal_fill": current_counts}
 
-        window_sizes = getattr(self, "spatial_fill_window_sizes", (3, 5))
-        spatial_stages = tuple(
-            (f"{size}x{size} spatial fill", f"after_{size}x{size}_fill", size) for size in window_sizes
+        filled, current_counts, spatial_counts = self._run_spatial_fill_stages(
+            filled,
+            current_counts,
+            variable_values,
+            eligible_mask,
+            fill_allowed,
+            variable_name,
+            periods,
+            batch_number,
         )
-        # Counts are carried forward when early completion skips a later stage, preserving the audit schema.
-        for stage, audit_key, window_size in spatial_stages:
-            if current_counts.any():
-                def operation(values, size=window_size):
-                    return self._fill_spatial_neighbors(values, eligible_mask, window_size=size)
-
-                filled, current_counts = self._run_fill_stage(
-                    stage, filled, operation, variable_values, eligible_mask, fill_allowed,
-                    current_counts, variable_name, periods, batch_number
-                )
-            null_counts[audit_key] = current_counts.copy()
-
-        # Optional larger windows retain carried-forward counts when they are not configured.
-        for window_size in (3, 5, 7, 9):
-            null_counts.setdefault(f"after_{window_size}x{window_size}_fill", current_counts.copy())
-
-        if current_counts.any():
-            filled, current_counts = self._run_interpolation_stage(
-                filled, variable_values, eligible_mask, fill_allowed, current_counts, transform, cube_crs,
-                variable_name, periods, batch_number
-            )
+        null_counts.update(spatial_counts)
+        filled, current_counts = self._run_optional_interpolation(
+            filled,
+            current_counts,
+            variable_values,
+            eligible_mask,
+            fill_allowed,
+            transform,
+            cube_crs,
+            variable_name,
+            periods,
+            batch_number,
+        )
         null_counts["after_interpolation"] = current_counts.copy()
 
         result = self._merge_filled_values(variable_values, filled, eligible_mask, fill_allowed)

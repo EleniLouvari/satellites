@@ -6,12 +6,14 @@ It handles token management, pagination, and support for both GET and POST metho
 """
 
 import json
+import logging
 import os
 import secrets
 import time
 import warnings
+from collections.abc import Callable
 from copy import deepcopy
-from typing import Any, Callable, Literal, Optional
+from typing import Any, Literal
 from urllib.parse import parse_qs, urljoin, urlparse
 
 import geopandas as gpd
@@ -56,7 +58,7 @@ def _run_retry_backoff(
     *,
     attempt: int,
     message: str,
-    on_retry: Optional[Callable[[int, str], None]] = None,
+    on_retry: Callable[[int, str], None] | None = None,
 ) -> None:
     """Execute retry callback when provided; otherwise apply default backoff sleep."""
     if on_retry is not None:
@@ -98,7 +100,7 @@ def _execute_with_optional_401_refresh(
     request_once: Callable[[], requests.Response],
     *,
     retry_on_401: bool,
-    request_after_refresh: Optional[Callable[[], requests.Response]] = None,
+    request_after_refresh: Callable[[], requests.Response] | None = None,
 ) -> requests.Response:
     """Execute request and optionally retry once after auth refresh on HTTP 401."""
     resp = request_once()
@@ -113,7 +115,7 @@ def _request_with_retries(
     method_u: str,
     url: str,
     max_attempts: int,
-    on_retry: Optional[Callable[[int, str], None]] = None,
+    on_retry: Callable[[int, str], None] | None = None,
 ) -> requests.Response:
     """Execute a request callable with retry/backoff for transient failures."""
     for attempt in range(1, max_attempts + 1):
@@ -264,6 +266,7 @@ def get_auth_session(client_id: str, verbose=True) -> requests.Session:
             session.headers.update({"Authorization": f"Bearer {token}"})
             return session
         except Exception as e:
+            logging.getLogger(__name__).debug("Error: get_auth_session failed; using its fallback.", exc_info=True)
             last_exception = e
             msg = (
                 f"Failed to acquire OAuth2 token for client_id={client_id!r} "
@@ -282,9 +285,9 @@ def get_auth_session(client_id: str, verbose=True) -> requests.Session:
 def make_request(
     method: str,
     url: str,
-    token: Optional[str] = None,
-    client_id: Optional[str] = None,
-    data: Optional[dict] = None,
+    token: str | None = None,
+    client_id: str | None = None,
+    data: dict | None = None,
     timeout: float = CATALOG_REQUEST_TIMEOUT_SECONDS,
     verify: bool = False,
     retry_on_401: bool = True,
@@ -446,6 +449,7 @@ def create_stac_client_catalog(client_id: str | None = None, catalog_url: str | 
             headers: dict[str, str] = {k: str(v) for k, v in session.headers.items()}
             return Client.open(catalog_url, headers=headers)
         except Exception as e:
+            logging.getLogger(__name__).debug("Error: create_stac_client_catalog failed; using its fallback.", exc_info=True)
             last_exception = e
             if verbose:
                 print(f"Failed to connect to catalog (attempt {attempt}/{MAX_CATALOG_CONNECTION_RETRIES}): {e}")
@@ -779,7 +783,7 @@ class CatalogSearchUtils:
         out: dict[str, str] = {}
         # Extract the first value for offset and limit query parameters
         for k in ("offset", "limit"):
-            if k in q and q[k]:
+            if q.get(k):
                 out[k] = q[k][0]
         return out
 
@@ -1499,6 +1503,9 @@ class CatalogSearchUtils:
                     count = self.get_collection_item_count(col_id)
                     collection_counts[col_id] = count
                 except Exception as e:
+                    logging.getLogger(__name__).debug(
+                        "Error: get_all_collection_item_counts failed; using its fallback.", exc_info=True
+                    )
                     # Handle errors gracefully
                     print(f"Warning: Failed to get item count for collection {col_id}: {e}")
                     collection_counts[col_id] = 0
@@ -1547,8 +1554,7 @@ class CatalogSearchUtils:
 
             # Yield each item on the current page
             features = data.get("features", [])
-            for item in features:
-                yield item
+            yield from features
 
             # Look for rel="next" link for pagination
             links = data.get("links") or []
@@ -1622,6 +1628,7 @@ class CatalogSearchUtils:
         try:
             return shape(geom_dict)
         except Exception as e:
+            logging.getLogger(__name__).debug("Error: _parse_feature_geometry failed; using its fallback.", exc_info=True)
             if self.verbose:
                 print(f"Warning: Failed to parse geometry: {e}")
             return None

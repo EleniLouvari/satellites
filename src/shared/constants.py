@@ -1,5 +1,6 @@
 """Shared display constants and defaults; importing this module has no plotting or TensorFlow side effects."""
 import os
+
 import numpy as np
 
 SEED_NUMBER = 42

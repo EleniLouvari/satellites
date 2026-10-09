@@ -88,7 +88,7 @@ class CheckStep(PipelineStepBase):
             raise ValueError("Error: No active features remain after removing all-null and constant columns.")
         # Assemble summary metadata used for downstream steps and reporting.
         summary = {
-            "rows_total": int(len(dataset)),
+            "rows_total": len(dataset),
             "rows_labeled": int(labeled_mask.sum()),
             "rows_unknown_target": int((~labeled_mask).sum()),
             "n_features_requested": len(requested_features),

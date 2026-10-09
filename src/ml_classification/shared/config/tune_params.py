@@ -2,11 +2,16 @@
 
 from copy import deepcopy
 
+# Keep this helper focused on a single transformation so the reporting pipeline stays easy to follow.
+
+
 
 def _default_tune_params() -> dict[str, dict[str, list]]:
     """Return an independent copy of the default search space for every model."""
+    # Each configuration owns its nested lists so per-run overrides cannot mutate another search space.
     return deepcopy(
         {
+            # Parameter paths start at the pipeline model step; nested estimators add another routing segment.
             "logistic_regression": {
                 "model__C": [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0],
                 "model__solver": ["liblinear"],
@@ -17,6 +22,7 @@ def _default_tune_params() -> dict[str, dict[str, list]]:
                 "model__C": [0.1, 1.0, 10.0, 20.0],
                 "model__kernel": ["linear", "rbf", "poly"],
                 "model__gamma": ["scale", "auto"],
+                # Soft-voting strategies require the SVM candidate to expose class probabilities.
                 "model__probability": [True],
             },
             "random_forest": {
@@ -84,6 +90,7 @@ def _default_tune_params() -> dict[str, dict[str, list]]:
                 "model__n_estimators": [100, 200, 400],
                 "model__max_samples": [0.5, 0.7, 0.9],
                 "model__max_features": [0.5, 0.7, 0.9],
+                # These parameters tune the base tree inside bagging, not the bagging wrapper itself.
                 "model__estimator__max_depth": [5, 8, 12, 16],
                 "model__estimator__min_samples_split": [10, 20, 40],
                 "model__estimator__min_samples_leaf": [3, 5, 10, 20],
@@ -106,6 +113,7 @@ def _default_tune_params() -> dict[str, dict[str, list]]:
                 "model__l2_regularization": [0.01, 0.1, 1.0, 10.0],
             },
             "xgboost": {
+                # Reach the boosted estimator through its label-handling wrapper.
                 "model__base_estimator__n_estimators": [200, 400, 600],
                 "model__base_estimator__learning_rate": [0.01, 0.03, 0.05, 0.1],
                 "model__base_estimator__max_depth": [2, 3, 4, 5],

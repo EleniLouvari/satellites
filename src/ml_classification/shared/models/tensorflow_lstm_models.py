@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 
@@ -12,12 +13,16 @@ from sklearn.preprocessing import StandardScaler
 
 TEMPORAL_FEATURE_PATTERN = re.compile(r"^(?P<base>.+?)__(?P<date>\d{8})$")
 
+# Keep this helper focused on a single transformation so the reporting pipeline stays easy to follow.
+
+
 
 def _safe_import(module_name: str):
     """Import a module by name and return ``None`` when import fails."""
     try:
         module = __import__(module_name, fromlist=[module_name.rsplit(".", maxsplit=1)[-1]])
     except Exception:
+        logging.getLogger(__name__).debug("Error: _safe_import failed; using its fallback.", exc_info=True)
         return None
     return module
 
@@ -49,7 +54,7 @@ class TemporalTensorBuilder:
         self.temporal_frequency = temporal_frequency
         self.min_timesteps = min_timesteps
 
-    def fit(self, frame: pd.DataFrame) -> "TemporalTensorBuilder":
+    def fit(self, frame: pd.DataFrame) -> TemporalTensorBuilder:
         """Infer temporal schema from dataframe columns."""
         entries = self._parse_temporal_entries(frame.columns)
         if not entries:
@@ -57,21 +62,14 @@ class TemporalTensorBuilder:
                 "Error: No temporal features were detected for keras_lstm. Expected feature names like NDVI_median__20250101."
             )
 
-        ordered_dates: list[str] = sorted({item[1] for item in entries})
+        ordered_dates = self._ordered_dates(entries)
         self._validate_temporal_dates(ordered_dates)
-
-        ordered_bases: list[str] = []
-        seen_bases: set[str] = set()
-        for base_name, _ in entries:
-            if base_name in seen_bases:
-                continue
-            seen_bases.add(base_name)
-            ordered_bases.append(base_name)
+        ordered_bases = self._ordered_bases(entries)
 
         if len(ordered_dates) < int(self.min_timesteps):
             raise ValueError(f"Error: keras_lstm requires at least {self.min_timesteps} timesteps, found {len(ordered_dates)}.")
 
-        expected_columns = [f"{base_name}__{date_key}" for date_key in ordered_dates for base_name in ordered_bases]
+        expected_columns = self._expected_temporal_columns(ordered_dates, ordered_bases)
         missing_columns = [column for column in expected_columns if column not in frame.columns]
         if missing_columns and self.require_complete_timesteps:
             missing_preview = missing_columns[:20]
@@ -83,7 +81,7 @@ class TemporalTensorBuilder:
         if not available_columns:
             raise ValueError("Error: No valid temporal columns remained for keras_lstm after schema validation.")
 
-        ignored_features = [str(column) for column in frame.columns if str(column) not in set(available_columns)]
+        ignored_features = self._ignored_features(frame.columns, available_columns)
         self.schema_ = TemporalTensorSchema(
             dates=ordered_dates,
             base_features=ordered_bases,
@@ -91,14 +89,49 @@ class TemporalTensorBuilder:
             temporal_frequency=self.temporal_frequency,
             ignored_features=ignored_features,
         )
-        self.temporal_index_ = {
-            column: (
-                self.schema_.dates.index(column.rsplit("__", 1)[1]),
-                self.schema_.base_features.index(column.rsplit("__", 1)[0]),
-            )
-            for column in self.schema_.temporal_columns
-        }
+        self.temporal_index_ = self._build_temporal_index(self.schema_)
         return self
+
+    @staticmethod
+    def _ordered_dates(entries: list[tuple[str, str]]) -> list[str]:
+        """Return sorted temporal dates from parsed entries."""
+        return sorted({date_key for _, date_key in entries})
+
+    @staticmethod
+    def _ordered_bases(entries: list[tuple[str, str]]) -> list[str]:
+        """Keep first-seen base-feature order from parsed entries."""
+        ordered_bases: list[str] = []
+        seen_bases: set[str] = set()
+        for base_name, _ in entries:
+            if base_name in seen_bases:
+                continue
+            seen_bases.add(base_name)
+            ordered_bases.append(base_name)
+        return ordered_bases
+
+    @staticmethod
+    def _expected_temporal_columns(ordered_dates: list[str], ordered_bases: list[str]) -> list[str]:
+        """Build dense expected grid of temporal columns."""
+        return [f"{base_name}__{date_key}" for date_key in ordered_dates for base_name in ordered_bases]
+
+    @staticmethod
+    def _ignored_features(all_columns, available_columns: list[str]) -> list[str]:
+        """List non-temporal or excluded columns from schema."""
+        available = set(available_columns)
+        return [str(column) for column in all_columns if str(column) not in available]
+
+    @staticmethod
+    def _build_temporal_index(schema: TemporalTensorSchema) -> dict[str, tuple[int, int]]:
+        """Map temporal column names to tensor timestep/feature indices."""
+        date_lookup = {date_key: index for index, date_key in enumerate(schema.dates)}
+        base_lookup = {base_name: index for index, base_name in enumerate(schema.base_features)}
+        return {
+            column: (
+                date_lookup[column.rsplit("__", maxsplit=1)[1]],
+                base_lookup[column.rsplit("__", maxsplit=1)[0]],
+            )
+            for column in schema.temporal_columns
+        }
 
     def transform(self, frame: pd.DataFrame) -> np.ndarray:
         """Convert dataframe into a temporal tensor matching the fitted schema."""
@@ -257,10 +290,12 @@ class KerasLSTMClassifier(ClassifierMixin, BaseEstimator):
         self.n_features_per_timestep_ = tensor.shape[2]
         self.classes_ = np.unique(y_array)
 
+        # Learn fallback values from this fit input only; inference reuses them without refitting.
         self.feature_medians_ = self._compute_feature_medians(tensor)
         tensor = self._impute_tensor(tensor)
 
         self.scaler_ = StandardScaler()
+        # Pool samples and dates to fit one scaler per temporal feature, then restore the sequence axes.
         tensor_2d = tensor.reshape(-1, self.n_features_per_timestep_)
         self.scaler_.fit(tensor_2d)
         tensor_scaled = self.scaler_.transform(tensor_2d).reshape(tensor.shape).astype(np.float32)
@@ -286,7 +321,7 @@ class KerasLSTMClassifier(ClassifierMixin, BaseEstimator):
             model=build_lstm_classifier_model,
             model__n_timesteps=int(self.n_timesteps_),
             model__n_features=int(self.n_features_per_timestep_),
-            model__n_classes=int(len(self.classes_)),
+            model__n_classes=len(self.classes_),
             model__lstm_units_1=int(self.lstm_units_1),
             model__lstm_units_2=int(self.lstm_units_2),
             model__dense_units=int(self.dense_units),
@@ -334,6 +369,7 @@ class KerasLSTMClassifier(ClassifierMixin, BaseEstimator):
         tensor = self.tensor_builder_.transform(frame)
         tensor = self._impute_tensor(tensor)
         tensor_2d = tensor.reshape(-1, self.n_features_per_timestep_)
+        # Apply the fitted training scale to inference sequences without learning from prediction rows.
         return self.scaler_.transform(tensor_2d).reshape(tensor.shape).astype(np.float32)
 
     def _ensure_frame(self, X) -> pd.DataFrame:
@@ -350,6 +386,7 @@ class KerasLSTMClassifier(ClassifierMixin, BaseEstimator):
     def _compute_feature_medians(self, tensor: np.ndarray) -> np.ndarray:
         """Compute one fallback median per temporal feature across all samples/timesteps."""
         medians = np.nanmedian(tensor.reshape(-1, tensor.shape[2]), axis=0)
+        # Features with no finite median receive a deterministic zero fallback.
         medians = np.where(np.isfinite(medians), medians, 0.0)
         return medians.astype(np.float32)
 
@@ -366,6 +403,7 @@ class KerasLSTMClassifier(ClassifierMixin, BaseEstimator):
                 if mask.all():
                     series[:] = self.feature_medians_[feature_index]
                     continue
+                # Propagate previous observations first; the backward pass then fills leading gaps.
                 for t_idx in range(1, n_timesteps):
                     if np.isnan(series[t_idx]) and not np.isnan(series[t_idx - 1]):
                         series[t_idx] = series[t_idx - 1]
@@ -410,6 +448,7 @@ def build_lstm_classifier_model(
         raise ImportError("Error: TensorFlow is required to build keras_lstm models.")
 
     inputs = tf_module.keras.Input(shape=(int(n_timesteps), int(n_features)), name="parcel_time_series")
+    # Keep the time axis for the second LSTM, which reduces the sequence to one parcel representation.
     first_layer = tf_module.keras.layers.LSTM(int(lstm_units_1), return_sequences=True)
     if bidirectional:
         temporal = tf_module.keras.layers.Bidirectional(first_layer, name="bilstm_1")(inputs)

@@ -1,27 +1,23 @@
 """Library containing functions for input/output files."""
 
+import csv
+import logging
+import os
+import pathlib
+import shutil
+import stat
+import time
+import zipfile
+from collections.abc import Callable
 from glob import glob
 from pathlib import Path
 from typing import Any
-from typing import Callable
-from typing import Dict
-from typing import Optional
-from typing import Tuple
-from typing import Union
-import csv
+
 import geopandas as gpd
-import logging
-import os
 import pandas as pd
-import pathlib
 import psutil
-import shutil
-import time
-import zipfile
 
 import shared.logging as log_l
-from pathlib import Path
-import stat
 
 _GPKG_EXTENSION = ".gpkg"
 _XLSX_EXTENSION = ".xlsx"
@@ -65,13 +61,10 @@ def is_valid_path_filename(input_str: str) -> bool:
         return False
 
     # 5. Check if the path exists and is a file
-    if os.path.exists(input_str) and path_obj.is_file():
-        return True
-
-    return False
+    return bool(os.path.exists(input_str) and path_obj.is_file())
 
 
-def separate_path_filename_extension(filepath: str) -> Tuple[str, str, str]:
+def separate_path_filename_extension(filepath: str) -> tuple[str, str, str]:
     """Split a file path into directory path, filename (without extension), and file extension.
 
     Parameters
@@ -322,6 +315,7 @@ def delete_file(file_path: str):
             os.remove(file_path)
             print(f"{file_path} has been deleted.")
         except Exception as e:
+            logging.getLogger(__name__).debug("Error: delete_file failed; using its fallback.", exc_info=True)
             try:
                 print(f"First attempt to delete file {file_path} failed {e}; trying to close open files first!")
                 # Attempt to close any open files before deleting
@@ -453,6 +447,7 @@ def _attempt_deletion(folder_path: Path, attempt: int, force_permissions: bool) 
         return True
 
     except Exception as e:
+        logging.getLogger(__name__).debug("Error: _attempt_deletion failed; using its fallback.", exc_info=True)
         _log_deletion_error(e, attempt)
         return False
 
@@ -526,6 +521,7 @@ def create_folder(folder_path: str, verbose=True):
             if verbose:
                 print(f"Folder '{folder_path}' created successfully.")
         except Exception as e:
+            logging.getLogger(__name__).debug("Error: create_folder failed; using its fallback.", exc_info=True)
             print(f"Failed to create folder '{folder_path}': {e}")
     else:
         print(f"Folder '{folder_path}' already exists.")
@@ -582,7 +578,7 @@ def _typed_csv_dtype_label(dtype: Any) -> str:
     return dtype_label
 
 
-def write_to_typed_csv(df: Union[pd.DataFrame, gpd.GeoDataFrame], file_path: str):
+def write_to_typed_csv(df: pd.DataFrame | gpd.GeoDataFrame, file_path: str):
     """Write a DataFrame to a CSV file with typed headers, where each column name includes its data type.
 
     Parameters
@@ -609,7 +605,7 @@ def write_to_typed_csv(df: Union[pd.DataFrame, gpd.GeoDataFrame], file_path: str
     df2.to_csv(file_path, index=False)
 
 
-def convert_df_col_datetime_to_string(df: Union[pd.DataFrame, gpd.GeoDataFrame]):
+def convert_df_col_datetime_to_string(df: pd.DataFrame | gpd.GeoDataFrame):
     """Convert all datetime columns in a DataFrame to string format.
 
     Parameters
@@ -632,7 +628,7 @@ def convert_df_col_datetime_to_string(df: Union[pd.DataFrame, gpd.GeoDataFrame])
     return df_copy
 
 
-def read_csv(file_path: str, watch_curly_brackets: bool, encoding: Optional[str], delimiter: str) -> pd.DataFrame:
+def read_csv(file_path: str, watch_curly_brackets: bool, encoding: str | None, delimiter: str) -> pd.DataFrame:
     """Read a CSV file and returns a DataFrame. Supports three formats.
 
       * Typed CSV: field types are included in the header using curly brackets.
@@ -728,15 +724,15 @@ def shapefile_helper(path_with_filename: str, needed_shapefile_ext: list):
 
 def read_data(
     file_path: str,
-    file_name: Optional[Union[str, Dict[str, str]]] = None,
-    layer: Optional[str] = None,
-    sheet_name: Union[str, int] = 0,
+    file_name: str | dict[str, str] | None = None,
+    layer: str | None = None,
+    sheet_name: str | int = 0,
     watch_curly_brackets: bool = True,
-    encoding: Optional[str] = None,
-    delimiter: Optional[str] = None,
-    converters: Optional[Dict[str, Callable[[Any], Any]]] = None,
+    encoding: str | None = None,
+    delimiter: str | None = None,
+    converters: dict[str, Callable[[Any], Any]] | None = None,
     fid_as_index: bool = False,
-) -> Union[pd.DataFrame, gpd.GeoDataFrame]:
+) -> pd.DataFrame | gpd.GeoDataFrame:
     """General-purpose function to read a file in various supported formats and return a DataFrame or GeoDataFrame.
 
     Supported formats include: pickle (.pkl, .xz), Parquet and GeoParquet (.parquet, .geoparquet),
@@ -831,8 +827,8 @@ def read_data(
         shapefile_helper(full_path, needed_shapefile_ext)
 
     readers = {
-        _PKL_EXTENSION: lambda: pd.read_pickle(full_path, compression=None),
-        _XZ_EXTENSION: lambda: pd.read_pickle(full_path, compression="xz"),
+        _PKL_EXTENSION: lambda: pd.read_pickle(full_path, compression=None),  # nosec
+        _XZ_EXTENSION: lambda: pd.read_pickle(full_path, compression="xz"),  # nosec
         _SHP_EXTENSION: lambda: gpd.read_file(full_path, fid_as_index=fid_as_index),
         _GPKG_EXTENSION: lambda: gpd.read_file(full_path, layer=layer, fid_as_index=fid_as_index),
         _GDB_EXTENSION: lambda: gpd.read_file(full_path, layer=layer, fid_as_index=fid_as_index),
@@ -851,11 +847,11 @@ def read_data(
 
 
 def write_data(
-    df: Union[pd.DataFrame, gpd.GeoDataFrame],
+    df: pd.DataFrame | gpd.GeoDataFrame,
     file_path: str,
-    file_name: Optional[str] = None,
+    file_name: str | None = None,
     plain_csv: bool = False,
-    layer: Optional[str] = None,
+    layer: str | None = None,
 ) -> None:
     """General function to export a DataFrame or GeoDataFrame to a file in various formats.
 
@@ -927,7 +923,7 @@ def write_data(
         raise ValueError(f"Error: Unsupported file extension: {ext}")
 
 
-def read_parquet(file_path: str) -> Union[pd.DataFrame, gpd.GeoDataFrame]:
+def read_parquet(file_path: str) -> pd.DataFrame | gpd.GeoDataFrame:
     """Read Parquet data, returning a GeoDataFrame when GeoParquet metadata is present."""
     try:
         return gpd.read_parquet(file_path)
@@ -937,7 +933,7 @@ def read_parquet(file_path: str) -> Union[pd.DataFrame, gpd.GeoDataFrame]:
         return pd.read_parquet(file_path)
 
 
-def write_parquet(df: Union[pd.DataFrame, gpd.GeoDataFrame], file_path: str) -> None:
+def write_parquet(df: pd.DataFrame | gpd.GeoDataFrame, file_path: str) -> None:
     """Write a DataFrame as Parquet or a GeoDataFrame as GeoParquet."""
     df.to_parquet(file_path, index=False)
 
@@ -945,7 +941,7 @@ def write_parquet(df: Union[pd.DataFrame, gpd.GeoDataFrame], file_path: str) -> 
 def write_geoparquet(df: gpd.GeoDataFrame, file_path: str) -> None:
     """Write a GeoDataFrame as GeoParquet."""
     if not isinstance(df, gpd.GeoDataFrame):
-        raise ValueError("Error: GeoParquet output requires a GeoDataFrame.")
+        raise TypeError("Error: GeoParquet output requires a GeoDataFrame.")
     df.to_parquet(file_path, index=False)
 
 
@@ -973,7 +969,7 @@ def write_shapefile(df: gpd.GeoDataFrame, file_path: str) -> None:
         pd.DataFrame(df).to_csv(os.path.splitext(file_path)[0] + _CSV_EXTENSION, index=False)
 
 
-def write_geopackage(df: gpd.GeoDataFrame, file_path: str, layer: Optional[str] = None) -> None:
+def write_geopackage(df: gpd.GeoDataFrame, file_path: str, layer: str | None = None) -> None:
     """Write a GeoDataFrame to a GeoPackage (.gpkg) file.
 
     Parameters
@@ -998,10 +994,10 @@ def write_geopackage(df: gpd.GeoDataFrame, file_path: str, layer: Optional[str] 
     if isinstance(df, gpd.GeoDataFrame):
         df.to_file(file_path, layer=layer, driver="GPKG", index=False)
     else:
-        raise ValueError("Error: Cannot save a non-geodataframe as a geopackage.")
+        raise TypeError("Error: Cannot save a non-geodataframe as a geopackage.")
 
 
-def write_csv(df: Union[pd.DataFrame, gpd.GeoDataFrame], file_path: str, plain_csv: bool = False) -> None:
+def write_csv(df: pd.DataFrame | gpd.GeoDataFrame, file_path: str, plain_csv: bool = False) -> None:
     """Write a DataFrame to a CSV file, optionally using a typed header format.
 
     Parameters
@@ -1029,7 +1025,7 @@ def write_csv(df: Union[pd.DataFrame, gpd.GeoDataFrame], file_path: str, plain_c
         write_to_typed_csv(df, file_path)
 
 
-def write_excel(df: Union[pd.DataFrame, gpd.GeoDataFrame], file_path: str) -> None:
+def write_excel(df: pd.DataFrame | gpd.GeoDataFrame, file_path: str) -> None:
     """Write a DataFrame to an Excel (.xlsx) file. Drops the 'geometry' column if present.
 
     Parameters
@@ -1050,7 +1046,7 @@ def write_excel(df: Union[pd.DataFrame, gpd.GeoDataFrame], file_path: str) -> No
     df.to_excel(file_path, header=True, index=False)
 
 
-def unzip_file(zip_file_path: str, extract_to: str | None = None, logger: Optional[logging.Logger] = None) -> str:
+def unzip_file(zip_file_path: str, extract_to: str | None = None, logger: logging.Logger | None = None) -> str:
     """Unzip a ZIP file and extracts its contents into a structured directory.
 
     - If the ZIP file contains a folder matching its own name, it is extracted directly to 'extract_to'.

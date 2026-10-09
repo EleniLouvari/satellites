@@ -136,8 +136,8 @@ class PrepareStep(PipelineStepBase):
         # Keep the split metadata and fold definitions together as the contract consumed by training.
         prepare_summary = {
             "active_features": active_features,
-            "train_rows": int(len(train_df)),
-            "test_rows": int(len(test_df)),
+            "train_rows": len(train_df),
+            "test_rows": len(test_df),
             "split_strategy": split_strategy,
             "target_labels": label_encoder.classes_.tolist(),
             "cv_folds": folds,

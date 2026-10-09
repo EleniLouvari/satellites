@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import html
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -22,8 +22,8 @@ def write_html_report(output_dir, results_df: pd.DataFrame, plot_path: Path | No
     """
     # Prepare aggregates for successful runs only.
     success_df = results_df.loc[results_df["success"] & results_df["test_accuracy"].notna()].copy()
-    run_count = int(len(results_df))
-    success_count = int(len(success_df))
+    run_count = len(results_df)
+    success_count = len(success_df)
     failure_count = int(run_count - success_count)
     mean_acc = float(success_df["test_accuracy"].mean()) if not success_df.empty else float("nan")
     std_acc = float(success_df["test_accuracy"].std(ddof=0)) if not success_df.empty else float("nan")
@@ -67,7 +67,7 @@ th {{ background: #f9fafb; }}
 </head>
 <body>
   <h1>ML Classification Sensitivity Report</h1>
-  <p class='muted'>Generated on {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</p>
+  <p class='muted'>Generated on {datetime.now(UTC).astimezone().strftime("%Y-%m-%d %H:%M:%S")}</p>
 
   <div class='meta'>
 <b>Total runs:</b> {run_count} &nbsp; | &nbsp;

@@ -231,38 +231,91 @@ class ClassificationPipelineConfig:
 
     def _validate_strings_and_sequences(self) -> None:
         """Validate categorical options and sequence-based configuration fields."""
-        # Enforce supported voting/selection strategies.
-        if self.selection_type not in {"soft_voting", "single_model"}:
-            raise ValueError("Error: selection_type must be either 'soft_voting' or 'single_model'.")
-        if self.cv_ranking_method not in {"mean_score", "score_minus_std"}:
-            raise ValueError("Error: cv_ranking_method must be either 'mean_score' or 'score_minus_std'.")
+        self._validate_allowed_option_values()
+        self._validate_sequence_constraints()
+        self._validate_boolean_flags()
+        self._validate_tune_param_grids()
+        self._validate_interpolation_requirements()
+        self._validate_feature_exclusions()
+        self._validate_selected_models()
 
-        if self.label_balancing_method not in {"none", "random_oversample", "smote"}:
-            raise ValueError("Error: label_balancing_method must be one of: 'none', 'random_oversample', or 'smote'.")
-        if self.spatial_split_method not in {"by_group", "by_row"}:
-            raise ValueError("Error: spatial_split_method must be either 'by_group' or 'by_row'.")
-        if self.lstm_temporal_frequency not in {None, "monthly"}:
-            raise ValueError("Error: lstm_temporal_frequency must be None or 'monthly'.")
-        if self.lstm_class_balancing_method not in {"none", "balanced_class_weight"}:
-            raise ValueError("Error: lstm_class_balancing_method must be either 'none' or 'balanced_class_weight'.")
-        if self.lstm_temporal_statistics is not None and not self.lstm_temporal_statistics:
-            raise ValueError("Error: lstm_temporal_statistics cannot be empty when provided.")
-        if not isinstance(self.lstm_require_complete_timesteps, bool):
-            raise TypeError("Error: lstm_require_complete_timesteps must be a bool.")
-        if not self.feature_columns:
-            raise ValueError("Error: feature_columns must contain at least one feature name.")
-        if len(set(self.feature_columns)) != len(self.feature_columns):
-            raise ValueError("Error: feature_columns contains duplicate names. Provide unique feature names only.")
-        if not isinstance(self.apply_iqr, bool):
-            raise TypeError("Error: apply_iqr must be a bool.")
-        if not isinstance(self.optimize_class_probabilities, bool):
-            raise TypeError("Error: optimize_class_probabilities must be a bool.")
-        if not isinstance(self.rank_confidence_enabled, bool):
-            raise TypeError("Error: rank_confidence_enabled must be a bool.")
-        if not isinstance(self.class_reliability_enabled, bool):
-            raise TypeError("Error: class_reliability_enabled must be a bool.")
-        if not isinstance(self.inspection_scoring_enabled, bool):
-            raise TypeError("Error: inspection_scoring_enabled must be a bool.")
+    def _validate_allowed_option_values(self) -> None:
+        """Validate options constrained to predefined value sets."""
+        allowed_values = (
+            (
+                self.selection_type,
+                {"soft_voting", "single_model"},
+                "Error: selection_type must be either 'soft_voting' or 'single_model'.",
+            ),
+            (
+                self.cv_ranking_method,
+                {"mean_score", "score_minus_std"},
+                "Error: cv_ranking_method must be either 'mean_score' or 'score_minus_std'.",
+            ),
+            (
+                self.label_balancing_method,
+                {"none", "random_oversample", "smote"},
+                "Error: label_balancing_method must be one of: 'none', 'random_oversample', or 'smote'.",
+            ),
+            (
+                self.spatial_split_method,
+                {"by_group", "by_row"},
+                "Error: spatial_split_method must be either 'by_group' or 'by_row'.",
+            ),
+            (
+                self.lstm_temporal_frequency,
+                {None, "monthly"},
+                "Error: lstm_temporal_frequency must be None or 'monthly'.",
+            ),
+            (
+                self.lstm_class_balancing_method,
+                {"none", "balanced_class_weight"},
+                "Error: lstm_class_balancing_method must be either 'none' or 'balanced_class_weight'.",
+            ),
+            (
+                self.spatial_interpolation_method,
+                {None, "nearest", "idw", "kriging"},
+                "Error: spatial_interpolation_method must be None, 'nearest', 'idw', or 'kriging'.",
+            ),
+        )
+        for value, accepted_values, message in allowed_values:
+            if value not in accepted_values:
+                raise ValueError(message)
+
+    def _validate_sequence_constraints(self) -> None:
+        """Validate required sequence values and uniqueness constraints."""
+        condition_validations = (
+            (
+                self.lstm_temporal_statistics is None or bool(self.lstm_temporal_statistics),
+                "Error: lstm_temporal_statistics cannot be empty when provided.",
+            ),
+            (bool(self.feature_columns), "Error: feature_columns must contain at least one feature name."),
+            (
+                len(set(self.feature_columns)) == len(self.feature_columns),
+                "Error: feature_columns contains duplicate names. Provide unique feature names only.",
+            ),
+            (bool(self.probability_multiplier_grid), "Error: probability_multiplier_grid must contain at least one value."),
+        )
+        for condition, message in condition_validations:
+            if not condition:
+                raise ValueError(message)
+
+    def _validate_boolean_flags(self) -> None:
+        """Validate bool-typed flags used by the pipeline."""
+        bool_validations = {
+            "lstm_require_complete_timesteps": "Error: lstm_require_complete_timesteps must be a bool.",
+            "apply_iqr": "Error: apply_iqr must be a bool.",
+            "optimize_class_probabilities": "Error: optimize_class_probabilities must be a bool.",
+            "rank_confidence_enabled": "Error: rank_confidence_enabled must be a bool.",
+            "class_reliability_enabled": "Error: class_reliability_enabled must be a bool.",
+            "inspection_scoring_enabled": "Error: inspection_scoring_enabled must be a bool.",
+        }
+        for field_name, message in bool_validations.items():
+            if not isinstance(getattr(self, field_name), bool):
+                raise TypeError(message)
+
+    def _validate_tune_param_grids(self) -> None:
+        """Validate search-space parameter dictionary structure."""
         for model_name, param_grid in self.tune_params.items():
             if not isinstance(param_grid, dict):
                 raise TypeError(f"Error: tune_params['{model_name}'] must be a dictionary.")
@@ -271,14 +324,27 @@ class ClassificationPipelineConfig:
                     raise ValueError(f"Error: tune_params['{model_name}'] parameter names must start with 'model__'.")
                 if not isinstance(values, (list, tuple)) or not values:
                     raise ValueError(f"Error: tune_params['{model_name}']['{parameter_name}'] must be a non-empty list or tuple.")
-        if not self.probability_multiplier_grid:
-            raise ValueError("Error: probability_multiplier_grid must contain at least one value.")
-        if self.spatial_interpolation_method not in {None, "nearest", "idw", "kriging"}:
-            raise ValueError("Error: spatial_interpolation_method must be None, 'nearest', 'idw', or 'kriging'.")
-        if self.spatial_interpolation_method == "idw" and self.spatial_interpolation_max_distance_in_meters is None:
-            raise ValueError("Error: spatial_interpolation_max_distance_in_meters is required for idw interpolation.")
-        if self.spatial_interpolation_method == "kriging" and self.spatial_interpolation_variogram_max_distance_in_meters is None:
-            raise ValueError("Error: spatial_interpolation_variogram_max_distance_in_meters is required for kriging interpolation.")
+
+    def _validate_interpolation_requirements(self) -> None:
+        """Validate required interpolation arguments per selected method."""
+        interpolation_requirements = {
+            "idw": (
+                self.spatial_interpolation_max_distance_in_meters is not None,
+                "Error: spatial_interpolation_max_distance_in_meters is required for idw interpolation.",
+            ),
+            "kriging": (
+                self.spatial_interpolation_variogram_max_distance_in_meters is not None,
+                "Error: spatial_interpolation_variogram_max_distance_in_meters is required for kriging interpolation.",
+            ),
+        }
+        interpolation_rule = interpolation_requirements.get(self.spatial_interpolation_method)
+        if interpolation_rule is not None:
+            condition, message = interpolation_rule
+            if not condition:
+                raise ValueError(message)
+
+    def _validate_feature_exclusions(self) -> None:
+        """Reject identifier/target/geometry leakage in model feature columns."""
         forbidden_features = {self.id_column, self.target_column, "geometry"}
         leaked_features = sorted(forbidden_features.intersection(self.feature_columns))
         if leaked_features:
@@ -286,6 +352,8 @@ class ClassificationPipelineConfig:
                 f"Error: Identifiers, target, geometry and the raw time column cannot be model features. Remove: {leaked_features}"
             )
 
+    def _validate_selected_models(self) -> None:
+        """Validate selected model names when an explicit model list is provided."""
         # Acceptable values for selected models:
         # ----------------------------------------
         # None -> use all available models
@@ -322,8 +390,16 @@ class ClassificationPipelineConfig:
 
     def _validate_numeric_ranges(self) -> None:
         """Validate all numeric bounds and range constraints in configuration."""
-        # Group validation rules to keep error messages explicit and consistent.
-        numeric_validations = (
+        for condition, message in self._numeric_range_rules():
+            if not condition:
+                raise ValueError(message)
+        self._validate_rank_confidence_thresholds()
+        self._validate_class_reliability_thresholds()
+        self._validate_inspection_thresholds()
+
+    def _numeric_range_rules(self) -> tuple[tuple[bool, str], ...]:
+        """Return independent scalar range validations."""
+        return (
             (0.0 < float(self.test_size) < 1.0, "test_size must be a float strictly between 0 and 1."),
             (int(self.cv_folds) >= 2, "cv_folds must be >= 2."),
             (int(self.n_jobs) != 0, "n_jobs cannot be 0. Use -1 or a positive integer."),
@@ -373,10 +449,9 @@ class ClassificationPipelineConfig:
             (int(self.rank_confidence_minimum_models) >= 1, "rank_confidence_minimum_models must be >= 1."),
             (int(self.class_reliability_minimum_oof_support) >= 1, "class_reliability_minimum_oof_support must be >= 1."),
         )
-        for condition, message in numeric_validations:
-            if not condition:
-                raise ValueError(message)
 
+    def _validate_rank_confidence_thresholds(self) -> None:
+        """Validate rank-based confidence threshold relationships."""
         high_borda = float(self.rank_confidence_high_min_borda)
         medium_borda = float(self.rank_confidence_medium_min_borda)
         if not 0.0 <= medium_borda <= high_borda <= 100.0:
@@ -385,10 +460,16 @@ class ClassificationPipelineConfig:
         medium_range = float(self.rank_confidence_medium_max_range)
         if high_range < 0.0 or medium_range < high_range:
             raise ValueError("Error: Rank-confidence range thresholds must satisfy 0 <= HIGH <= MEDIUM.")
+
+    def _validate_class_reliability_thresholds(self) -> None:
+        """Validate class-reliability threshold relationships."""
         reliability_high = float(self.class_reliability_high_min_precision)
         reliability_medium = float(self.class_reliability_medium_min_precision)
         if not 0.0 <= reliability_medium <= reliability_high <= 1.0:
             raise ValueError("Error: Class-reliability precision thresholds must satisfy 0 <= MEDIUM <= HIGH <= 1.")
+
+    def _validate_inspection_thresholds(self) -> None:
+        """Validate inspection score and component-threshold relationships."""
         inspection_weight_sum = sum(
             map(float, (self.inspection_model_weight, self.inspection_data_weight, self.inspection_geometry_weight))
         )

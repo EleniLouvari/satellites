@@ -358,6 +358,7 @@ def _render_section(section: dict[str, Any], report_dir: Path, nested: bool = Fa
     if section.get("kv"):
         parts.append(_render_key_values(section["kv"]))
     if section.get("table") is not None:
+        # Ordinary sections use a compact preview; explicitly exhaustive diagnostics can show every row.
         max_rows = None if section.get("show_all_rows") else 100
         parts.append(_render_table(section["table"], max_rows=max_rows))
     if section.get("images"):
@@ -387,6 +388,7 @@ def _render_table(table: pd.DataFrame, max_rows: int | None = 100) -> str:
     """Render a dataframe preview as HTML."""
     if table is None or table.empty:
         return "<p class='muted'>No rows to display.</p>"
+    # Apply presentation limits to a copy so the exported statistical artifact remains complete.
     preview = table.copy()
     if max_rows is not None and len(preview) > max_rows:
         preview = preview.head(max_rows)
@@ -401,6 +403,7 @@ def _render_table(table: pd.DataFrame, max_rows: int | None = 100) -> str:
     for _, row in preview.iterrows():
         parts.append("<tr>")
         for column in preview.columns:
+            # Treat dataset values as text rather than allowing them to become HTML markup.
             parts.append(f"<td>{escape(_stringify(row[column]))}</td>")
         parts.append("</tr>")
     parts.append("</tbody></table></div>")
@@ -414,6 +417,7 @@ def _render_images(images: dict[str, Path], report_dir: Path) -> str:
         if not Path(path).exists():
             continue
         image_path = Path(path)
+        # Relative links keep plots working when the whole report directory is moved.
         rel_path = (
             image_path.relative_to(report_dir).as_posix() if image_path.is_relative_to(report_dir) else image_path.as_posix()
         )
@@ -490,6 +494,7 @@ def _content_width_ch(values: list[str]) -> int:
     """Estimate HTML column width in ch units from max rendered cell length."""
     if not values:
         return 8
+    # Allow a minimum readable width plus padding around the longest rendered value.
     return max(8, max(len(value) for value in values) + 2)
 
 

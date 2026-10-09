@@ -51,7 +51,9 @@ shared/
     report_index.py                 links to step reports and the dashboard
     report_server.py                local HTTP report viewer
     confidence_diagnostics.py       confidence summaries and diagnostic figures
-    final_dashboard.py              dashboard shared by evaluation and prediction
+    final_dashboard.py              compatibility façade for dashboard helpers
+    final_dashboard_artifact.py     dashboard artifact data shaping and manifest assembly
+    final_dashboard_pipeline.py     dashboard plots and pipeline HTML report assembly
   probabilities.py                  apply saved probability adjustments
   class_reliability.py               apply saved reliability and combine confidence
 step_04_evaluate/libraries/

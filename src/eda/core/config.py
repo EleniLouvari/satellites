@@ -79,34 +79,38 @@ class EDAConfig:
         self.output_dir = Path(self.output_dir)
         if self.target_task not in {"auto", "classification", "regression"}:
             raise ValueError("Error: target_task must be 'auto', 'classification', or 'regression'.")
-        if self.max_features_per_plot < 1:
-            raise ValueError("Error: max_features_per_plot must be >= 1.")
-        if self.max_categories < 2:
-            raise ValueError("Error: max_categories must be >= 2.")
-        if not 0 < self.categorical_association_max_unique_ratio <= 1:
-            raise ValueError("Error: categorical_association_max_unique_ratio must be between 0 and 1.")
-        if not 0 <= self.high_missing_percent_threshold <= 100:
-            raise ValueError("Error: high_missing_percent_threshold must be between 0 and 100.")
-        if not 0 < self.quasi_constant_threshold <= 1:
-            raise ValueError("Error: quasi_constant_threshold must be between 0 and 1.")
-        if self.max_target_levels_for_plots < 2:
-            raise ValueError("Error: max_target_levels_for_plots must be >= 2.")
-        if self.max_multivariate_features < 2:
-            raise ValueError("Error: max_multivariate_features must be >= 2.")
-        if not 0 <= self.correlation_threshold <= 1:
-            raise ValueError("Error: correlation_threshold must be between 0 and 1.")
-        if self.normality_sample_size < 3:
-            raise ValueError("Error: normality_sample_size must be >= 3.")
-        if self.outlier_zscore_threshold <= 0:
-            raise ValueError("Error: outlier_zscore_threshold must be > 0.")
-        if self.iqr_multiplier <= 0:
-            raise ValueError("Error: iqr_multiplier must be > 0.")
-        if not 0 < self.feature_selection_alpha < 1:
-            raise ValueError("Error: feature_selection_alpha must be between 0 and 1.")
-        if not 0 <= self.feature_selection_redundancy_threshold <= 1:
-            raise ValueError("Error: feature_selection_redundancy_threshold must be between 0 and 1.")
-        if self.feature_selection_max_features is not None and self.feature_selection_max_features < 1:
-            raise ValueError("Error: feature_selection_max_features must be >= 1 or None.")
+        self._validate_numeric_ranges()
+
+    def _validate_numeric_ranges(self) -> None:
+        """Validate numeric EDA options and constraints."""
+        validations = (
+            (self.max_features_per_plot >= 1, "Error: max_features_per_plot must be >= 1."),
+            (self.max_categories >= 2, "Error: max_categories must be >= 2."),
+            (
+                0 < self.categorical_association_max_unique_ratio <= 1,
+                "Error: categorical_association_max_unique_ratio must be between 0 and 1.",
+            ),
+            (0 <= self.high_missing_percent_threshold <= 100, "Error: high_missing_percent_threshold must be between 0 and 100."),
+            (0 < self.quasi_constant_threshold <= 1, "Error: quasi_constant_threshold must be between 0 and 1."),
+            (self.max_target_levels_for_plots >= 2, "Error: max_target_levels_for_plots must be >= 2."),
+            (self.max_multivariate_features >= 2, "Error: max_multivariate_features must be >= 2."),
+            (0 <= self.correlation_threshold <= 1, "Error: correlation_threshold must be between 0 and 1."),
+            (self.normality_sample_size >= 3, "Error: normality_sample_size must be >= 3."),
+            (self.outlier_zscore_threshold > 0, "Error: outlier_zscore_threshold must be > 0."),
+            (self.iqr_multiplier > 0, "Error: iqr_multiplier must be > 0."),
+            (0 < self.feature_selection_alpha < 1, "Error: feature_selection_alpha must be between 0 and 1."),
+            (
+                0 <= self.feature_selection_redundancy_threshold <= 1,
+                "Error: feature_selection_redundancy_threshold must be between 0 and 1.",
+            ),
+            (
+                self.feature_selection_max_features is None or self.feature_selection_max_features >= 1,
+                "Error: feature_selection_max_features must be >= 1 or None.",
+            ),
+        )
+        for condition, message in validations:
+            if not condition:
+                raise ValueError(message)
 
     @property
     def plots_dir(self) -> Path:

@@ -62,6 +62,7 @@ class _BatchTask:
 
 
 def _job_row(extractor, plan):
+    # Keep retry/account metadata in every row so resumes can restart deterministically.
     return {
         "batch_number": plan["batch_number"],
         "run_identifier": extractor.run_identifier,
@@ -192,6 +193,67 @@ def _drain_batches(shared, pinned, users_list, jobs_per_user):
             future.result()
 
 
+def _build_partition_extractor(config, part_idx, parcels):
+    """Create a partition-scoped extractor while preserving run-level options."""
+    options = dict(config)
+    options.update(
+        parcels=parcels,
+        output_dir=Path(config["output_dir"]) / f"partition_{part_idx}",
+        run_identifier=f"{config['run_identifier']}_part{part_idx}",
+    )
+    return OpenEOJobManagerZonalStats(**options)
+
+
+def _build_partition_batches(plans):
+    """Return persisted batch descriptors for final per-partition processing."""
+    return [(plan["batch_number"], plan["parcels"], Path(plan["target_path"])) for plan in plans]
+
+
+def _collect_queued_plans(extractor, plans):
+    """Return plans that still require remote retrieval or local checkpointing."""
+    return [
+        plan for plan in plans
+        if not extractor._has_batch_statistics(plan["target_path"])
+        and (extractor.remove_nc_after_completion or not Path(plan["target_path"]).exists())
+    ]
+
+
+def _validate_partition_tile_plan(extractor, plans):
+    """Reject pathological one-parcel plans that would flood the backend."""
+    if not extractor.fit_tiles_to_parcels and len(plans) >= 10 and all(len(plan["parcels"]) == 1 for plan in plans):
+        raise RuntimeError("Error: Refusing to submit a pathological tile plan: every remote job contains one parcel.")
+
+
+def _resolve_task_owner(part_idx, extractor, users_list, pinned, plan, row):
+    """Resolve owner for a resumed job and validate it against configured users."""
+    owner = extractor._clean_job_id(row.get("openeo_user"))
+    if not owner:
+        owner = users_list[(part_idx - 1) % len(users_list)][0]
+    owner_key = owner.casefold()
+    if owner_key not in pinned:
+        raise ValueError(f"Error: Account {owner!r} is required to resume partition {part_idx} batch {plan['batch_number']}.")
+    return owner_key
+
+
+def _enqueue_partition_tasks(part_idx, extractor, plans, uncached, users_list, shared, pinned, cube_dir):
+    """Queue uncached plans either as shared work or account-pinned resumes."""
+    database = _prepare_database(extractor, plans, cube_dir)
+    lock = RLock()
+    indices = {int(row.batch_number): index for index, row in database.df.iterrows()}
+    for plan in uncached:
+        view = _BatchJobDatabase(database, indices[plan["batch_number"]], lock)
+        task = _BatchTask(part_idx, extractor, plan, view, cube_dir)
+        row = view.df.iloc[0]
+        if extractor._clean_job_id(row.get("id")) and not Path(plan["target_path"]).is_file():
+            # Older partition queues did not persist usernames. Their jobs
+            # belong to the original round-robin account; keep account order
+            # unchanged for the first resume of a legacy run.
+            owner_key = _resolve_task_owner(part_idx, extractor, users_list, pinned, plan, row)
+            pinned[owner_key].put(task)
+            continue
+        shared.put(task)
+
+
 def run_shared_batches(spatial_parts, users_list, config, jobs_per_user):
     """Schedule partition batches across accounts and persist partition outputs.
 
@@ -204,49 +266,22 @@ def run_shared_batches(spatial_parts, users_list, config, jobs_per_user):
     pinned = {user.casefold(): Queue() for user, _ in users_list}
     partitions = []
     for part_idx, parcels in enumerate(spatial_parts, start=1):
-        options = dict(config)
-        options.update(
-            parcels=parcels,
-            output_dir=Path(config["output_dir"]) / f"partition_{part_idx}",
-            run_identifier=f"{config['run_identifier']}_part{part_idx}",
-        )
-        extractor = OpenEOJobManagerZonalStats(**options)
+        extractor = _build_partition_extractor(config, part_idx, parcels)
         if extractor._load_completed_partition() is not None:
             print(f"Partition {part_idx}: reusing completed outputs.")
             continue
         cube_dir = extractor.output_dir / "monthly_cubes" / extractor._run_signature()
         cube_dir.mkdir(parents=True, exist_ok=True)
         plans = extractor._build_tile_plan(cube_dir)
-        if not extractor.fit_tiles_to_parcels and len(plans) >= 10 and all(len(p["parcels"]) == 1 for p in plans):
-            raise RuntimeError("Error: Refusing to submit a pathological tile plan: every remote job contains one parcel.")
-        batches = [(p["batch_number"], p["parcels"], Path(p["target_path"])) for p in plans]
+        _validate_partition_tile_plan(extractor, plans)
+        batches = _build_partition_batches(plans)
         partitions.append((part_idx, extractor, batches))
-        uncached = [
-            p for p in plans
-            if not extractor._has_batch_statistics(p["target_path"])
-            and (extractor.remove_nc_after_completion or not Path(p["target_path"]).exists())
-        ]
+        # Queue only work that still needs remote retrieval or local checkpointing.
+        uncached = _collect_queued_plans(extractor, plans)
         print(f"Partition {part_idx}: {len(parcels)} parcels, {len(plans)} batches, {len(uncached)} queued.")
         if not uncached:
             continue
-        database = _prepare_database(extractor, plans, cube_dir)
-        lock = RLock()
-        indices = {int(row.batch_number): index for index, row in database.df.iterrows()}
-        for plan in uncached:
-            view = _BatchJobDatabase(database, indices[plan["batch_number"]], lock)
-            task = _BatchTask(part_idx, extractor, plan, view, cube_dir)
-            row = view.df.iloc[0]
-            if extractor._clean_job_id(row.get("id")) and not Path(plan["target_path"]).is_file():
-                # Older partition queues did not persist usernames. Their jobs
-                # belong to the original round-robin account; keep account order
-                # unchanged for the first resume of a legacy run.
-                owner = extractor._clean_job_id(row.get("openeo_user"))
-                owner = owner or users_list[(part_idx - 1) % len(users_list)][0]
-                if owner.casefold() not in pinned:
-                    raise ValueError(f"Error: Account {owner!r} is required to resume partition {part_idx} batch {plan['batch_number']}.")
-                pinned[owner.casefold()].put(task)
-            else:
-                shared.put(task)
+        _enqueue_partition_tasks(part_idx, extractor, plans, uncached, users_list, shared, pinned, cube_dir)
 
     print(f"Shared queue: {shared.qsize()} unsubmitted batches; {sum(q.qsize() for q in pinned.values())} owned jobs to resume.")
     if not partitions:

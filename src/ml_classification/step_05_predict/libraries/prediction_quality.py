@@ -69,44 +69,7 @@ def resolve_rank_confidence_contract(config, selection: dict[str, Any]) -> dict[
     if frozen is None and isinstance(legacy_rank, dict) and legacy_rank.get("method") in supported_methods:
         frozen = legacy_rank
     if frozen is not None:
-        # Reject corrupted or manually edited summaries with an invalid object type.
-        if not isinstance(frozen, dict):
-            raise RuntimeError("Error: selection_summary rank_confidence must be an object.")
-        # Step 4's enabled flag is authoritative even if the live config later changes.
-        enabled = bool(frozen.get("enabled", False))
-        if not enabled:
-            # Return an explicit disabled contract so downstream summary fields stay stable.
-            return {
-                "enabled": False,
-                "thresholds": None,
-                "minimum_models": None,
-                "class_reliability": None,
-                "class_reliability_enabled": False,
-                "source": "selection_summary",
-            }
-        if frozen.get("method") not in supported_methods:
-            raise RuntimeError(
-                "Error: The frozen confidence contract uses an obsolete method. Rerun Step 4 to create the rank-consensus-with-class-reliability contract."
-            )
-        rank = frozen.get("rank")
-        reliability = frozen.get("class_reliability")
-        requires_reliability = frozen["method"] == "rank_consensus_with_class_reliability_guard"
-        if not isinstance(rank, dict) or (requires_reliability and not isinstance(reliability, dict)):
-            raise RuntimeError("Error: The frozen confidence contract is incomplete; rerun Step 4.")
-        return {
-            "enabled": True,
-            "method": frozen["method"],
-            "class_reliability_enabled": bool(frozen.get("class_reliability_enabled", True)),
-            "thresholds": {
-                "high_min_borda": rank["high_min_borda"],
-                "high_max_range": rank["high_max_range"],
-                "medium_min_borda": rank["medium_min_borda"],
-                "medium_max_range": rank["medium_max_range"],
-            },
-            "minimum_models": int(rank["minimum_models"]),
-            "class_reliability": reliability,
-            "source": "selection_summary",
-        }
+        return _resolve_frozen_rank_contract(frozen, supported_methods)
 
     if selection.get("rank_confidence") is not None and config.rank_confidence_enabled:
         raise RuntimeError(
@@ -122,6 +85,55 @@ def resolve_rank_confidence_contract(config, selection: dict[str, Any]) -> dict[
         "minimum_models": int(config.rank_confidence_minimum_models),
         "class_reliability": None,
         "source": "live_config_legacy_fallback",
+    }
+
+
+def _resolve_frozen_rank_contract(frozen: object, supported_methods: set[str]) -> dict[str, Any]:
+    """Validate and normalize the frozen Step-4 confidence contract."""
+    if not isinstance(frozen, dict):
+        raise TypeError("Error: selection_summary rank_confidence must be an object.")
+    if not bool(frozen.get("enabled", False)):
+        return _disabled_rank_contract()
+    method = frozen.get("method")
+    if method not in supported_methods:
+        raise RuntimeError(
+            "Error: The frozen confidence contract uses an obsolete method. Rerun Step 4 to create the rank-consensus-with-class-reliability contract."
+        )
+    rank = frozen.get("rank")
+    reliability = frozen.get("class_reliability")
+    requires_reliability = method == "rank_consensus_with_class_reliability_guard"
+    if not isinstance(rank, dict) or (requires_reliability and not isinstance(reliability, dict)):
+        raise RuntimeError("Error: The frozen confidence contract is incomplete; rerun Step 4.")
+    return {
+        "enabled": True,
+        "method": method,
+        "class_reliability_enabled": bool(frozen.get("class_reliability_enabled", True)),
+        "thresholds": _rank_thresholds_from_frozen(rank),
+        "minimum_models": int(rank["minimum_models"]),
+        "class_reliability": reliability,
+        "source": "selection_summary",
+    }
+
+
+def _disabled_rank_contract() -> dict[str, Any]:
+    """Return a stable disabled contract payload."""
+    return {
+        "enabled": False,
+        "thresholds": None,
+        "minimum_models": None,
+        "class_reliability": None,
+        "class_reliability_enabled": False,
+        "source": "selection_summary",
+    }
+
+
+def _rank_thresholds_from_frozen(rank: dict[str, Any]) -> dict[str, Any]:
+    """Extract frozen rank thresholds from the selection summary payload."""
+    return {
+        "high_min_borda": rank["high_min_borda"],
+        "high_max_range": rank["high_max_range"],
+        "medium_min_borda": rank["medium_min_borda"],
+        "medium_max_range": rank["medium_max_range"],
     }
 
 

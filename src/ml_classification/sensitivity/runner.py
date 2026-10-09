@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 import pandas as pd
 
@@ -101,6 +102,7 @@ class ClassificationSensitivityRunner:
                 error=None,
             )
         except Exception as exc:
+            logging.getLogger(__name__).debug("Error: run_seed failed; using its fallback.", exc_info=True)
             # Return a failed row instead of raising, so outer loops can continue.
             return SensitivityResult(
                 seed=int(seed),

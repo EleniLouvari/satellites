@@ -10,13 +10,14 @@ import math
 import os
 import time
 from pathlib import Path
+from typing import Any
 
 import geopandas as gpd
 import pandas as pd
 
 from data_preparation.parcel_stats.batch_scheduler import run_shared_batches
 from data_preparation.parcel_stats.partition_scheduler import (
-    run_partition_extractor as run_partition_extractor,
+    run_partition_extractor as run_partition_extractor,  # noqa: PLC0414 - explicit public re-export
 )
 from data_preparation.parcel_stats.partition_scheduler import (
     run_shared_partitions,
@@ -40,6 +41,83 @@ def _grid_shape_for_partition_count(gdf: gpd.GeoDataFrame, partition_count: int)
     factor_pairs = [(rows, count // rows) for rows in range(1, math.isqrt(count) + 1) if count % rows == 0]
     # Prefer cells that are as close to square as the exact factorization allows.
     return min(factor_pairs, key=lambda shape: abs(math.log((width / shape[1]) / (height / shape[0]))))
+
+
+def _resolve_grid_shape(
+    gdf: gpd.GeoDataFrame,
+    rows: int | None,
+    cols: int | None,
+    partition_count: int | None,
+) -> tuple[int, int]:
+    """Resolve and validate the effective grid shape."""
+    if partition_count is not None:
+        if rows is not None or cols is not None:
+            raise ValueError("Error: Use either partition_count or rows/cols, not both.")
+        return _grid_shape_for_partition_count(gdf, partition_count)
+    if rows is None and cols is None:
+        return 1, 2
+    if rows is None or cols is None:
+        raise ValueError("Error: rows and cols must be supplied together.")
+    if isinstance(rows, bool) or isinstance(cols, bool) or int(rows) < 1 or int(cols) < 1:
+        raise ValueError("Error: rows and cols must be positive integers.")
+    return int(rows), int(cols)
+
+
+def _grid_bounds_and_cell_size(
+    gdf: gpd.GeoDataFrame, rows: int, cols: int
+) -> tuple[float, float, float, float, float, float]:
+    """Return bounds and cell dimensions for the resolved grid."""
+    minx, miny, maxx, maxy = gdf.total_bounds
+    cell_width = (maxx - minx) / cols
+    cell_height = (maxy - miny) / rows
+    return float(minx), float(miny), float(maxx), float(maxy), float(cell_width), float(cell_height)
+
+
+def _assign_parcels_to_grid_cells(
+    gdf: gpd.GeoDataFrame,
+    rows: int,
+    cols: int,
+    minx: float,
+    miny: float,
+    cell_width: float,
+    cell_height: float,
+) -> dict[tuple[int, int], list[Any]]:
+    """Assign each parcel index to exactly one grid cell using centroid coordinates."""
+    cell_parcels: dict[tuple[int, int], list[Any]] = {(row, col): [] for row in range(rows) for col in range(cols)}
+    centroids = gdf.geometry.centroid
+    for parcel_idx, centroid in zip(gdf.index, centroids):
+        col_idx = min(int((centroid.x - minx) / cell_width), cols - 1)
+        row_idx = min(int((centroid.y - miny) / cell_height), rows - 1)
+        col_idx = max(0, col_idx)
+        row_idx = max(0, row_idx)
+        cell_parcels[(row_idx, col_idx)].append(parcel_idx)
+    return cell_parcels
+
+
+def _build_non_empty_grid_parts(
+    gdf: gpd.GeoDataFrame,
+    rows: int,
+    cols: int,
+    cell_parcels: dict[tuple[int, int], list[Any]],
+) -> list[gpd.GeoDataFrame]:
+    """Build non-empty GeoDataFrame parts while preserving legacy progress output."""
+    grid_parts: list[gpd.GeoDataFrame] = []
+    total_parcels_assigned = 0
+    for row in range(rows):
+        for col in range(cols):
+            parcel_indices = cell_parcels[(row, col)]
+            if len(parcel_indices) > 0:
+                parcels_in_cell = gdf.loc[parcel_indices].copy()
+                grid_parts.append(parcels_in_cell)
+                total_parcels_assigned += len(parcel_indices)
+                print(f"  Cell ({row},{col}): {len(parcel_indices)} parcels")
+            else:
+                print(f"  Cell ({row},{col}): (empty)")
+    if total_parcels_assigned != len(gdf):
+        raise ValueError(
+            f"Error: Parcel assignment mismatch: {total_parcels_assigned} assigned vs {len(gdf)} input parcels"
+        )
+    return grid_parts
 
 
 def split_geodataframe_by_grid(
@@ -77,69 +155,15 @@ def split_geodataframe_by_grid(
         raise ValueError("Error: gdf must be a non-empty GeoDataFrame.")
     if gdf.crs is None:
         raise ValueError("Error: gdf must have a CRS.")
-    if partition_count is not None:
-        if rows is not None or cols is not None:
-            raise ValueError("Error: Use either partition_count or rows/cols, not both.")
-        rows, cols = _grid_shape_for_partition_count(gdf, partition_count)
-    elif rows is None and cols is None:
-        rows, cols = 1, 2
-    elif rows is None or cols is None:
-        raise ValueError("Error: rows and cols must be supplied together.")
-    if isinstance(rows, bool) or isinstance(cols, bool) or int(rows) < 1 or int(cols) < 1:
-        raise ValueError("Error: rows and cols must be positive integers.")
-    rows, cols = int(rows), int(cols)
-
-    # Get bounds of all parcels
-    minx, miny, maxx, maxy = gdf.total_bounds
-
-    # Calculate cell dimensions
-    cell_width = (maxx - minx) / cols
-    cell_height = (maxy - miny) / rows
+    rows, cols = _resolve_grid_shape(gdf, rows, cols, partition_count)
+    minx, miny, maxx, maxy, cell_width, cell_height = _grid_bounds_and_cell_size(gdf, rows, cols)
 
     print(f"Spatial grid: {rows}x{cols} cells")
     print(f"  Bounds: X=[{minx:.0f}, {maxx:.0f}], Y=[{miny:.0f}, {maxy:.0f}]")
     print(f"  Cell size: {cell_width:.0f}m x {cell_height:.0f}m")
 
-    # Compute centroid coordinates for each parcel
-    centroids = gdf.geometry.centroid
-
-    # Initialize empty dictionaries for each cell
-    cell_parcels = {(row, col): [] for row in range(rows) for col in range(cols)}
-
-    # Assign each parcel to exactly one cell based on its centroid
-    for parcel_idx, centroid in zip(gdf.index, centroids):
-        # Determine which cell this centroid falls into
-        col_idx = min(int((centroid.x - minx) / cell_width), cols - 1)
-        row_idx = min(int((centroid.y - miny) / cell_height), rows - 1)
-
-        # Ensure indices are in valid range (handles edge cases)
-        col_idx = max(0, col_idx)
-        row_idx = max(0, row_idx)
-
-        cell_parcels[(row_idx, col_idx)].append(parcel_idx)
-
-    # Create grid parts from assigned parcels
-    grid_parts = []
-    total_parcels_assigned = 0
-
-    for row in range(rows):
-        for col in range(cols):
-            parcel_indices = cell_parcels[(row, col)]
-            if len(parcel_indices) > 0:
-                parcels_in_cell = gdf.loc[parcel_indices].copy()
-                grid_parts.append((row, col, parcels_in_cell))
-                total_parcels_assigned += len(parcel_indices)
-                print(f"  Cell ({row},{col}): {len(parcel_indices)} parcels")
-            else:
-                print(f"  Cell ({row},{col}): (empty)")
-
-    # Verify no duplicates
-    if total_parcels_assigned != len(gdf):
-        raise ValueError(
-            f"Error: Parcel assignment mismatch: {total_parcels_assigned} assigned vs {len(gdf)} input parcels"
-        )
-
-    return [gdf for _, _, gdf in grid_parts]
+    cell_parcels = _assign_parcels_to_grid_cells(gdf, rows, cols, minx, miny, cell_width, cell_height)
+    return _build_non_empty_grid_parts(gdf, rows, cols, cell_parcels)
 
 
 def load_openeo_users_from_db() -> list[tuple[str, str]]:
@@ -253,6 +277,72 @@ def load_saved_partition_results(output_dir: Path) -> dict[int, gpd.GeoDataFrame
     return saved_results
 
 
+def _prepare_partition_results(
+    all_results: dict[int, gpd.GeoDataFrame] | None,
+    output_dir: Path,
+) -> dict[int, gpd.GeoDataFrame]:
+    """Load or validate the saved partition outputs that should be merged."""
+    if all_results is None:
+        all_results = load_saved_partition_results(output_dir)
+    if not all_results:
+        raise ValueError("Error: No partition results were provided to merge.")
+    return all_results
+
+
+def _align_partition_columns(
+    ordered_parts: list[gpd.GeoDataFrame],
+) -> tuple[list[gpd.GeoDataFrame], str, Any]:
+    """Align parcel columns across partitions and recover the effective geometry metadata."""
+    all_columns = list(dict.fromkeys(col for part in ordered_parts for col in part.columns))
+    geometry_col = next(
+        (part.geometry.name for part in ordered_parts if hasattr(part, "geometry")),
+        "geometry",
+    )
+    crs = next((part.crs for part in ordered_parts if hasattr(part, "crs") and part.crs is not None), None)
+    aligned_parts = [
+        gpd.GeoDataFrame(part.reindex(columns=all_columns), geometry=geometry_col, crs=part.crs)
+        for part in ordered_parts
+    ]
+    return aligned_parts, geometry_col, crs
+
+
+def _deduplicate_partition_results(
+    merged_results: gpd.GeoDataFrame,
+    parcel_id_column: str | None,
+) -> gpd.GeoDataFrame:
+    """Drop duplicate parcels when a parcel identifier is supplied."""
+    if parcel_id_column is None:
+        return merged_results
+    if parcel_id_column not in merged_results.columns:
+        raise KeyError(f"Error: Parcel ID column {parcel_id_column!r} is missing from partition results.")
+    return merged_results.drop_duplicates(parcel_id_column, keep="first").reset_index(drop=True)
+
+
+def _reproject_merged_results(
+    merged_results: gpd.GeoDataFrame,
+    working_epsg: int | None,
+) -> gpd.GeoDataFrame:
+    """Project the merged output to the configured working CRS if requested."""
+    if working_epsg is None:
+        return merged_results
+    try:
+        output_epsg = int(working_epsg)
+        output_crs = gpd.GeoSeries([], crs=f"EPSG:{output_epsg}").crs
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Error: Invalid working EPSG code: {working_epsg!r}.") from exc
+    if not output_crs.is_projected:
+        raise ValueError("Error: working_epsg must identify a projected CRS.")
+    return merged_results.to_crs(output_crs)
+
+
+def _save_merged_results(merged_results: gpd.GeoDataFrame, output_dir: Path) -> Path:
+    """Persist the merged result to the standard GeoParquet path."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_geoparquet = output_dir / PARTITION_RESULT_FILE_NAME
+    write_data(merged_results, str(output_geoparquet))
+    return output_geoparquet
+
+
 def merge_and_save_results(
     gdf_parcels: gpd.GeoDataFrame | None = None,
     all_results: dict[int, gpd.GeoDataFrame] | None = None,
@@ -292,68 +382,32 @@ def merge_and_save_results(
     if output_dir is None:
         raise ValueError("Error: output_dir is required.")
     output_dir = Path(output_dir)
-
-    if all_results is None:
-        all_results = load_saved_partition_results(output_dir)
-    if not all_results:
-        raise ValueError("Error: No partition results were provided to merge.")
+    all_results = _prepare_partition_results(all_results, output_dir)
 
     print(f"\n{'='*70}")
     print(f"Merging {len(all_results)} partition result(s)")
     print(f"{'='*70}")
 
-    # Partition outputs each have their own RangeIndex, so their indexes must not
-    # be used for de-duplication after concatenation.
-    # Pre-align column sets across all partitions to avoid a pandas BlockManager
-    # shape mismatch (ValueError: Shape of passed values …) that occurs when
-    # different tiles produced different numbers of dated feature columns (e.g.
-    # due to cloud cover leaving some calendar months with no valid pixels).
     ordered_parts = [all_results[i] for i in sorted(all_results)]
-    all_columns = list(dict.fromkeys(col for part in ordered_parts for col in part.columns))
-    geometry_col = next(
-        (part.geometry.name for part in ordered_parts if hasattr(part, "geometry")),
-        "geometry",
-    )
-    crs = next((part.crs for part in ordered_parts if hasattr(part, "crs") and part.crs is not None), None)
-    aligned_parts = [
-        gpd.GeoDataFrame(part.reindex(columns=all_columns), geometry=geometry_col, crs=part.crs)
-        for part in ordered_parts
-    ]
+    aligned_parts, geometry_col, crs = _align_partition_columns(ordered_parts)
     merged_results = gpd.GeoDataFrame(
         pd.concat(aligned_parts, ignore_index=True),
         geometry=geometry_col,
         crs=crs,
     )
-    if parcel_id_column is not None:
-        if parcel_id_column not in merged_results.columns:
-            raise KeyError(f"Error: Parcel ID column {parcel_id_column!r} is missing from partition results.")
-        merged_results = merged_results.drop_duplicates(parcel_id_column, keep="first").reset_index(drop=True)
-
-    if working_epsg is not None:
-        try:
-            output_epsg = int(working_epsg)
-            output_crs = gpd.GeoSeries([], crs=f"EPSG:{output_epsg}").crs
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"Error: Invalid working EPSG code: {working_epsg!r}.") from exc
-        if not output_crs.is_projected:
-            raise ValueError("Error: working_epsg must identify a projected CRS.")
-        merged_results = merged_results.to_crs(output_crs)
+    merged_results = _deduplicate_partition_results(merged_results, parcel_id_column)
+    merged_results = _reproject_merged_results(merged_results, working_epsg)
 
     input_count = len(gdf_parcels) if gdf_parcels is not None else sum(map(len, all_results.values()))
     print(f"\nMerged results: {len(merged_results)} parcels (input: {input_count})")
     print(f"Output columns: {merged_results.shape[1]}")
     print(f"Output CRS: {merged_results.crs}")
 
-    # Create output paths
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_geoparquet = output_dir / PARTITION_RESULT_FILE_NAME
-
     print(f"\n{'='*70}")
     print("Saving final merged results")
     print(f"{'='*70}")
 
-    # Save as GeoParquet
-    write_data(merged_results, str(output_geoparquet))
+    output_geoparquet = _save_merged_results(merged_results, output_dir)
     print(f"\nSaved final output: {output_geoparquet}")
     return merged_results, output_geoparquet
 

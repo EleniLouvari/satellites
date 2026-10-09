@@ -38,7 +38,10 @@ _PERCENTAGE_METRICS = (
     "precision_weighted",
     "recall_weighted",
     "roc_auc_weighted",
-)
+)
+
+# Keep this helper focused on a single transformation so the reporting pipeline stays easy to follow.
+
 
 
 def _sort_model_rows_only(metrics_df: pd.DataFrame, scoring_primary: str, special_models: tuple[str, ...]) -> pd.DataFrame:
@@ -54,6 +57,7 @@ def _sort_model_rows_only(metrics_df: pd.DataFrame, scoring_primary: str, specia
     if scoring_primary in base_df.columns:
         base_df = base_df.sort_values(by=scoring_primary, ascending=False)
 
+    # Keep aggregate rows in their explicit display order after score-sorted base models.
     special_order = {model_name: position for position, model_name in enumerate(special_models)}
     special_df["_special_order"] = special_df["model"].map(special_order).fillna(len(special_models))
     special_df = special_df.sort_values(by=["_special_order", "_original_order"], ascending=[True, True])
@@ -77,6 +81,7 @@ def _prepare_average_metrics(metrics_df: pd.DataFrame, scoring_primary: str) -> 
     sorted_df = _sort_model_rows_only(metrics_df, scoring_primary, _AVERAGE_SPECIAL_MODELS)
     display_df = _rename_special_models(sorted_df)
     percentage_columns = [column for column in _PERCENTAGE_METRICS if column in display_df.columns]
+    # Scale only the display copy; source metrics remain proportions for computation.
     display_df[percentage_columns] = display_df[percentage_columns] * 100
     return display_df
 
@@ -138,6 +143,7 @@ def _ranking_rows(ranking_metrics_df: pd.DataFrame | None, columns: pd.Index) ->
     rank_rows = ranking_metrics_df[ranking_metrics_df["method"].isin(_RANKING_METHODS)].copy()
     rank_rows = rank_rows.rename(columns={"method": "model"})
     rank_rows = rank_rows.drop(columns=["n_models_used", "is_preferred"], errors="ignore")
+    # Align rank-method rows to the model table schema, leaving unavailable metrics missing.
     return rank_rows.reindex(columns=columns)
 
 
@@ -170,6 +176,7 @@ def _model_selection_strategy(config, selection: dict[str, Any], cv_table: pd.Da
         confidence = dict(selection["confidence"])
         reliability = confidence.get("class_reliability")
         if isinstance(reliability, dict):
+            # Summarize the contract here without embedding the potentially large per-class lookup.
             confidence["class_reliability"] = {key: value for key, value in reliability.items() if key != "classes"}
         details["confidence"] = confidence
     return details
@@ -352,7 +359,6 @@ def write_evaluate_report(
     confidence_by_class_df: pd.DataFrame | None = None,
 ) -> None:
     """Write the step-4 evaluation report including strategy selection details."""
-
     images = _report_images(
         config.evaluate_dir / "confusion_matrices",
         config.evaluate_dir / "panels",
@@ -406,6 +412,7 @@ def write_evaluate_report(
         test_average_section,
         classification_links,
     )
+    # OOF evidence fitted the guard, so display it separately from independent holdout diagnostics.
     if oof_confidence_metrics_df is not None and not oof_confidence_metrics_df.empty:
         sections.append(
             {

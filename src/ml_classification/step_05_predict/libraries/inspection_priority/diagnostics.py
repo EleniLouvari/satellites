@@ -14,6 +14,7 @@ import seaborn as sns
 
 from ml_classification.step_05_predict.libraries.inspection_priority.plots import save_inspection_relationship_plot
 
+# Policy severity, rather than alphabetical order, determines the inspection queue and table order.
 _NEED_ORDER = ("VERY_HIGH", "HIGH", "MEDIUM_HIGH", "MEDIUM_UNCERTAIN", "MEDIUM", "LOW", "UNKNOWN")
 _CHECK_TYPE_ORDER = ("DECLARATION_CONFLICT", "INSUFFICIENT_EO_EVIDENCE", "NONE")
 _DECLARATION_ORDER = ("SAME", "DIFFERENT", "NO_DECLARATION", "UNAVAILABLE")
@@ -51,6 +52,7 @@ def _inspection_check_type_summary(data: pd.DataFrame) -> pd.DataFrame:
 def _priority_by_predicted_class(data: pd.DataFrame, prediction_column: str) -> pd.DataFrame:
     """Summarize operational inspection burden by predicted crop."""
     working = data.copy()
+    # Retain missing predictions as an explicit group so operational counts do not silently lose parcels.
     working["predicted_class"] = working[prediction_column].astype("string").fillna("<missing>")
     working["needs_operational_check"] = working["inspection_check_type"].ne("NONE")
     working["is_declaration_conflict"] = working["inspection_check_type"].eq("DECLARATION_CONFLICT")
@@ -68,6 +70,7 @@ def _priority_by_predicted_class(data: pd.DataFrame, prediction_column: str) -> 
         )
         .reset_index()
     )
+    # The denominator is every parcel in the predicted class, including those requiring no check.
     summary["needs_check_rate_percent"] = 100.0 * summary["needs_check"] / summary["parcels"]
     return summary.sort_values(
         ["high_or_very_high", "declaration_conflicts", "needs_check_rate_percent", "parcels"],
@@ -77,6 +80,7 @@ def _priority_by_predicted_class(data: pd.DataFrame, prediction_column: str) -> 
 
 def _declaration_conflict_matrix(data: pd.DataFrame, target_column: str, prediction_column: str) -> pd.DataFrame:
     """Cross-tabulate declared and predicted crops for reliable conflicts only."""
+    # Only evidence-supported declaration conflicts belong in this matrix, not all label disagreements.
     conflicts = data.loc[
         data["inspection_check_type"].eq("DECLARATION_CONFLICT") & data[target_column].notna() & data[prediction_column].notna()
     ]
@@ -93,6 +97,7 @@ def _declaration_conflict_matrix(data: pd.DataFrame, target_column: str, predict
 def _evidence_quality_table(data: pd.DataFrame, config) -> pd.DataFrame:
     """Cross data reliability and geometry risk using the configured policy thresholds."""
     working = data.copy()
+    # Left-closed bins place exact threshold values in the higher reliability band.
     working["data_reliability_level"] = pd.cut(
         pd.to_numeric(working[config.inspection_data_reliability_column], errors="coerce"),
         bins=[
@@ -166,6 +171,7 @@ def _confidence_data_score_table(data: pd.DataFrame, config) -> pd.DataFrame:
 
 def _top_priority_parcels(data: pd.DataFrame, config, limit: int = 100) -> pd.DataFrame:
     """Return the highest-priority parcel-level audit queue with its explanations."""
+    # Sort by final policy need first and use the numeric score to order parcels within each need level.
     priority_rank = {need: rank for rank, need in enumerate(_NEED_ORDER)}
     working = data.loc[data["inspection_check_type"].ne("NONE")].copy()
     working["_priority_rank"] = working["inspection_need"].map(priority_rank).fillna(len(priority_rank))
@@ -335,6 +341,7 @@ def export_operational_inspection_diagnostics(
         "inspection_need_by_declaration_status",
         "inspection_score_by_confidence_data",
     }
+    # Matrix row labels carry category meaning and must be retained in their CSV exports.
     for name, table in tables.items():
         table.to_csv(data_dir / f"{name}.csv", index=name in matrix_tables)
 
@@ -400,7 +407,7 @@ def export_operational_inspection_diagnostics(
     images.update({name: path for name, path in builders.items() if path is not None})
 
     summary = {
-        "rows": int(len(data)),
+        "rows": len(data),
         "rows_requiring_operational_check": int(data["inspection_check_type"].ne("NONE").sum()),
         "declaration_conflicts": int(data["inspection_check_type"].eq("DECLARATION_CONFLICT").sum()),
         "insufficient_eo_evidence": int(data["inspection_check_type"].eq("INSUFFICIENT_EO_EVIDENCE").sum()),

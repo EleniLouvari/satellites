@@ -9,6 +9,7 @@ from ml_classification.step_02_prepare.libraries.spatial_allocation import alloc
 
 
 def build_cv_folds(config, train_df, active_features, spatial_splitter):
+    """Build cross-validation folds using stratified or spatial splitters."""
     # Disjoint CV targets 1 / cv_folds of the training rows per validation fold.
     if spatial_splitter is None:
         splitter = StratifiedKFold(n_splits=config.cv_folds, shuffle=True, random_state=config.random_state)

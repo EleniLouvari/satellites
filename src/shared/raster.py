@@ -1,32 +1,62 @@
 """Library containing functions for handling raster files."""
 
+import logging
+import os
+import re
+
+# subprocess is required for controlled shell=False command execution.
+import subprocess  # nosec
+import time
+from collections.abc import Callable, Iterable, Sequence
+from typing import Any
+
+import botocore.exceptions
+import geopandas as gpd
+import numpy as np
+import rasterio
+import xarray as xr
 from affine import Affine
 from osgeo import gdal
 from pyproj import CRS
 from rasterio.enums import Resampling
+from rasterio.transform import from_gcps
+from rasterio.warp import calculate_default_transform, reproject
 from shapely.geometry import box
-from typing import Any
-from typing import Callable
-from typing import Iterable
-from typing import List
-from typing import Optional
-from typing import Sequence
-from typing import Tuple
-from typing import Union
-import geopandas as gpd
-import logging
-import numpy as np
-import os
-import rasterio
-import re
-import time
-import xarray as xr
 
 import shared.io as io_l
 import shared.logging as log_l
 
+# Raster-specific defaults live with their only consumer.
+_BIG_TIF_YES = "BIGTIFF=YES"
+_EPSG_PREFIX = "EPSG:"
+BLOCKSIZE = 512
+COORD_ROUNDING = 8
+EPSG_4326 = "EPSG:4326"
 
-from shared.constants import _BIG_TIF_YES, _EPSG_PREFIX, BLOCKSIZE, COORD_ROUNDING, EPSG_4326
+
+def _read_raster_georeferencing(dataset) -> tuple:
+    """Read native georeferencing, falling back to GCPs and GDAL metadata."""
+    crs, transform = dataset.crs, dataset.transform
+    if crs is not None and transform is not None and transform != Affine.identity():
+        return crs, transform
+    gcps, gcp_crs = dataset.gcps
+    if gcps:
+        return gcp_crs or crs, from_gcps(gcps)
+    metadata = gdal.Info(dataset.name, format="json") or {}
+    if crs is None:
+        wkt = metadata.get("coordinateSystem", {}).get("wkt")
+        if wkt:
+            crs = rasterio.crs.CRS.from_wkt(wkt)
+    if transform is None or transform == Affine.identity():
+        geotransform = metadata.get("geoTransform")
+        if geotransform is not None:
+            transform = Affine.from_gdal(*geotransform)
+    return crs, transform
+
+
+def _get_gdal_capacity() -> tuple[int, int]:
+    """Return GDAL's configured cache in MiB and the available CPU count."""
+    return max(1, gdal.GetCacheMax() // (1024 * 1024)), os.cpu_count() or 1
 
 
 def _extract_source_georeferencing(
@@ -50,14 +80,10 @@ def _extract_source_georeferencing(
     src_crs = src.crs
     src_transform = src.transform
 
-    # If source has identity transform (common with JP2), try to extract from tags
-    if src_transform == Affine.identity() or src_transform is None:
-        src_geo_info = info_l.extract_geospatial_from_raster_tags(src.tags(), src.width, src.height)
-        if src_geo_info["found_geo_info"]:
-            if src_geo_info["crs"] is not None:
-                src_crs = src_geo_info["crs"]
-            if src_geo_info["transform"] is not None:
-                src_transform = src_geo_info["transform"]
+    # Recover missing native georeferencing from GCPs or GDAL metadata.
+    if src_crs is None or src_transform == Affine.identity() or src_transform is None:
+        src_crs, src_transform = _read_raster_georeferencing(src)
+        if src_transform is not None and src_transform != Affine.identity():
             log_l.log_message(
                 logger,
                 f"Extracted georeferencing from {os.path.basename(src.name)} metadata (JP2 or similar format)",
@@ -406,7 +432,7 @@ def define_resampling_algorithm(resample_alg: str = "nearest", for_library: str 
         }
         # Default to nearest if an invalid method is provided (fail-safe)
         if resample_alg.lower() not in resampling_methods:
-            log_l.log_message(logger, f"Invalid resampling method '{resample_alg}'. Falling back to 'nearest'.")
+            log_l.log_message(None, f"Invalid resampling method '{resample_alg}'. Falling back to 'nearest'.")
             return Resampling.nearest
         return resampling_methods[resample_alg.lower()]
     elif for_library == "gdal":
@@ -439,10 +465,9 @@ def _extract_reference_georeferencing(ref) -> tuple[int, int, Any, Any]:
     dst_crs, dst_transform = ref.crs, ref.transform
 
     if dst_crs is None or dst_transform is None or dst_transform == Affine.identity():
-        geo_info = info_l.extract_geospatial_from_raster_tags(ref.tags(), dst_width, dst_height)
-        if not geo_info["found_geo_info"]:
+        dst_crs, dst_transform = _read_raster_georeferencing(ref)
+        if dst_transform is None or dst_transform == Affine.identity():
             raise ValueError("Error: Could not determine valid georeferencing from raster tags.")
-        dst_crs, dst_transform = geo_info["crs"], geo_info["transform"]
 
     if dst_crs is None or dst_transform is None:
         raise ValueError("Error: Could not determine valid georeferencing (CRS or transform) from GeoTIFF.")
@@ -450,7 +475,7 @@ def _extract_reference_georeferencing(ref) -> tuple[int, int, Any, Any]:
     return dst_width, dst_height, dst_crs, dst_transform
 
 
-def _resolve_nodata_and_fill(src, nodata_value: Optional[int], apply_mask: bool, mask_value: Optional[float]) -> tuple:
+def _resolve_nodata_and_fill(src, nodata_value: int | None, apply_mask: bool, mask_value: float | None) -> tuple:
     """Resolve output nodata and fill value used during reprojection."""
     src_nodata = src.nodata
     final_nodata = nodata_value if nodata_value is not None and not np.isnan(nodata_value) else src_nodata
@@ -493,9 +518,9 @@ def resample_to_reference(
     reference_file: str,
     output_file: str,
     resample_alg: str = "nearest",
-    nodata_value: Optional[int] = 0,
-    apply_mask: Optional[bool] = False,
-    mask_value: Optional[float] = 0,
+    nodata_value: int | None = 0,
+    apply_mask: bool | None = False,
+    mask_value: float | None = 0,
     logger: logging.Logger | None = None,
 ) -> None:
     """Resample a raster to match the resolution, extent, CRS, and shape of a reference raster.
@@ -586,7 +611,7 @@ def resample_to_reference(
 def resample_raster(
     input_file: str,
     output_file: str,
-    target_resolution: Union[Sequence[float], Sequence[int]],
+    target_resolution: Sequence[float] | Sequence[int],
     resample_alg: str = "nearest",
     logger: logging.Logger | None = None,
 ) -> None:
@@ -648,8 +673,8 @@ def resample_raster(
             scale_y = original_y_res / target_resolution[1]
 
             # Calculate new dimensions
-            new_width = int(round(src.width * scale_x))
-            new_height = int(round(src.height * scale_y))
+            new_width = round(src.width * scale_x)
+            new_height = round(src.height * scale_y)
 
             # Calculate new transform
             new_transform = original_transform * original_transform.scale((src.width / new_width), (src.height / new_height))
@@ -713,8 +738,8 @@ def resample_raster(
 def reproject_raster_rasterio(
     input_file: str,
     output_file: str,
-    target_crs: Union[str, dict],
-    target_resolution: Optional[Union[int, Tuple[float, float], List[float]]] = None,
+    target_crs: str | dict,
+    target_resolution: int | tuple[float, float] | list[float] | None = None,
     resample_alg: str = "nearest",
     logger: logging.Logger | None = None,
 ) -> None:
@@ -805,7 +830,7 @@ def reproject_raster_rasterio(
         raise RuntimeError(f"Error: Could not reproject raster {os.path.basename(input_file)}: {e}") from e
 
 
-def run_subprocess(cmd: list[str], wait_file: Optional[str] = None, logger: logging.Logger | None = None):
+def run_subprocess(cmd: list[str], wait_file: str | None = None, logger: logging.Logger | None = None):
     """Execute a subprocess command and print its output.
 
     Optionally waits for a specific file to become accessible after execution.
@@ -828,12 +853,11 @@ def run_subprocess(cmd: list[str], wait_file: Optional[str] = None, logger: logg
     log_l.log_message(logger, f"Executing command: {' '.join(cmd)}")
     cmd_command = cmd[0]
     try:
-        result = subprocess.run(  # nosec B603: cmd built internally; shell=False; bounded
+        result = subprocess.run(  # nosec
             cmd,
             check=True,
             shell=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             text=True,
             timeout=3600,
         )
@@ -846,6 +870,7 @@ def run_subprocess(cmd: list[str], wait_file: Optional[str] = None, logger: logg
                     with open(wait_file, "rb"):
                         break
                 except Exception:
+                    logging.getLogger(__name__).debug("Error: run_subprocess failed; using its fallback.", exc_info=True)
                     time.sleep(0.2)
             else:
                 raise RuntimeError(f"Error: File still locked after subprocess: {wait_file}")
@@ -892,10 +917,10 @@ def reproject_raster_with_gdalwarp(
     input_file: str,
     output_file: str,
     target_crs: str,
-    target_resolution: Optional[Union[int, float, tuple[float, float]]] = None,
-    source_crs: Optional[str] = None,
+    target_resolution: float | tuple[float, float] | None = None,
+    source_crs: str | None = None,
     resample_alg: str = "near",
-    nodata_value: Optional[int] = None,
+    nodata_value: int | None = None,
     logger: logging.Logger | None = None,
 ) -> None:
     """Reproject a raster horizontally using gdalwarp.
@@ -939,7 +964,7 @@ def reproject_raster_with_gdalwarp(
         to_crs = f"EPSG:{parse_epsg_code(target_crs)}"
 
         # Get computer's capabilities
-        gdal_cachemax_mb, num_threads = mem_l.get_computer_capacity_for_gdal()
+        gdal_cachemax_mb, num_threads = _get_gdal_capacity()
 
         cmd = [
             "gdalwarp",
@@ -1155,7 +1180,7 @@ def vertical_transformation_with_gdalwarp(
             source_srs_str = f"EPSG:{horizontal_epsg}+geoidgrids={source_geoid_file}"
 
         # Get computer's capabilities
-        gdal_cachemax_mb, num_threads = mem_l.get_computer_capacity_for_gdal()
+        gdal_cachemax_mb, num_threads = _get_gdal_capacity()
 
         # Target is standard WGS84 ellipsoidal heights
         target_srs_str = EPSG_4326
@@ -1197,7 +1222,7 @@ def ortho_rectify_rpc(
     output_file: str,
     input_dem: str,
     target_crs: str,
-    target_resolution: Optional[Union[int, float]] = None,
+    target_resolution: float | None = None,
     resample_alg: str = "near",
     nodata_value: int = 0,
     logger: logging.Logger | None = None,
@@ -1241,8 +1266,8 @@ def ortho_rectify_rpc(
     if os.path.exists(output_file):
         io_l.delete_file(output_file)
 
-    dem_info = info_l.extract_image_info(input_dem)
-    min_x, min_y, max_x, max_y = dem_info["raster:bbox"]
+    with rasterio.open(input_dem) as dem:
+        min_x, min_y, max_x, max_y = dem.bounds
 
     # Check the resampling algorithm
     resampling = define_resampling_algorithm(resample_alg=resample_alg, for_library="gdal")
@@ -1251,7 +1276,7 @@ def ortho_rectify_rpc(
     to_crs = f"EPSG:{parse_epsg_code(target_crs)}"
 
     # Get computer's capabilities
-    gdal_cachemax_mb, num_threads = mem_l.get_computer_capacity_for_gdal()
+    gdal_cachemax_mb, num_threads = _get_gdal_capacity()
 
     cmd = [
         "gdalwarp",
@@ -1503,6 +1528,7 @@ def _merge_block_from_sources(
             mask = out_block == fill_value
             out_block[mask] = data[mask]
         except Exception as e:
+            logging.getLogger(__name__).debug("Error: _merge_block_from_sources failed; using its fallback.", exc_info=True)
             print(f"Warning: Skipping source {getattr(src, 'name', '?')}: {e}")
             continue
 
@@ -1536,7 +1562,7 @@ def _build_cog_translate_command(
     cog_options: list[str],
     input_file: str,
     output_file: str,
-    bands: Optional[list[int]] = None,
+    bands: list[int] | None = None,
 ) -> list[str]:
     """Build a gdal_translate command for COG conversion."""
     cmd = [
@@ -1652,7 +1678,7 @@ def get_tif_type(file_path: str) -> str:
         raise RuntimeError(f"Error: Could not retrieve TIFF type for {file_path}: {e}") from e
 
 
-def get_epsg_from_crs(dataset_crs: Union[str, CRS]) -> Union[int, str, CRS]:
+def get_epsg_from_crs(dataset_crs: str | CRS) -> int | str | CRS:
     """Extract the EPSG code from a CRS (Coordinate Reference System) object or string.
 
     Parameters
@@ -1701,11 +1727,12 @@ def get_epsg_from_crs(dataset_crs: Union[str, CRS]) -> Union[int, str, CRS]:
         return dataset_crs
 
     except Exception as e:
+        logging.getLogger(__name__).debug("Error: get_epsg_from_crs failed; using its fallback.", exc_info=True)
         print(f"\nError: Could not determine EPSG code: {e}")
         return dataset_crs
 
 
-def parse_epsg_code(epsg_code: Union[str, int]) -> int:
+def parse_epsg_code(epsg_code: str | int) -> int:
     """Normalize an EPSG code input to an integer value.
 
     Parameters
@@ -1751,7 +1778,7 @@ def normalize_unit_name(unit_name: str) -> str:
     return "unknown"
 
 
-def get_units_from_epsg(epsg_code: Union[str, int]) -> str:
+def get_units_from_epsg(epsg_code: str | int) -> str:
     """Determine the coordinate units (e.g., 'm', 'ft', 'degrees') based on the EPSG code.
 
     Parameters
@@ -1781,6 +1808,7 @@ def get_units_from_epsg(epsg_code: Union[str, int]) -> str:
         return normalize_unit_name(unit_name)
 
     except Exception:
+        logging.getLogger(__name__).debug("Error: get_units_from_epsg failed; using its fallback.", exc_info=True)
         return "unknown"
 
 
@@ -2117,5 +2145,6 @@ def export_nc_layer_to_geotiff(nc_path: str, nc_layer: str, out_tif: str) -> boo
             return True
 
     except Exception as e:
+        logging.getLogger(__name__).debug("Error: export_nc_layer_to_geotiff failed; using its fallback.", exc_info=True)
         print(f"Error: Failed exporting {nc_layer} to GeoTIFF from: {nc_path} -> {out_tif}. Error: {e}")
         return False

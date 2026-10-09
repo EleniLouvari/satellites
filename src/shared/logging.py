@@ -1,14 +1,14 @@
 """Library containing functions for logging messages."""
 
-from datetime import datetime
-from glob import glob
-from typing import Optional
 import logging
 import os
+import threading
+from datetime import UTC, datetime
+from glob import glob
 
 import shared.io as io_l
 from shared.constants import LOG_SEPARATOR_DURATION
-import threading
+
 
 # THREAD-SCOPED file handler that captures ONLY the current thread
 class _ThreadOnlyFilter(logging.Filter):
@@ -107,8 +107,8 @@ def format_process_duration(begin_time: float, end_time: float, process_name: st
         The formatted text with info about the duration.
 
     """
-    begin_datetime = datetime.fromtimestamp(begin_time)
-    end_datetime = datetime.fromtimestamp(end_time)
+    begin_datetime = datetime.fromtimestamp(begin_time, UTC).astimezone()
+    end_datetime = datetime.fromtimestamp(end_time, UTC).astimezone()
     duration = calculate_time_duration(begin_time, end_time)
     safe_name = process_name.replace("\\", "/")
     text1 = f"{safe_name} Started on {begin_datetime.strftime('%Y-%m-%d %H:%M:%S')}"
@@ -193,7 +193,7 @@ def setup_logging(log_folder: str, file_prefix: str) -> logging.Logger:
             logger.addHandler(console_handler)
         return logger
     except Exception as e:
-        raise RuntimeError(f"Error: Error setting log parameters: {str(e)}") from e
+        raise RuntimeError(f"Error: Error setting log parameters: {e!s}") from e
 
 
 def release_logger(logger: logging.Logger) -> None:
@@ -219,7 +219,7 @@ def release_logger(logger: logging.Logger) -> None:
         logger.removeHandler(handler)
 
 
-def log_message(logger: Optional[logging.Logger] = None, msg: str = "", type: str = "info") -> None:
+def log_message(logger: logging.Logger | None = None, msg: str = "", type: str = "info") -> None:
     """Log a message either to the console or a provided logger, with support for info and error types.
 
     Parameters
@@ -307,14 +307,15 @@ def append_and_delete_logs(main_log_path: str, pattern: str, section_title: str)
             try:
                 io_l.delete_file(log_file)
             except Exception:
+                logging.getLogger(__name__).debug("Error: append_and_delete_logs failed; using its fallback.", exc_info=True)
                 os.remove(log_file)
 
 
 def append_error_to_main_log(
     work_folder: str,
     error_msg: str,
-    job_id: Optional[str] = None,
-    stage: Optional[str] = None,
+    job_id: str | None = None,
+    stage: str | None = None,
     main_log_name: str = "execution_process.log",
 ) -> None:
     """Immediately append an error message to the main execution log in an ERROR section.
@@ -345,7 +346,7 @@ def append_error_to_main_log(
     """
     try:
         main_log_path = os.path.join(work_folder, main_log_name)
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = datetime.now(UTC).astimezone().strftime("%Y-%m-%d %H:%M:%S")
 
         # Build context prefix
         context_parts = []
@@ -374,6 +375,7 @@ def append_error_to_main_log(
             os.fsync(f.fileno())  # Force OS-level flush
 
     except Exception as e:
+        logging.getLogger(__name__).debug("Error: append_error_to_main_log failed; using its fallback.", exc_info=True)
         # Last resort: print to console if we can't write to log
         print(f"[CRITICAL] Failed to append error to main log: {e}")
         print(f"[CRITICAL] Original error: {error_msg}")
@@ -382,8 +384,8 @@ def append_error_to_main_log(
 def append_progress_to_main_log(
     work_folder: str,
     progress_msg: str,
-    job_id: Optional[str] = None,
-    stage: Optional[str] = None,
+    job_id: str | None = None,
+    stage: str | None = None,
     level: str = "INFO",
     main_log_name: str = "execution_process.log",
 ) -> None:
@@ -417,7 +419,7 @@ def append_progress_to_main_log(
     """
     try:
         main_log_path = os.path.join(work_folder, main_log_name)
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = datetime.now(UTC).astimezone().strftime("%Y-%m-%d %H:%M:%S")
 
         # Build context prefix
         context_parts = [level]
@@ -438,10 +440,11 @@ def append_progress_to_main_log(
             os.fsync(f.fileno())  # Force OS-level flush
 
     except Exception:
+        logging.getLogger(__name__).debug("Error: append_progress_to_main_log failed; using its fallback.", exc_info=True)
         print(f"[CRITICAL] Failed to append progress to main log: {progress_msg}")
 
 
-def merge_logs_into_main(job_id: Optional[str], log_folder: str) -> None:
+def merge_logs_into_main(job_id: str | None, log_folder: str) -> None:
     """Merge job-specific log files into the main pipeline log file and deletes them afterward.
 
     This function appends the contents of all log files in the specified `log_folder`

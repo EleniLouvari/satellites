@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 
 import geopandas as gpd
+from pyproj import Transformer
 from pyproj.aoi import AreaOfInterest
 from pyproj.database import query_utm_crs_info
 
@@ -17,7 +18,6 @@ def estimate_utm_epsg_from_parcels(parcels: gpd.GeoDataFrame) -> int:
     The final UTM CRS is selected from the PROJ database at that centroid, so
     northern and southern hemisphere EPSG codes are handled automatically.
     """
-
     if not isinstance(parcels, gpd.GeoDataFrame):
         raise TypeError("Error: parcels must be a GeoDataFrame.")
     if parcels.empty:
@@ -29,16 +29,18 @@ def estimate_utm_epsg_from_parcels(parcels: gpd.GeoDataFrame) -> int:
     if usable.empty:
         raise ValueError("Error: parcels must contain at least one non-empty geometry.")
 
+    # Estimate a robust projected CRS from the parcel footprint before centroid math.
     provisional_crs = usable.estimate_utm_crs(datum_name="WGS 84")
     if provisional_crs is None:
         raise ValueError("Error: Could not estimate a provisional UTM CRS for the parcel extent.")
     projected = usable.to_crs(provisional_crs)
     dissolved_centroid = projected.geometry.union_all().centroid
-    centroid_wgs84 = gpd.GeoSeries([dissolved_centroid], crs=projected.crs).to_crs(4326).iloc[0]
-    longitude, latitude = float(centroid_wgs84.x), float(centroid_wgs84.y)
+    transformer = Transformer.from_crs(projected.crs, 4326, always_xy=True)
+    longitude, latitude = transformer.transform(dissolved_centroid.x, dissolved_centroid.y)
     if not math.isfinite(longitude) or not math.isfinite(latitude):
         raise ValueError("Error: The dissolved parcel centroid is not finite.")
 
+    # Query UTM candidates at one point; PROJ handles hemisphere selection.
     candidates = query_utm_crs_info(
         datum_name="WGS 84",
         area_of_interest=AreaOfInterest(

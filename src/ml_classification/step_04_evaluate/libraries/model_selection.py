@@ -7,9 +7,9 @@ import pandas as pd
 
 from ml_classification.shared.config.config import ClassificationPipelineConfig
 from ml_classification.shared.logging import print_formatted_txt
-from ml_classification.step_04_evaluate.libraries.metrics import score_predictions
 from ml_classification.shared.persistence import save_frame_csv
 from ml_classification.shared.probabilities import apply_class_probability_multipliers
+from ml_classification.step_04_evaluate.libraries.metrics import score_predictions
 from ml_classification.step_04_evaluate.libraries.probability_optimization import optimize_probability_multipliers
 
 
@@ -142,7 +142,7 @@ def evaluate_voting_candidate(
             voting_probabilities[split_name] = apply_class_probability_multipliers(
                 probabilities, labels, selection.get("class_probability_multipliers")
             )
-    voting_predictions_train, voting_metrics_train = _score_probability_strategy(
+    _voting_predictions_train, voting_metrics_train = _score_probability_strategy(
         voting_probabilities["train"], y_train, labels, "soft_voting"
     )
     voting_predictions_test, voting_metrics_test = _score_probability_strategy(

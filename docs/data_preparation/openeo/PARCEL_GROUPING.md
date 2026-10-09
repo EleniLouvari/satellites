@@ -460,7 +460,7 @@ steps.
 
 ## Implementation references
 
-- [Buffer clustering](../../../src/shared/spatial_statistics.py): `spatial_clustering_using_buffer`.
+- [Buffer clustering](../../../src/shared/spatial_statistics/clustering.py): `spatial_clustering_using_buffer`.
 - [Outer grid partitioning](../../../src/data_preparation/parcel_stats/multiuser.py):
   `split_geodataframe_by_grid`.
 - [Remote tile planning](../../../src/data_preparation/parcel_stats/job_manager.py):

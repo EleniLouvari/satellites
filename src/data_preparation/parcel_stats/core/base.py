@@ -1,7 +1,8 @@
 """Shared local parcel processing, configuration and worker state.
 
 The historical sensor option names and cache fields remain stable. Acquisition
-methods live in source adapters; this module does not import openEO or Planet.
+methods live in source adapters; this module does not import source-specific
+clients.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import os
 import traceback
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
+from typing import ClassVar
 
 import geopandas as gpd
 import pandas as pd
@@ -144,11 +146,12 @@ class ParcelStatsBase(
         Optional CDSE credentials used with the OIDC resource-owner-password
         flow. Both values must be supplied together. When omitted, the normal
         cached/interactive OIDC authentication flow is used.
+
     """
 
     # =========================================================================
     # Source band IDs stay unchanged in outputs; shared algebra uses these roles.
-    OPTICAL_BAND_ROLES = {
+    OPTICAL_BAND_ROLES: ClassVar[dict[str, str]] = {
         "blue": "B02",
         "green": "B03",
         "red": "B04",
@@ -171,7 +174,7 @@ class ParcelStatsBase(
     SENTINEL2_BUFFERED_SCL_CLASSES = (3, 8, 9, 10, 11)
     # Band definitions use Sentinel-2 collection band names. NDWI follows the
     # McFeeters green/NIR convention; NDMI represents the NIR/SWIR moisture index.
-    SUPPORTED_SENTINEL2_INDICES = {
+    SUPPORTED_SENTINEL2_INDICES: ClassVar[dict[str, tuple[str, ...]]] = {
         "NDVI": ("B08", "B04"),
         "NDWI": ("B03", "B08"),
         "MNDWI": ("B03", "B11"),
@@ -191,7 +194,7 @@ class ParcelStatsBase(
     # =========================================================================
     SENTINEL1_COLLECTION = "SENTINEL1_GRD"
     SUPPORTED_SENTINEL1_BANDS = ("VV", "VH")
-    SUPPORTED_SENTINEL1_INDICES = {"R": ("VV", "VH"), "RVI": ("VV", "VH")}
+    SUPPORTED_SENTINEL1_INDICES: ClassVar[dict[str, tuple[str, ...]]] = {"R": ("VV", "VH"), "RVI": ("VV", "VH")}
     SUPPORTED_SENTINEL1_ORBIT_DIRECTIONS = ("ASCENDING", "DESCENDING", "BOTH")
     SENTINEL1_BACKSCATTER_COEFFICIENT = "sigma0-ellipsoid"
     SENTINEL1_BACKSCATTER_SCALE = "linear_power"
@@ -205,7 +208,9 @@ class ParcelStatsBase(
     GRID_SIZE_METRES = 50_000
     PARCEL_ID_FIELD = "parcel_id"
     OPENEO_URL = "https://openeo.dataspace.copernicus.eu"
-    OPENEO_OIDC_PASSWORD_CLIENT_ID = "cdse-public"
+    # This is a public OAuth client identifier for the Copernicus Data Space OIDC flow.
+    # It is intentionally non-secret and must not be treated as a credential or secret value.
+    OPENEO_OIDC_PASSWORD_CLIENT_ID = "cdse-public"  # nosec
     # Logger namespaces describe the public pipeline, independent of module layout.
     LOGGER_NAMESPACE = "parcel_stats_pipeline"
     SOURCE_NAME = "openEO"
@@ -220,8 +225,10 @@ class ParcelStatsBase(
     # Spatial statistics configuration constants
     # =========================================================================
     SUPPORTED_SPATIAL_STATISTICS = ("mean", "median", "sd", "min", "max", "range", "count", "p10", "p25", "p75", "p90")
-    QUANTILE_PROBABILITIES = {"p10": 0.10, "p25": 0.25, "p75": 0.75, "p90": 0.90}
-    SPATIAL_STATISTIC_ALIASES = {"average": "mean", "std": "sd", "stdev": "sd", "standard_deviation": "sd"}
+    QUANTILE_PROBABILITIES: ClassVar[dict[str, float]] = {"p10": 0.10, "p25": 0.25, "p75": 0.75, "p90": 0.90}
+    SPATIAL_STATISTIC_ALIASES: ClassVar[dict[str, str]] = {
+        "average": "mean", "std": "sd", "stdev": "sd", "standard_deviation": "sd"
+    }
 
     # =========================================================================
     # Initialization, validation, and runtime configuration
@@ -236,9 +243,9 @@ class ParcelStatsBase(
         working_epsg: int,
         parcel_id_field: str = "parcel_id",
         sentinel2_bands: list[str] | None = None,
-        sentinel2_indices: list[str] | None = [],
+        sentinel2_indices: list[str] | None = None,
         sentinel1_bands: list[str] | None = None,
-        sentinel1_indices: list[str] | None = [],
+        sentinel1_indices: list[str] | None = None,
         sentinel1_orbit_direction: str = "BOTH",
         spatial_statistics: list[str] | None = None,
         remove_outliers: bool = False,
@@ -265,7 +272,6 @@ class ParcelStatsBase(
         resume_completed_partitions: bool = False,
     ) -> None:
         """Validate inputs and prepare a reusable extraction instance."""
-
         self.start_date, self.end_date = self._validate_dates(start_date, end_date)
         self.temporal_period, self.temporal_reducer = self._validate_temporal_aggregation(temporal_period, temporal_reducer)
         (
@@ -364,7 +370,6 @@ class ParcelStatsBase(
 
     def __getstate__(self) -> dict:
         """Exclude non-picklable logging handlers from worker payloads."""
-
         state = self.__dict__.copy()
         for attribute in ("logger", "source_logger", "filling_logger", "parcel_logger"):
             state.pop(attribute, None)
@@ -372,7 +377,6 @@ class ParcelStatsBase(
 
     def __setstate__(self, state: dict) -> None:
         """Restore scope-specific console and file logging inside a worker."""
-
         self.__dict__.update(state)
         self.logger = self._create_worker_console_logger("orchestrator")
         self.source_logger = self._create_worker_console_logger("source")
@@ -381,7 +385,6 @@ class ParcelStatsBase(
 
     def _configure_logger_handlers(self, logger: logging.Logger, log_path: Path) -> logging.Logger:
         """Attach consistently formatted console and UTF-8 file handlers."""
-
         if not logger.handlers:
             formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
             for handler in (logging.StreamHandler(), logging.FileHandler(log_path, encoding="utf-8")):
@@ -393,17 +396,15 @@ class ParcelStatsBase(
 
     def _create_logger(self, scope: str, file_name: str) -> logging.Logger:
         """Create one main-process logger for a pipeline scope."""
-
         # Object IDs can be reused after an extractor is collected while logging
         # retains its handlers. Include the output path to avoid cross-run writes.
-        output_key = hashlib.sha1(str(self.output_dir.resolve()).encode("utf-8")).hexdigest()[:10]
+        output_key = hashlib.sha1(str(self.output_dir.resolve()).encode("utf-8"), usedforsecurity=False).hexdigest()[:10]
         logger = logging.getLogger(f"{self.LOGGER_NAMESPACE}.{output_key}.{id(self)}.{scope}")
         return self._configure_logger_handlers(logger, self.output_dir / file_name)
 
     def _create_worker_logger(self, scope: str, file_name: str) -> logging.Logger:
         """Create a per-process scope logger safe for parallel batch execution."""
-
-        output_key = hashlib.sha1(str(self.output_dir.resolve()).encode("utf-8")).hexdigest()[:10]
+        output_key = hashlib.sha1(str(self.output_dir.resolve()).encode("utf-8"), usedforsecurity=False).hexdigest()[:10]
         process_id = os.getpid()
         logger = logging.getLogger(f"{self.LOGGER_NAMESPACE}.worker.{process_id}.{output_key}.{scope}")
         base_path = Path(file_name)
@@ -412,8 +413,7 @@ class ParcelStatsBase(
 
     def _create_worker_console_logger(self, scope: str) -> logging.Logger:
         """Create a console-only worker logger for scopes unused by local jobs."""
-
-        output_key = hashlib.sha1(str(self.output_dir.resolve()).encode("utf-8")).hexdigest()[:10]
+        output_key = hashlib.sha1(str(self.output_dir.resolve()).encode("utf-8"), usedforsecurity=False).hexdigest()[:10]
         logger = logging.getLogger(f"{self.LOGGER_NAMESPACE}.worker.{os.getpid()}.{output_key}.{scope}")
         if not logger.handlers:
             handler = logging.StreamHandler()

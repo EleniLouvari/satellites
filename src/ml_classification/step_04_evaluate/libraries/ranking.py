@@ -31,49 +31,85 @@ def build_parcel_ranking_outputs(
     id_col: pd.Series,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Create per-parcel best-class outputs and ranking-method summary metrics."""
-    # Use selected voting models where possible; fallback to any available probability-producing models.
-    requested_models = list(selection.get("selected_models", []))
-    missing_models = [model_name for model_name in requested_models if model_name not in probability_cache]
-    if missing_models:
-        raise RuntimeError(f"Error: Selected models are missing probability outputs: {missing_models}")
-    selected_models = requested_models
-    if not selected_models:
-        selected_models = sorted(probability_cache.keys())
+    selected_models = _resolve_ranking_models(selection, probability_cache)
 
     if not selected_models:
         return pd.DataFrame(), pd.DataFrame()
 
-    probability_matrices = []
-    for model_name in selected_models:
-        matrix = np.asarray(probability_cache[model_name], dtype=np.float64)
-        if matrix.ndim != 2 or matrix.shape[1] != len(labels):
-            raise ValueError(f"Error: Model {model_name!r} returned {matrix.shape} probabilities; expected (n_rows, {len(labels)}).")
-        if not np.isfinite(matrix).all() or np.any(matrix < 0) or np.any(matrix.sum(axis=1) <= 0):
-            raise ValueError(f"Error: Model {model_name!r} returned malformed or non-finite probabilities.")
-        probability_matrices.append(matrix)
-
+    probability_matrices = _validated_probability_matrices(probability_cache, selected_models, len(labels))
     stacked = np.stack(probability_matrices, axis=0)  # [n_models, n_rows, n_classes]
-    avg_prob = np.mean(stacked, axis=0)
-    median_prob = np.median(stacked, axis=0)
-    # Normalize rows to sum to 1 so both matrices are valid inputs for roc_auc_score.
-    # avg_prob rows already sum to ~1 (mean of unit-sum vectors), but median rows may not.
-    _row_sum_avg = avg_prob.sum(axis=1, keepdims=True)
-    avg_prob_norm = avg_prob / np.where(_row_sum_avg > 0, _row_sum_avg, 1)
-    _row_sum_med = median_prob.sum(axis=1, keepdims=True)
-    median_prob_norm = median_prob / np.where(_row_sum_med > 0, _row_sum_med, 1)
+    avg_prob, median_prob, avg_prob_norm, median_prob_norm = _average_and_median_probabilities(stacked)
     model_ranks = probabilities_to_ranks(stacked)
     avg_rank = np.mean(model_ranks, axis=0)
     median_rank = np.median(model_ranks, axis=0)
 
-    labels_arr = np.asarray(labels)
-    best_idx_prob_avg = np.nanargmax(avg_prob, axis=1)
-    best_idx_prob_median = np.nanargmax(median_prob, axis=1)
-    best_idx_rank_avg = np.nanargmin(avg_rank, axis=1)
-    best_idx_rank_median = np.nanargmin(median_rank, axis=1)
+    rank_confidence, strategy_indices = _rank_confidence_and_indices(config, selection, labels, stacked, selected_models, avg_prob_norm)
+    parcel_df = _build_parcel_ranking_frame(
+        config,
+        labels,
+        y_true,
+        id_col,
+        avg_prob,
+        median_prob,
+        avg_prob_norm,
+        median_prob_norm,
+        avg_rank,
+        median_rank,
+        strategy_indices,
+        rank_confidence,
+    )
+    summary_df = _build_ranking_summary(
+        config, labels, y_true, parcel_df, avg_prob_norm, median_prob_norm, len(selected_models)
+    )
+    return parcel_df, summary_df
 
-    # Confidence describes the actual frozen strategy prediction. For soft
-    # voting this includes any OOF-learned class multipliers. A disagreement
-    # with the independent rank winner is explicitly assigned LOW confidence.
+
+def _resolve_ranking_models(selection: dict[str, Any], probability_cache: dict[str, np.ndarray]) -> list[str]:
+    """Resolve selected model names with validation and fallback behavior."""
+    requested_models = list(selection.get("selected_models", []))
+    missing_models = [model_name for model_name in requested_models if model_name not in probability_cache]
+    if missing_models:
+        raise RuntimeError(f"Error: Selected models are missing probability outputs: {missing_models}")
+    return requested_models or sorted(probability_cache.keys())
+
+
+def _validated_probability_matrices(
+    probability_cache: dict[str, np.ndarray], selected_models: list[str], n_labels: int
+) -> list[np.ndarray]:
+    """Return validated probability matrices for selected models."""
+    matrices: list[np.ndarray] = []
+    for model_name in selected_models:
+        matrix = np.asarray(probability_cache[model_name], dtype=np.float64)
+        if matrix.ndim != 2 or matrix.shape[1] != n_labels:
+            raise ValueError(f"Error: Model {model_name!r} returned {matrix.shape} probabilities; expected (n_rows, {n_labels}).")
+        if not np.isfinite(matrix).all() or np.any(matrix < 0) or np.any(matrix.sum(axis=1) <= 0):
+            raise ValueError(f"Error: Model {model_name!r} returned malformed or non-finite probabilities.")
+        matrices.append(matrix)
+    return matrices
+
+
+def _average_and_median_probabilities(stacked: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Compute raw and row-normalized average/median probability matrices."""
+    avg_prob = np.mean(stacked, axis=0)
+    median_prob = np.median(stacked, axis=0)
+    avg_sum = avg_prob.sum(axis=1, keepdims=True)
+    median_sum = median_prob.sum(axis=1, keepdims=True)
+    # Normalize aggregate rows; coordinate-wise medians need not sum to one.
+    avg_prob_norm = avg_prob / np.where(avg_sum > 0, avg_sum, 1)
+    median_prob_norm = median_prob / np.where(median_sum > 0, median_sum, 1)
+    return avg_prob, median_prob, avg_prob_norm, median_prob_norm
+
+
+def _rank_confidence_and_indices(
+    config,
+    selection: dict[str, Any],
+    labels: list[str],
+    stacked: np.ndarray,
+    selected_models: list[str],
+    avg_prob_norm: np.ndarray,
+) -> tuple[dict[str, np.ndarray], np.ndarray]:
+    """Compute rank-confidence outputs and strategy prediction indices."""
+    # Apply frozen probability multipliers before assessing rank support for the final strategy class.
     strategy_probabilities = apply_class_probability_multipliers(
         avg_prob_norm, labels, selection.get("class_probability_multipliers")
     )
@@ -86,11 +122,36 @@ def build_parcel_ranking_outputs(
         confidence_thresholds=rank_confidence_thresholds_from_config(config),
         minimum_models=int(getattr(config, "rank_confidence_minimum_models", 3)),
     )
+    return rank_confidence, strategy_indices
 
-    parcel_df = pd.DataFrame(
+
+def _build_parcel_ranking_frame(
+    config,
+    labels: list[str],
+    y_true: pd.Series,
+    id_col: pd.Series,
+    avg_prob: np.ndarray,
+    median_prob: np.ndarray,
+    avg_prob_norm: np.ndarray,
+    median_prob_norm: np.ndarray,
+    avg_rank: np.ndarray,
+    median_rank: np.ndarray,
+    strategy_indices: np.ndarray,
+    rank_confidence: dict[str, np.ndarray],
+) -> pd.DataFrame:
+    """Build row-level parcel ranking outputs."""
+    labels_arr = np.asarray(labels)
+    best_idx_prob_avg = np.nanargmax(avg_prob_norm, axis=1)
+    best_idx_prob_median = np.nanargmax(median_prob_norm, axis=1)
+    # Smaller ranks are better, whereas probability-based winners maximize their scores.
+    best_idx_rank_avg = np.nanargmin(avg_rank, axis=1)
+    best_idx_rank_median = np.nanargmin(median_rank, axis=1)
+    true_values = y_true.astype(str).values
+    predicted_values = labels_arr[strategy_indices]
+    return pd.DataFrame(
         {
             config.id_column: id_col.astype(str).values,
-            "true_label": y_true.astype(str).values,
+            "true_label": true_values,
             "best_class_by_rank_avg": labels_arr[best_idx_rank_avg],
             "best_class_by_rank_median": labels_arr[best_idx_rank_median],
             "best_class_by_prob_avg": labels_arr[best_idx_prob_avg],
@@ -99,8 +160,8 @@ def build_parcel_ranking_outputs(
             "best_rank_median_value": np.nanmin(median_rank, axis=1),
             "best_prob_avg_value": np.nanmax(avg_prob, axis=1),
             "best_prob_median_value": np.nanmax(median_prob, axis=1),
-            "predicted_class": labels_arr[strategy_indices],
-            "correct": labels_arr[strategy_indices] == y_true.astype(str).values,
+            "predicted_class": predicted_values,
+            "correct": predicted_values == true_values,
             "rank_confidence_level": rank_confidence["rank_confidence_level"],
             "rank_confidence_valid": rank_confidence["rank_confidence_valid"],
             "rank_confidence_reason": rank_confidence["rank_confidence_reason"],
@@ -123,56 +184,75 @@ def build_parcel_ranking_outputs(
         }
     )
 
+
+def _build_ranking_summary(
+    config,
+    labels: list[str],
+    y_true: pd.Series,
+    parcel_df: pd.DataFrame,
+    avg_prob_norm: np.ndarray,
+    median_prob_norm: np.ndarray,
+    n_models_used: int,
+) -> pd.DataFrame:
+    """Build method-level ranking summary metrics."""
     method_predictions = {
         "probability_average": parcel_df["best_class_by_prob_avg"].values,
         "probability_median": parcel_df["best_class_by_prob_median"].values,
         "rank_average": parcel_df["best_class_by_rank_avg"].values,
         "rank_median": parcel_df["best_class_by_rank_median"].values,
     }
-    summary_rows: list[dict[str, Any]] = []
-    y_true_arr = y_true.astype(str).values
-    # Map each method to the probability matrix used for its aggregation,
-    # so roc_auc_weighted can be computed from the same probabilities that drove the decision.
-    method_probs = {
+    # Rank-only methods have no probability matrix and therefore do not receive ROC AUC values.
+    method_probabilities = {
         "probability_average": avg_prob_norm,
         "probability_median": median_prob_norm,
         "rank_average": None,
         "rank_median": None,
     }
-    for method_name, y_pred in method_predictions.items():
-        precision_arr, recall_arr, _, support = precision_recall_fscore_support(
-            y_true_arr, y_pred, average=None, zero_division=0, labels=labels
-        )
-        precision_w = float(np.average(precision_arr, weights=support))
-        recall_w = float(np.average(recall_arr, weights=support))
-        roc_auc_w = np.nan
-        probs_matrix = method_probs.get(method_name)
-        if probs_matrix is not None:
-            try:
-                if len(labels) == 2:
-                    roc_auc_w = float(roc_auc_score(y_true_arr, probs_matrix[:, 1]))
-                else:
-                    roc_auc_w = float(
-                        roc_auc_score(y_true_arr, probs_matrix, labels=labels, multi_class="ovr", average="weighted")
-                    )
-            except ValueError:
-                roc_auc_w = np.nan
-        summary_rows.append(
-            {
-                "method": method_name,
-                "accuracy": float(accuracy_score(y_true_arr, y_pred)),
-                "balanced_accuracy": float(balanced_accuracy_score(y_true_arr, y_pred)),
-                "f1_macro": float(f1_score(y_true_arr, y_pred, average="macro", zero_division=0)),
-                "f1_weighted": float(f1_score(y_true_arr, y_pred, average="weighted", zero_division=0)),
-                "precision_weighted": precision_w,
-                "recall_weighted": recall_w,
-                "roc_auc_weighted": roc_auc_w,
-                "n_models_used": len(selected_models),
-            }
-        )
+    y_true_arr = y_true.astype(str).values
+    summary_rows = [
+        _ranking_method_metrics(labels, y_true_arr, method_name, y_pred, method_probabilities.get(method_name), n_models_used)
+        for method_name, y_pred in method_predictions.items()
+    ]
+    return pd.DataFrame(summary_rows).sort_values(by=config.scoring_primary, ascending=False)
 
-    summary_df = pd.DataFrame(summary_rows).sort_values(by=config.scoring_primary, ascending=False)
-    return parcel_df, summary_df
+
+def _ranking_method_metrics(
+    labels: list[str],
+    y_true_arr: np.ndarray,
+    method_name: str,
+    y_pred: np.ndarray,
+    probabilities: np.ndarray | None,
+    n_models_used: int,
+) -> dict[str, Any]:
+    """Calculate summary metrics for one parcel-ranking method."""
+    precision_arr, recall_arr, _, support = precision_recall_fscore_support(
+        y_true_arr, y_pred, average=None, zero_division=0, labels=labels
+    )
+    precision_w = float(np.average(precision_arr, weights=support))
+    recall_w = float(np.average(recall_arr, weights=support))
+    return {
+        "method": method_name,
+        "accuracy": float(accuracy_score(y_true_arr, y_pred)),
+        "balanced_accuracy": float(balanced_accuracy_score(y_true_arr, y_pred)),
+        "f1_macro": float(f1_score(y_true_arr, y_pred, average="macro", zero_division=0)),
+        "f1_weighted": float(f1_score(y_true_arr, y_pred, average="weighted", zero_division=0)),
+        "precision_weighted": precision_w,
+        "recall_weighted": recall_w,
+        "roc_auc_weighted": _weighted_roc_auc(labels, y_true_arr, probabilities),
+        "n_models_used": n_models_used,
+    }
+
+
+def _weighted_roc_auc(labels: list[str], y_true_arr: np.ndarray, probabilities: np.ndarray | None) -> float:
+    """Calculate weighted ROC AUC for binary or multiclass probability matrices."""
+    if probabilities is None:
+        return np.nan
+    try:
+        if len(labels) == 2:
+            return float(roc_auc_score(y_true_arr, probabilities[:, 1]))
+        return float(roc_auc_score(y_true_arr, probabilities, labels=labels, multi_class="ovr", average="weighted"))
+    except ValueError:
+        return np.nan
 
 
 def summarize_rank_confidence(parcel_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -193,6 +273,7 @@ def summarize_rank_confidence(parcel_df: pd.DataFrame) -> tuple[pd.DataFrame, pd
     if parcel_df.empty:
         return pd.DataFrame(columns=summary_columns), pd.DataFrame(columns=class_columns)
 
+    # Prefer guarded final confidence, with older column names retained as report fallbacks.
     level_column = next(
         (
             column
@@ -225,7 +306,7 @@ def summarize_rank_confidence(parcel_df: pd.DataFrame) -> tuple[pd.DataFrame, pd
             )
             continue
         correct = int(subset["correct"].sum())
-        parcel_count = int(len(subset))
+        parcel_count = len(subset)
         summary_rows.append(
             {
                 "confidence_level": level,
@@ -258,6 +339,7 @@ def apply_class_reliability_guard(
     if parcel_df.empty:
         return parcel_df.copy()
     result = parcel_df.copy()
+    # Lookup uses the frozen OOF contract; these evaluation rows do not refit class reliability.
     reliability = get_class_reliability(result["predicted_class"].to_numpy(), reliability_contract)
     for name, values in reliability.items():
         result[name] = values

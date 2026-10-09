@@ -14,26 +14,31 @@ from ._validation import representative_points, require_columns
 
 
 def linear_model(lags, slope, nugget):
+    """Calculate semivariance with a linear variogram model."""
     # Simple linear variogram: semivariance increases linearly with lag.
     return slope * lags + nugget
 
 
 def power_model(lags, scale, exponent, nugget):
+    """Calculate semivariance with a power variogram model."""
     # Power-law model allowing non-linear growth with lag distance.
     return scale * np.power(lags, exponent) + nugget
 
 
 def gaussian_model(lags, sill, range_, nugget):
+    """Calculate semivariance with a Gaussian variogram model."""
     # Gaussian model that rises smoothly to the sill with squared-lag decay.
     return sill * (1.0 - np.exp(-(lags**2) / range_**2)) + nugget
 
 
 def exponential_model(lags, sill, range_, nugget):
+    """Calculate semivariance with an exponential variogram model."""
     # Exponential model with range parameter controlling decay speed.
     return sill * (1.0 - np.exp(-lags / range_)) + nugget
 
 
 def spherical_model(lags, sill, range_, nugget):
+    """Calculate semivariance with a spherical variogram model."""
     # Spherical model: rises with lag and flattens to the sill at `range_`.
     return np.where(lags <= range_, sill * (1.5 * lags / range_ - 0.5 * (lags / range_) ** 3) + nugget, sill + nugget)
 

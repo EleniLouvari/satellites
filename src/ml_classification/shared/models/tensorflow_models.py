@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, ClassifierMixin
+
+# Keep this helper focused on a single transformation so the reporting pipeline stays easy to follow.
+
 
 
 def _safe_import(module_name: str):
     """Import a module by name and return ``None`` when import fails."""
     try:
+        # Delay optional ML dependencies until a TensorFlow model is actually requested.
         module = __import__(module_name, fromlist=[module_name.rsplit(".", maxsplit=1)[-1]])
     except Exception:
+        logging.getLogger(__name__).debug("Error: _safe_import failed; using its fallback.", exc_info=True)
         return None
     return module
 
@@ -48,6 +55,7 @@ def _apply_hidden_block(
     hidden_output = tf_module.keras.layers.Dense(
         int(units), activation=None, kernel_regularizer=regularizer, name=f"dense_{layer_index}"
     )(hidden_input)
+    # Normalize dense outputs before activation; dropout is applied to the activated values.
     if use_batch_normalization:
         hidden_output = tf_module.keras.layers.BatchNormalization(name=f"batch_norm_{layer_index}")(hidden_output)
     hidden_output = tf_module.keras.layers.Activation(activation, name=f"activation_{layer_index}")(hidden_output)
@@ -123,6 +131,7 @@ class TensorFlowDenseClassifier(ClassifierMixin, BaseEstimator):
         random_state: int | None = None,
     ):
         """Store TensorFlow estimator hyperparameters in clone-friendly form."""
+        # Keep constructor parameters unmodified so sklearn can clone this estimator during search.
         self.hidden_layer_sizes = hidden_layer_sizes
         self.activation = activation
         self.dropout_rate = dropout_rate
@@ -158,6 +167,7 @@ class TensorFlowDenseClassifier(ClassifierMixin, BaseEstimator):
         self.feature_names_in_ = list(X.columns) if hasattr(X, "columns") else None
         self.classes_ = np.unique(y_array)
 
+        # Release the previous Keras graph before constructing another search candidate or refit.
         tf_module.keras.backend.clear_session()
         if self.random_state is not None:
             tf_module.keras.utils.set_random_seed(int(self.random_state))
@@ -167,10 +177,11 @@ class TensorFlowDenseClassifier(ClassifierMixin, BaseEstimator):
                 monitor="val_loss", patience=int(self.patience), min_delta=float(self.min_delta), restore_best_weights=True
             )
         ]
+        # The model__ prefix routes architecture parameters to the builder rather than to fit.
         self.estimator_ = scikeras_wrappers.KerasClassifier(
             model=build_dense_classifier_model,
             model__input_dim=int(self.n_features_in_),
-            model__num_classes=int(len(self.classes_)),
+            model__num_classes=len(self.classes_),
             model__hidden_layer_sizes=tuple(int(units) for units in self.hidden_layer_sizes),
             model__activation=str(self.activation),
             model__dropout_rate=float(self.dropout_rate),
@@ -196,6 +207,7 @@ class TensorFlowDenseClassifier(ClassifierMixin, BaseEstimator):
 
     def predict_proba(self, X):
         """Predict class probabilities for input feature rows."""
+        # Expose a plain array matching the probability interface used by the ensemble.
         return np.asarray(self.estimator_.predict_proba(self._to_numpy(X)), dtype=float)
 
     def _to_numpy(self, X):

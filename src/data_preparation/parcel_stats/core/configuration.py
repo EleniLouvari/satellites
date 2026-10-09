@@ -9,6 +9,7 @@ errors for invalid or inconsistent options so callers can fail fast.
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import re
 
@@ -81,7 +82,7 @@ class ZonalStatsConfiguration:
         if (
             not normalized
             or any(size < 3 or size % 2 == 0 for size in normalized)
-            or any(left >= right for left, right in zip(normalized, normalized[1:]))
+            or any(left >= right for left, right in itertools.pairwise(normalized))
         ):
             raise ValueError("Error: temporal_fill_window_sizes must contain strictly increasing odd integers of at least 3.")
         return normalized
@@ -243,7 +244,7 @@ class ZonalStatsConfiguration:
             raise ValueError(
                 f"Error: Unsupported spatial statistics: {unsupported}. Supported statistics: {list(self.SUPPORTED_SPATIAL_STATISTICS)}"
             )
-        return tuple(["mean", *[name for name in normalized if name not in {"mean", "count"}]])
+        return ("mean", *[name for name in normalized if name not in {"mean", "count"}])
 
     def _validate_sentinel1_bands(self, bands: list[str] | None) -> tuple[str, ...]:
         """Normalize the optional Sentinel-1 polarization list."""
@@ -306,37 +307,25 @@ class ZonalStatsConfiguration:
         minimum_observed_fraction_for_fill: float,
     ) -> tuple[bool, tuple[float, float], float, bool, int, str, int, float]:
         """Validate and normalize raster-cleaning configuration."""
-        if not isinstance(remove_outliers, bool):
-            raise TypeError("Error: remove_outliers must be a bool.")
-        if not isinstance(fill_nulls, bool):
-            raise TypeError("Error: fill_nulls must be a bool.")
-        if not isinstance(iqr_quantiles, (tuple, list)) or len(iqr_quantiles) != 2:
-            raise TypeError("Error: iqr_quantiles must contain exactly two numbers.")
-        try:
-            lower_quantile, upper_quantile = map(float, iqr_quantiles)
-            multiplier = float(iqr_multiplier)
-        except (TypeError, ValueError) as exc:
-            raise TypeError("Error: iqr_quantiles and iqr_multiplier must contain numeric values.") from exc
+        self._require_bool(remove_outliers, "remove_outliers")
+        self._require_bool(fill_nulls, "fill_nulls")
+        lower_quantile, upper_quantile, multiplier = self._validate_iqr_settings(iqr_quantiles, iqr_multiplier)
         if not 0.0 <= lower_quantile < upper_quantile <= 1.0:
             raise ValueError("Error: iqr_quantiles must satisfy 0 <= lower < upper <= 1.")
         if multiplier < 0.0 or not np.isfinite(multiplier):
             raise ValueError("Error: iqr_multiplier must be a finite non-negative number.")
-        if isinstance(iqr_min_valid_pixels, bool) or isinstance(minimum_parcel_pixels, bool):
-            raise TypeError("Error: Pixel-count thresholds must be positive integers.")
-        try:
-            minimum_iqr_sample = int(iqr_min_valid_pixels)
-            minimum_pixel_count = int(minimum_parcel_pixels)
-        except (TypeError, ValueError) as exc:
-            raise TypeError("Error: Pixel-count thresholds must be positive integers.") from exc
+        minimum_iqr_sample = self._to_positive_integer(iqr_min_valid_pixels, "Pixel-count thresholds must be positive integers.")
+        minimum_pixel_count = self._to_positive_integer(
+            minimum_parcel_pixels, "Pixel-count thresholds must be positive integers."
+        )
         if minimum_iqr_sample < 1 or minimum_pixel_count < 1:
             raise ValueError("Error: Pixel-count thresholds must be at least 1.")
         normalized_fill_mode = str(temporal_fill_mode).strip().lower()
         if normalized_fill_mode not in ["past_only", "bidirectional"]:
             raise ValueError("Error: temporal_fill_mode must be 'past_only' or 'bidirectional'.")
-        try:
-            minimum_fill_fraction = float(minimum_observed_fraction_for_fill)
-        except (TypeError, ValueError) as exc:
-            raise TypeError("Error: minimum_observed_fraction_for_fill must be a number.") from exc
+        minimum_fill_fraction = self._to_float(
+            minimum_observed_fraction_for_fill, "minimum_observed_fraction_for_fill must be a number."
+        )
         if not np.isfinite(minimum_fill_fraction) or not 0.0 <= minimum_fill_fraction <= 1.0:
             raise ValueError("Error: minimum_observed_fraction_for_fill must be between 0 and 1.")
         return (
@@ -349,6 +338,41 @@ class ZonalStatsConfiguration:
             minimum_pixel_count,
             minimum_fill_fraction,
         )
+
+    @staticmethod
+    def _require_bool(value: object, name: str) -> None:
+        """Validate a strict boolean option."""
+        if not isinstance(value, bool):
+            raise TypeError(f"Error: {name} must be a bool.")
+
+    @staticmethod
+    def _to_float(value: object, message: str) -> float:
+        """Convert a numeric option to float and raise with a consistent message."""
+        try:
+            return float(value)
+        except (TypeError, ValueError) as exc:
+            raise TypeError(f"Error: {message}") from exc
+
+    def _validate_iqr_settings(self, quantiles: tuple[float, float], multiplier: float) -> tuple[float, float, float]:
+        """Normalize IQR quantiles and multiplier."""
+        if not isinstance(quantiles, (tuple, list)) or len(quantiles) != 2:
+            raise TypeError("Error: iqr_quantiles must contain exactly two numbers.")
+        try:
+            lower_quantile, upper_quantile = map(float, quantiles)
+            normalized_multiplier = float(multiplier)
+        except (TypeError, ValueError) as exc:
+            raise TypeError("Error: iqr_quantiles and iqr_multiplier must contain numeric values.") from exc
+        return lower_quantile, upper_quantile, normalized_multiplier
+
+    @staticmethod
+    def _to_positive_integer(value: object, message: str) -> int:
+        """Convert a strictly integer threshold and reject booleans."""
+        if isinstance(value, bool):
+            raise TypeError(f"Error: {message}")
+        try:
+            return int(value)
+        except (TypeError, ValueError) as exc:
+            raise TypeError(f"Error: {message}") from exc
 
     def _required_sentinel2_bands(self) -> tuple[str, ...]:
         """Return selected and index-source Sentinel-2 bands without duplicates."""
@@ -411,6 +435,7 @@ class ZonalStatsConfiguration:
             "interpolation_method": self.interpolation_method,
             "interpolation_max_distance_in_meters": self.interpolation_max_distance_in_meters,
         }
+        # Sort keys to keep signatures stable across Python dict insertion-order differences.
         digest = hashlib.sha256(json.dumps(configuration, sort_keys=True).encode("utf-8"))
         # Parcel identity and exact geometry complete the content-addressed cache key.
         for parcel_id, geometry in zip(self.parcels[self.PARCEL_ID_FIELD], self.parcels.geometry):

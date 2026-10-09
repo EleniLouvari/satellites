@@ -1,0 +1,157 @@
+"""Regression checks for HTTP report viewing and cross-step map links."""
+
+import subprocess
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+from urllib.error import HTTPError
+from urllib.parse import urljoin, urlsplit
+from urllib.request import urlopen
+
+import pytest
+
+from ml_classification.shared.reports import report_server as server
+from ml_classification.shared.reports.report_html import _to_report_relative_path, write_html_report
+from ml_classification.shared.reports.report_index import write_index_report
+from tests.utils import expect_equal, expect_in, expect_startswith
+
+
+def test_standalone_viewer_starts_without_pipeline_imports():
+    result = subprocess.run(
+        [sys.executable, "-I", server.__file__, "--help"], capture_output=True, text=True, timeout=10, check=True
+    )
+    expect_in("--no-browser", result.stdout)
+
+
+@pytest.fixture(autouse=True)
+def stop_report_servers():
+    yield
+    server._stop_servers()
+
+
+def test_http_report_serves_embedded_map_and_reuses_project_server(tmp_path):
+    check = tmp_path / "01_check"
+    plots = check / "plots"
+    plots.mkdir(parents=True)
+    map_path = plots / "map # ελληνικά.html"
+    map_path.write_text("<html>map asset</html>", encoding="utf-8")
+    report = check / "report.html"
+    write_html_report(report, "Check", "", [{"title": "Map", "embeds": [{"path": map_path, "title": "Map"}]}])
+    url = server.report_url(report, root=tmp_path)
+    with urlopen(url, timeout=5) as response:
+        html = response.read().decode("utf-8")
+        expect_equal(response.headers["Referrer-Policy"], "strict-origin-when-cross-origin")
+    expect_in("plots/map%20%23%20", html)
+    asset_url = urljoin(url, _to_report_relative_path(map_path, check))
+    with urlopen(asset_url, timeout=5) as response:
+        expect_equal(response.read(), b"<html>map asset</html>")
+    expect_equal(urlsplit(server.report_url(map_path, root=tmp_path)).netloc, urlsplit(url).netloc)
+
+
+def test_http_server_does_not_expose_parent_or_directory_listing(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    report = project / "report.html"
+    report.write_text("report", encoding="utf-8")
+    (tmp_path / "outside.txt").write_text("outside", encoding="utf-8")
+    url = server.report_url(report)
+    expect_equal(urlsplit(url).hostname, "127.0.0.1")
+    for relative in ("/", "/../outside.txt", "/%2e%2e/outside.txt"):
+        with pytest.raises(HTTPError) as exc:
+            urlopen(urljoin(url, relative), timeout=5)
+        with exc.value as response:
+            expect_equal(response.code, 404)
+
+
+def test_http_server_requires_report_inside_root(tmp_path):
+    report = tmp_path / "report.html"
+    report.write_text("report", encoding="utf-8")
+    root = tmp_path / "other"
+    root.mkdir()
+    with pytest.raises(ValueError):
+        server.report_url(report, root=root)
+    with pytest.raises(FileNotFoundError):
+        server.report_url(tmp_path / "missing.html")
+
+
+def test_cross_step_map_link_works_over_http(tmp_path):
+    check = tmp_path / "01_check" / "plots"
+    check.mkdir(parents=True)
+    map_path = check / "map.html"
+    map_path.write_text("map", encoding="utf-8")
+    dashboard = tmp_path / "final_dashboard"
+    dashboard.mkdir()
+    report = dashboard / "report.html"
+    write_html_report(report, "Dashboard", "", [{"title": "Map", "embeds": [{"path": map_path, "title": "Map"}]}])
+    relative = _to_report_relative_path(map_path, dashboard)
+    expect_equal(relative, "../01_check/plots/map.html")
+    expect_in(f"src='{relative}'", report.read_text(encoding="utf-8"))
+    url = server.report_url(report, root=tmp_path)
+    with urlopen(urljoin(url, relative), timeout=5) as response:
+        expect_equal(response.read(), b"map")
+
+
+def test_relative_project_directory_produces_report_relative_links(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    expect_equal(_to_report_relative_path(Path("project/01_check/report.html"), Path("project")), "01_check/report.html")
+
+
+@pytest.mark.parametrize("auto_open", [True, False])
+def test_index_respects_auto_open_and_uses_http(monkeypatch, tmp_path, auto_open):
+    opened = []
+    monkeypatch.delenv("SATELLITES_DISABLE_HTML_REPORT_OPEN", raising=False)
+    monkeypatch.setattr(server.webbrowser, "open", opened.append)
+    config = SimpleNamespace(
+        project_dir=tmp_path,
+        check_dir=tmp_path / "01_check",
+        prepare_dir=tmp_path / "02_prepare",
+        train_dir=tmp_path / "03_train",
+        evaluate_dir=tmp_path / "04_evaluate",
+        predict_dir=tmp_path / "05_predict",
+        final_dashboard_dir=tmp_path / "final_dashboard",
+        open_html_report=auto_open,
+    )
+    write_index_report(config)
+    config.final_dashboard_dir.mkdir()
+    (config.final_dashboard_dir / "report.html").write_text("Dashboard", encoding="utf-8")
+    write_index_report(config)
+    expect_in("Final Dashboard", (tmp_path / "report_index.html").read_text(encoding="utf-8"))
+
+
+def test_open_report_once_retries_failed_browser_launch(monkeypatch, tmp_path):
+    report = tmp_path / "report_index.html"
+    report.write_text("Report", encoding="utf-8")
+    attempts = []
+    monkeypatch.delenv("SATELLITES_DISABLE_HTML_REPORT_OPEN", raising=False)
+
+    def open_browser(url):
+        attempts.append(url)
+        return len(attempts) > 1
+
+    monkeypatch.setattr(server.webbrowser, "open", open_browser)
+    for _ in range(3):
+        server.open_report(report, once=True)
+    expect_equal(len(attempts), 2)
+
+
+def test_open_report_honors_disable_env(monkeypatch, tmp_path):
+    report = tmp_path / "report_index.html"
+    report.write_text("Report", encoding="utf-8")
+    opened = []
+    monkeypatch.setenv("SATELLITES_DISABLE_HTML_REPORT_OPEN", "1")
+    monkeypatch.setattr(server.webbrowser, "open", opened.append)
+
+    url = server.open_report(report, once=True)
+
+    expect_startswith(url, "http://127.0.0.1:")
+    expect_equal(opened, [])
+
+
+def test_report_still_saved_when_viewer_cannot_start(monkeypatch, tmp_path):
+    def fail(*args, **kwargs):
+        raise OSError("Port unavailable")
+
+    monkeypatch.setattr("ml_classification.shared.reports.report_html.open_report", fail)
+    report = tmp_path / "report.html"
+    write_html_report(report, "Saved", "", [{"title": "Summary", "open_html_report": True}])
+    expect_in("Saved", report.read_text(encoding="utf-8"))

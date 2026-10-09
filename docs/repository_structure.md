@@ -18,7 +18,13 @@ src/
       core/configuration.py      validators and unchanged cache signatures
       core/parcel_batches.py     parcel geometry preparation and batching
       core/raster_cleaning.py    shared local raster cleaning
-      core/parcel_statistics.py  masking, aggregation and parcel features
+      core/parcel_statistics/
+        __init__.py              stable public parcel statistics API re-export
+        calculator.py            calculator class assembled from mixins
+        checkpoints.py           checkpoint signatures and persistence helpers
+        statistics.py            parcel masking and reducer operations
+        streaming.py             streamed checkpoint execution/orchestration
+        reshape.py               derived geometry features and ML reshaping
       core/crs.py                projected CRS selection
       openeo.py                  openEO acquisition plus local statistics
       planet.py                  Planet input handling plus local statistics
@@ -45,7 +51,14 @@ src/
     sensitivity/runner.py        sensitivity helpers live in libraries/
   shared/
     io.py logging.py constants.py formatting.py
-    geometry.py raster.py tabular.py spatial_statistics.py s3.py
+    geometry.py raster.py s3.py
+    tabular/
+      __init__.py               stable public tabular API re-export
+      core.py                   generic helpers (formatting, notebook/runtime helpers)
+      transforms.py             dataframe normalization and type/categorical transforms
+      analysis.py               plotting, outlier utilities, and confidence/stat helpers
+      io.py                     model persistence and GIS/ZIP extraction helpers
+    spatial_statistics/           clustering, weights, hotspots, and exploratory diagnostics
     data_cleaning/
     notebook.py                  explicit notebook setup
 ```
@@ -59,6 +72,29 @@ lazily, so importing Planet does not require openEO.
 EDA and classification consume tables and shared helpers. They do not import
 acquisition code or each other. Shared cleaning stays below the pipelines;
 temporal reduction and environmental enrichment belong to data preparation.
+
+### Shared spatial statistics
+
+`shared.spatial_statistics` is a package. Existing function imports remain valid,
+including `from shared.spatial_statistics import spatial_clustering_using_buffer`.
+Implementations are grouped by responsibility:
+
+| Module | Responsibility |
+| --- | --- |
+| `clustering.py` | K-means, DBSCAN, buffer/network clusters, and Voronoi polygons |
+| `weights.py` | Distance-based and Queen-contiguity neighborhoods |
+| `hotspots.py` | Attribute z-scores, local/global Moran statistics, and hotspot plots |
+| `scale_selection.py` | Neighborhood-distance sweeps and their multiprocessing worker |
+| `distributions.py` | Distribution comparisons, normality checks, and transformations |
+| `trends.py` | Directional regressions against spatial coordinates |
+| `similarity.py` | Buffered extent and rowwise overlap comparisons |
+| `time_series.py` | CUSUM and PELT change-point diagnostics |
+
+Submodules import their dependencies directly: hotspots uses weights, and distance
+selection uses hotspots. The package initializer exports the existing functions.
+This split preserves calculations and return values. Inline comments explain
+assumptions and existing limitations, including legacy normality decisions,
+row-count-based overlap, unit conversions, and sorting of paired samples.
 
 ## Installation and imports
 
@@ -118,16 +154,3 @@ locations, fitted-model/configuration serialization with current module paths,
 Windows-style spawned-worker serialization, and import-side-effect isolation.
 The local Planet suite covers data discovery, downloaded-manifest processing,
 cleaning checkpoints and resume behavior.
-
-The pre-migration test suite already imports a missing
-`core.rank_confidence_calibration` module from `test_rank_confidence.py`.
-Without that uncollectable file, the original suite also has five failures in
-`test_train_evaluate_steps.py`: model-candidate expectations, two outdated method
-signatures, and two fixtures missing `log_path`. These tests remain visible;
-the reorganization does not suppress them or change classification behavior to
-make obsolete tests pass. See `validation.md` for the completed comparison.
-
-The older `shared/raster.py` utility also carries pre-existing unresolved helper
-references/constants from its former `common_libraries` home. It is not used by
-the maintained parcel-statistics raster-cleaning engine. Repairing those legacy
-functions is a separate task; their contents are retained.

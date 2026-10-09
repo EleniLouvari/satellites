@@ -337,7 +337,7 @@ part of the raw-cache signature, so not every settings change reuses downloads.
 Paths are relative to the repository:
 
 - [core/base.py](../../src/data_preparation/parcel_stats/core/base.py): batch processing, checkpoint persistence order, and worker execution.
-- [core/parcel_statistics.py](../../src/data_preparation/parcel_stats/core/parcel_statistics.py): raw validation, index formulas, parcel masks, reducers, and output reshaping.
+- [core/parcel_statistics/](../../src/data_preparation/parcel_stats/core/parcel_statistics): raw validation, index formulas, parcel masks, reducers, checkpoint orchestration, and output reshaping.
 - [core/streamed_raster.py](../../src/data_preparation/parcel_stats/core/streamed_raster.py): active streamed processing, temporary NetCDF writes, provenance, and checkpoint reuse.
 - [core/raster_cleaning.py](../../src/data_preparation/parcel_stats/core/raster_cleaning.py): IQR filtering and temporal/spatial filling algorithms.
 - [core/batch_cache.py](../../src/data_preparation/parcel_stats/core/batch_cache.py): durable batch tables and optional NetCDF deletion.

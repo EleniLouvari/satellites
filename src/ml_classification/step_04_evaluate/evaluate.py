@@ -8,11 +8,11 @@ import numpy as np
 import pandas as pd
 
 from ml_classification.shared.config.base import PipelineStepBase
-from ml_classification.shared.reports.final_dashboard import write_pipeline_final_dashboard
 from ml_classification.shared.logging import print_formatted_txt, time_decorator
 from ml_classification.shared.models.modeling_context import load_modeling_context
 from ml_classification.shared.persistence import load_joblib, load_json, save_frame_csv, save_json
 from ml_classification.shared.probabilities import apply_class_probability_multipliers
+from ml_classification.shared.reports.final_dashboard import write_pipeline_final_dashboard
 from ml_classification.shared.reports.report_index import write_index_report
 from ml_classification.step_04_evaluate.libraries.confidence import evaluate_rank_confidence
 
@@ -55,13 +55,25 @@ class EvaluateStep(PipelineStepBase):
 
     def _build_parcel_ranking_outputs(
         self,
-        probability_cache: dict[str, np.ndarray],
-        selection: dict[str, Any],
-        labels: list[str],
-        y_true: pd.Series,
-        id_col: pd.Series,
+        probability_cache: dict[str, np.ndarray] | None = None,
+        selection: dict[str, Any] | None = None,
+        labels: list[str] | None = None,
+        y_true: pd.Series | None = None,
+        id_col: pd.Series | None = None,
+        **legacy_kwargs: Any,
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
         """Create per-parcel best-class outputs and ranking-method summary metrics."""
+        if probability_cache is None:
+            probability_cache = legacy_kwargs.pop("probability_cache_test", None)
+        if y_true is None:
+            y_true = legacy_kwargs.pop("y_test", None)
+        if id_col is None:
+            id_col = legacy_kwargs.pop("id_test", None)
+        if legacy_kwargs:
+            unexpected = ", ".join(sorted(legacy_kwargs))
+            raise TypeError(f"Error: Unexpected keyword arguments: {unexpected}")
+        if probability_cache is None or selection is None or labels is None or y_true is None or id_col is None:
+            raise TypeError("Error: Missing required inputs for parcel ranking outputs.")
         return build_parcel_ranking_outputs(self.config, probability_cache, selection, labels, y_true, id_col)
 
     @staticmethod

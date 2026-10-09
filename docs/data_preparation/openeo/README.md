@@ -34,7 +34,7 @@ responsibilities are separated into focused modules:
 | `parcel_stats/core/parcel_batches.py` | Parcel geometry repair, normalization, and spatial batching |
 | `sources/openeo/cubes.py` | openEO authentication, cube graphs, remote jobs, downloads, and caching |
 | `parcel_stats/core/raster_cleaning.py` | NetCDF variable selection, raster-level IQR removal, staged null filling, and cleaning audits |
-| `parcel_stats/core/parcel_statistics.py` | Parcel masking, zonal reductions, and derived parcel statistics |
+| `parcel_stats/core/parcel_statistics/` | Parcel masking, zonal reductions, streamed checkpointing, and derived parcel statistics |
 | `parcel_stats/core/base.py` | Shared construction, configuration, logging and local workers |
 | `parcel_stats/core/streamed_raster.py` | Streamed cleaning, index checkpoints and parcel-window reads |
 | `parcel_stats/openeo.py` | openEO orchestration and output persistence |
@@ -178,9 +178,9 @@ These parameters apply to both classes.
 |---|---:|---|
 | `parcel_id_field` | `"parcel_id"` | Unique parcel ID column name |
 | `sentinel2_bands` | `None` | `None` selects `B02`, `B03`, `B04`, `B05`, `B08`; `[]` disables standalone S2 bands; supported bands are `B01`, `B02`, `B03`, `B04`, `B05`, `B06`, `B07`, `B08`, `B8A`, `B09`, `B11`, `B12` |
-| `sentinel2_indices` | `[]` | Any of `NDVI`, `NDWI`, `MNDWI`, `NDMI`, `NBR`, `GNDVI`, `EVI`, `SAVI`, `MSAVI`, `NDRE`, `PSRI`, `CI`; `None` or `[]` disables indices |
+| `sentinel2_indices` | `None` | Any of `NDVI`, `NDWI`, `MNDWI`, `NDMI`, `NBR`, `GNDVI`, `EVI`, `SAVI`, `MSAVI`, `NDRE`, `PSRI`, `CI`; `None` or `[]` disables indices |
 | `sentinel1_bands` | `None` | Any of `VV`, `VH`; `None` or `[]` disables standalone Sentinel-1 band outputs unless an index requires them as sources |
-| `sentinel1_indices` | `[]` | `R` = `VV / VH`; `RVI` = `4 * VH / (VV + VH)`; `None` or `[]` disables indices and source bands VV/VH are loaded automatically otherwise |
+| `sentinel1_indices` | `None` | `R` = `VV / VH`; `RVI` = `4 * VH / (VV + VH)`; `None` or `[]` disables indices and source bands VV/VH are loaded automatically otherwise |
 | `sentinel1_orbit_direction` | `"BOTH"` | `ASCENDING`, `DESCENDING`, or `BOTH`; `BOTH` loads both directions without an orbit filter |
 
 At least one Sentinel-2 band/index or Sentinel-1 band/index must be

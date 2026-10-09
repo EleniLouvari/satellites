@@ -52,6 +52,7 @@ class OpenEOZonalStats(ParcelStatsBase, OpenEOCubePipeline):
         ]
         if not all(path.is_file() for path in outputs):
             return None
+        # Marker validation guards against reusing outputs produced with different settings.
         marker = self._partition_completion_path()
         if marker.exists():
             saved = json.loads(marker.read_text(encoding="utf-8"))
@@ -113,6 +114,7 @@ class OpenEOZonalStats(ParcelStatsBase, OpenEOCubePipeline):
         finally:
             if temporary_reduced_output.exists():
                 temporary_reduced_output.unlink()
+        # Keep one partition-level report with every batch's pixel-cleaning diagnostics.
         self.cleaning_report = pd.concat(cleaning_reports, ignore_index=True)
         cleaning_output = self.output_dir / "satellite_pixel_cleaning_report.csv"
         write_data(self.cleaning_report, str(cleaning_output), plain_csv=True)

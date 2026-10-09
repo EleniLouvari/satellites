@@ -12,29 +12,36 @@ from .core.io import ensure_dir, reset_dir, save_frame, save_json, save_parquet_
 from .reporting import write_eda_html_report
 from .visuals import create_eda_plots
 
+# Keep this helper focused on a single transformation so the reporting pipeline stays easy to follow.
+
+
 
 class EDAPipeline:
     """Create statistical EDA artifacts for a DataFrame or GeoDataFrame."""
 
     def __init__(self, config: EDAConfig):
+        """Initialize the pipeline with a validated EDA configuration."""
         self.config = config
 
     def run(self, df: pd.DataFrame) -> dict[str, Any]:
         """Run the EDA pipeline and write artifacts to disk."""
         if not isinstance(df, pd.DataFrame):
             raise TypeError("Error: EDAPipeline.run expects a pandas DataFrame or GeoPandas GeoDataFrame.")
+        # Reset only the configured run directory before producing a consistent new artifact set.
         if self.config.reset_output_dir:
             reset_dir(self.config.output_dir)
         else:
             ensure_dir(self.config.output_dir)
         ensure_dir(self.config.plots_dir)
 
+        # Build statistical evidence once so saved tables, plot priorities, and HTML use the same results.
         artifacts = build_eda_artifacts(df, self.config)
         if self.config.print_feature_selection_summary and self.config.target_column:
             print(artifacts["feature_selection_message"])
         plot_paths = create_eda_plots(df, artifacts, self.config)
         saved_paths = self._save_artifacts(artifacts)
 
+        # Tabular artifacts remain available even when HTML generation is disabled.
         report_path: Path | None = None
         if self.config.include_html_report:
             report_path = write_eda_html_report(artifacts, plot_paths, self.config)
@@ -88,6 +95,7 @@ class EDAPipeline:
         paths["feature_selection_message"] = save_text(
             artifacts["feature_selection_message"], self.config.output_dir / names["feature_selection_message"]
         )
+        # Persist row-level diagnostics with the original geometry metadata when present.
         paths["annotated_data"] = save_parquet_frame(
             artifacts["annotated_data"], self.config.output_dir / names["annotated_data"]
         )
@@ -95,6 +103,7 @@ class EDAPipeline:
             if not matrix.empty:
                 matrix_path = self.config.output_dir / "tables" / "correlation" / f"{method}_correlation_matrix.csv"
                 paths[f"{method}_correlation_matrix"] = save_frame(
+                    # Materialize row labels because CSV output does not otherwise preserve the matrix index.
                     matrix.reset_index(names="column"), matrix_path
                 )
         return paths
@@ -107,6 +116,6 @@ def run_eda(
     report_title: str = "Exploratory Data Analysis Report",
     **kwargs: Any,
 ) -> dict[str, Any]:
-    """Convenience function for one-call EDA execution."""
+    """Run the EDA pipeline in a single call."""
     config = EDAConfig(output_dir=output_dir, target_column=target_column, report_title=report_title, **kwargs)
     return EDAPipeline(config).run(df)

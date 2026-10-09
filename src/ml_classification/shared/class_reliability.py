@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 import numpy as np
 
@@ -19,8 +20,9 @@ def get_class_reliability(predicted_classes: np.ndarray, reliability_contract: M
         raise ValueError("Error: predicted_classes must be one-dimensional.")
     records = reliability_contract.get("classes")
     if not isinstance(records, Mapping):
-        raise ValueError("Error: Class reliability contract must contain a classes mapping.")
+        raise ValueError("Error: Class reliability contract must contain a classes mapping.")  # noqa: TRY004 - contract validation
 
+    # Unseen classes retain missing precision, zero support, and invalid LOW reliability.
     precision = np.full(predicted.shape, np.nan, dtype=np.float64)
     support = np.zeros(predicted.shape, dtype=int)
     correct = np.zeros(predicted.shape, dtype=int)
@@ -72,9 +74,11 @@ def combine_confidence_components(
         raise ValueError("Error: Confidence components contain an unknown level.")
 
     final_level = np.full(rank_level.shape, "LOW", dtype=object)
+    # Both sources of evidence must be valid before a combined confidence level is trusted.
     final_valid = rank_valid & class_valid
     reasons = np.empty(rank_level.shape, dtype=object)
     for index in range(rank_level.size):
+        # Invalid evidence keeps the default LOW level and preserves the reason for the failed component.
         if not rank_valid[index]:
             reasons[index] = rank_reason[index] or "invalid_rank_evidence"
             continue
@@ -83,6 +87,7 @@ def combine_confidence_components(
             continue
         rank_value = CONFIDENCE_ORDER[rank_level[index]]
         class_value = CONFIDENCE_ORDER[class_level[index]]
+        # The weaker component caps confidence even when the other component is HIGH.
         final_level[index] = min((rank_level[index], class_level[index]), key=CONFIDENCE_ORDER.get)
         if rank_value == 2 and class_value == 2:
             reasons[index] = "high_rank_consensus_and_high_class_reliability"

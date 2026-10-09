@@ -37,7 +37,7 @@ All paths below are relative to `src/data_preparation/`:
 | [parcel_stats/job_manager.py](../../../src/data_preparation/parcel_stats/job_manager.py) | Tile extents, job database, concurrency, retries, download recovery. |
 | [parcel_stats/core/streamed_raster.py](../../../src/data_preparation/parcel_stats/core/streamed_raster.py) | Disk-backed physical and final checkpoints, layer/strip/window processing. |
 | [parcel_stats/core/raster_cleaning.py](../../../src/data_preparation/parcel_stats/core/raster_cleaning.py) | IQR filtering, temporal filling, spatial means, interpolation, audit counts. |
-| [parcel_stats/core/parcel_statistics.py](../../../src/data_preparation/parcel_stats/core/parcel_statistics.py) | Cube validation, index formulas, parcel masks, reducers, geometry metrics, wide output. |
+| [parcel_stats/core/parcel_statistics/](../../../src/data_preparation/parcel_stats/core/parcel_statistics) | Cube validation, index formulas, parcel masks, reducers, geometry metrics, streamed checkpointing, and wide output. |
 | [parcel_stats/multiuser.py](../../../src/data_preparation/parcel_stats/multiuser.py) | Accounts, partitions, scheduler selection, saved-result merging. |
 | [parcel_stats/batch_scheduler.py](../../../src/data_preparation/parcel_stats/batch_scheduler.py) | Default shared batch queue and persisted account ownership. |
 | [parcel_stats/partition_scheduler.py](../../../src/data_preparation/parcel_stats/partition_scheduler.py) | Optional sequential partition queue per account. |

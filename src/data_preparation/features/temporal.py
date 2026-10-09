@@ -8,15 +8,14 @@ pattern and preserves geometry and non-dated attributes.
 
 from __future__ import annotations
 
-from pathlib import Path
 import re
-from typing import Sequence
+from collections.abc import Sequence
+from pathlib import Path
 
 import geopandas as gpd
 import pandas as pd
 
 from shared.io import read_data, write_data
-
 
 DEFAULT_TEMPORAL_SOURCES = (
     "B02",
@@ -37,6 +36,86 @@ DEFAULT_REDUCED_FILENAME = "satellite_parcel_annual_features.geoparquet"
 _DATED_COLUMN_PATTERN = re.compile(r"__(\d{8})$")
 
 
+def _validate_reduction_inputs(parcels: gpd.GeoDataFrame, temporal_sources: Sequence[str], expected_periods: int | None) -> None:
+    """Validate reduction inputs before feature extraction starts."""
+    if not isinstance(parcels, gpd.GeoDataFrame):
+        raise TypeError("Error: parcels must be a GeoDataFrame.")
+    if parcels.crs is None:
+        raise ValueError("Error: Parcel dataset has no CRS.")
+    if expected_periods is not None and expected_periods < 1:
+        raise ValueError("Error: expected_periods must be at least 1.")
+    if not temporal_sources or len(set(temporal_sources)) != len(temporal_sources):
+        raise ValueError("Error: temporal_sources must contain unique source names.")
+
+
+def _split_static_and_dated_columns(parcels: gpd.GeoDataFrame) -> tuple[list[str], list[str]]:
+    """Split static from dated columns so all dated sources are dropped from output."""
+    dated_columns = [column for column in parcels.columns if _DATED_COLUMN_PATTERN.search(str(column))]
+    static_columns = [column for column in parcels.columns if column not in dated_columns]
+    return static_columns, dated_columns
+
+
+def _source_monthly_columns(parcels: gpd.GeoDataFrame, source: str) -> list[str]:
+    """Return sorted monthly median column names for one temporal source."""
+    prefix = f"{source}_median__"
+    return sorted(
+        column
+        for column in parcels.columns
+        if str(column).startswith(prefix) and _DATED_COLUMN_PATTERN.search(str(column))
+    )
+
+
+def _validate_source_periods(
+    source: str,
+    monthly_columns: Sequence[str],
+    expected_periods: int | None,
+    reference_periods: tuple[str, ...] | None,
+) -> tuple[tuple[str, ...] | None, tuple[str, ...]]:
+    """Validate monthly count and period alignment for one source."""
+    periods = tuple(str(column).rsplit("__", 1)[-1] for column in monthly_columns)
+    if expected_periods is not None and len(monthly_columns) != expected_periods:
+        raise ValueError(
+            f"Error: Expected {expected_periods} monthly median columns for {source}; found {len(monthly_columns)}: {list(monthly_columns)}"
+        )
+    if reference_periods is None:
+        return periods, periods
+    if periods != reference_periods:
+        raise ValueError(
+            f"Error: Monthly periods for {source} do not match the other sources. Expected {reference_periods}; found {periods}."
+        )
+    return reference_periods, periods
+
+
+def _annual_feature_names(source: str) -> dict[str, str]:
+    """Return annual feature names for one temporal source."""
+    return {
+        "mean": f"{source}_median_annual_mean",
+        "min": f"{source}_median_annual_min",
+        "max": f"{source}_median_annual_max",
+        "std": f"{source}_median_annual_std",
+    }
+
+
+def _assign_annual_feature_columns(
+    reduced: gpd.GeoDataFrame,
+    parcels: gpd.GeoDataFrame,
+    source: str,
+    monthly_columns: Sequence[str],
+) -> list[str]:
+    """Compute and assign annual feature columns for one source."""
+    monthly_values = parcels[list(monthly_columns)].apply(pd.to_numeric, errors="coerce")
+    feature_names = _annual_feature_names(source)
+    collisions = sorted(set(feature_names.values()).intersection(reduced.columns))
+    if collisions:
+        raise ValueError(f"Error: Generated annual features already exist: {collisions}")
+
+    reduced[feature_names["mean"]] = monthly_values.mean(axis=1)
+    reduced[feature_names["min"]] = monthly_values.min(axis=1)
+    reduced[feature_names["max"]] = monthly_values.max(axis=1)
+    reduced[feature_names["std"]] = monthly_values.std(axis=1, ddof=0)
+    return list(feature_names.values())
+
+
 def reduce_annual_median_features(
     parcels: gpd.GeoDataFrame,
     *,
@@ -50,63 +129,24 @@ def reduce_annual_median_features(
     are created per source: annual mean, minimum, maximum, and population
     standard deviation of the monthly median values.
     """
-    # Validate inputs early to provide meaningful errors to callers.
-    if not isinstance(parcels, gpd.GeoDataFrame):
-        raise TypeError("Error: parcels must be a GeoDataFrame.")
-    if parcels.crs is None:
-        raise ValueError("Error: Parcel dataset has no CRS.")
-    if expected_periods is not None and expected_periods < 1:
-        raise ValueError("Error: expected_periods must be at least 1.")
-    if not temporal_sources or len(set(temporal_sources)) != len(temporal_sources):
-        raise ValueError("Error: temporal_sources must contain unique source names.")
+    _validate_reduction_inputs(parcels, temporal_sources, expected_periods)
 
     original_crs = parcels.crs
     original_geometry = parcels.geometry.copy()
-    dated_columns = [column for column in parcels.columns if _DATED_COLUMN_PATTERN.search(str(column))]
-    static_columns = [column for column in parcels.columns if column not in dated_columns]
+    static_columns, _dated_columns = _split_static_and_dated_columns(parcels)
     reduced = parcels[static_columns].copy()
 
     reference_periods: tuple[str, ...] | None = None
     generated_features: list[str] = []
     for source in temporal_sources:
-        prefix = f"{source}_median__"
-        monthly_columns = sorted(
-            column
-            for column in parcels.columns
-            if str(column).startswith(prefix) and _DATED_COLUMN_PATTERN.search(str(column))
-        )
-        periods = tuple(str(column).rsplit("__", 1)[-1] for column in monthly_columns)
-        if expected_periods is not None and len(monthly_columns) != expected_periods:
-            raise ValueError(
-                f"Error: Expected {expected_periods} monthly median columns for {source}; found {len(monthly_columns)}: {monthly_columns}"
-            )
-        if reference_periods is None:
-            reference_periods = periods
-        elif periods != reference_periods:
-            raise ValueError(
-                f"Error: Monthly periods for {source} do not match the other sources. Expected {reference_periods}; found {periods}."
-            )
-
-        monthly_values = parcels[monthly_columns].apply(pd.to_numeric, errors="coerce")
-        feature_names = {
-            "mean": f"{source}_median_annual_mean",
-            "min": f"{source}_median_annual_min",
-            "max": f"{source}_median_annual_max",
-            "std": f"{source}_median_annual_std",
-        }
-        collisions = sorted(set(feature_names.values()).intersection(reduced.columns))
-        if collisions:
-            raise ValueError(f"Error: Generated annual features already exist: {collisions}")
-
-        reduced[feature_names["mean"]] = monthly_values.mean(axis=1)
-        reduced[feature_names["min"]] = monthly_values.min(axis=1)
-        reduced[feature_names["max"]] = monthly_values.max(axis=1)
-        reduced[feature_names["std"]] = monthly_values.std(axis=1, ddof=0)
-        generated_features.extend(feature_names.values())
+        monthly_columns = _source_monthly_columns(parcels, source)
+        reference_periods, _periods = _validate_source_periods(source, monthly_columns, expected_periods, reference_periods)
+        generated_features.extend(_assign_annual_feature_columns(reduced, parcels, source, monthly_columns))
 
     reduced = gpd.GeoDataFrame(reduced, geometry=parcels.geometry.name, crs=original_crs)
     if reduced.crs != original_crs or not reduced.geometry.equals(original_geometry):
         raise RuntimeError("Error: Annual feature reduction unexpectedly changed parcel geometry or CRS.")
+    # Store feature lineage to support downstream report generation/debugging.
     reduced.attrs["annual_feature_columns"] = generated_features
     reduced.attrs["annual_periods"] = list(reference_periods or ())
     return reduced

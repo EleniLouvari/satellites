@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import logging
 import os
 import shutil
 import stat
@@ -125,6 +126,7 @@ def _delete_dir_with_repo_helper(folder: Path) -> bool:
         io_library.delete_folder(str(folder))
         return not folder.exists()
     except Exception:
+        logging.getLogger(__name__).debug("Error: _delete_dir_with_repo_helper failed; using its fallback.", exc_info=True)
         return False
 
 

@@ -173,11 +173,16 @@ Predictions + probabilities + review flags (confidence < threshold)
   naming conventions, code structure, and documentation style (130 characters max per line).
 - When new functionality is added, ensure that it follows the ruff and radon rules. New code should be tested for cyclomatic
   complexity and maintainability index, and refactored if necessary to meet the project's standards.
-- When writing new code, ensure it is consistent with the existing project structure and conventions.
+- When writing new code, ensure it is consistent with the existing project structure and conventions. Always add in-line comments to explain complex or non-obvious code. Always add docstrings for all new functions and classes.
+- Always create unit-tests for new code to ensure functionality and maintainability.
+- **Code quality metrics**: Ensure that new code maintains or improves the project's cyclomatic complexity, maintainability index, and comment density according to the defined thresholds.
+  Run the code_quality.ipynb notebook to check the cyclomatic complexity, maintainability index, and comment density of the new code.
 - In all error handling, provide clear and informative messages to aid in debugging and maintenance. Add the 'Error: ' prefix to all error messages.
-- Use double quotes for string literals consistently throughout the codebase.
+- Use double quotes for string literals consistently throughout the codebase. Use double quotes for strings in lists, tuples, and dictionaries as well.
 - Use f-strings for string formatting instead of concatenation or the `%` operator.
-- Use double quotes for strings in lists, tuples, and dictionaries as well.
+- When new code is added and new unit tests are created, ensure that they are comprehensive and cover edge cases as well as typical usage scenarios.
+  Run the run_code_checks.bat script to ensure that all code quality checks pass before committing changes.
+- Always ensure that the md files are updated, properly formatted and adhere to the project's markdown style guidelines.
 
 ## Repository organization
 

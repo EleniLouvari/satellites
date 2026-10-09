@@ -466,7 +466,7 @@ class PostgresPostGISHandler:
         """
         self._ensure_connection()
         _validate_identifier(table_name)
-        for c in columns.keys():
+        for c in columns:
             _validate_identifier(c)
         cursor = self._conn.cursor()
         try:
@@ -560,7 +560,7 @@ class PostgresPostGISHandler:
         self._ensure_connection()
         _validate_identifier(table_name)
         _validate_identifier(col_id)
-        for k in data.keys():
+        for k in data:
             _validate_identifier(k)
 
         def _op():
@@ -1344,8 +1344,8 @@ def create_tbl_users(db_handler, tbl_users: str):
         db_handler.create_table(table_name=tbl_users, columns=columns, with_geometry=False)
         msg += f"\nSuccess: table '{tbl_users}' created with schema: \n {columns}"
 
-        for pr in ["GRD", "SLC", "S2MSI2A", "S2MSI1C", "AOD", "SLSTR", "HLSL30", "HOURLY_ERA5", "AXIS11", "AXIS12", "PLANET"]:
-            data = {"product_type": pr, "username": "", "password": ""}  # nosec B105
+        for pr in ["GRD", "SLC", "S2MSI2A", "S2MSI1C", "AOD", "SLSTR", "HLSL30", "HOURLY_ERA5", "AXIS11", "AXIS12"]:
+            data = {"product_type": pr, "username": "", "password": ""}
             _ = db_handler.insert_record(table_name=tbl_users, data=data, col_id=col_user_id)
 
         msg += f"Warning: new table: {tbl_users} is created; usernames and passwords must be inserted."

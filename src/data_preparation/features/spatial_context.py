@@ -11,7 +11,6 @@ from pyproj import CRS
 
 from shared.io import read_data, write_data
 
-
 LAKE_DISTANCE_COLUMN = "distance_to_nearest_lake_m"
 LAKE_ROW_ID_COLUMN = "nearest_lake_row_id"
 SOIL_ATTRIBUTE_COLUMN = "GAIOIKANOT"
@@ -98,6 +97,7 @@ def calculate_nearest_lake_features(
         raise ValueError("Error: Every parcel must have a non-empty geometry.")
     validate_projected_metric_crs(lakes.crs, dataset_name="Lake layer")
 
+    # Measure distances in the lake CRS so units remain metres end-to-end.
     parcel_metric = parcels.to_crs(lakes.crs)
     parcel_geometry = gpd.GeoDataFrame(
         {"_parcel_position": np.arange(len(parcel_metric), dtype=np.int64)},
@@ -150,6 +150,7 @@ def append_nearest_lake_features(
 
     result = parcels.copy()
     result[LAKE_DISTANCE_COLUMN] = features[LAKE_DISTANCE_COLUMN]
+    # Prefix row IDs to keep them distinct from potential numeric domain IDs.
     result[LAKE_ROW_ID_COLUMN] = "lake_" + features[LAKE_ROW_ID_COLUMN].astype(str)
     if result.crs != parcels.crs or not result.geometry.equals(parcels.geometry):
         raise RuntimeError("Error: Nearest-lake feature creation unexpectedly changed the original parcel geometry or CRS.")
@@ -212,6 +213,7 @@ def calculate_centroid_soil_feature(
     if attribute_column not in soil.columns or "_soil_row_id" not in soil.columns:
         raise ValueError("Error: Soil data must be loaded with load_soil_polygons().")
 
+    # Intersections are done on centroids to produce one deterministic soil label per parcel.
     centroids = gpd.GeoDataFrame(
         {"_parcel_position": np.arange(len(parcels), dtype=np.int64)},
         geometry=parcels.geometry.centroid,

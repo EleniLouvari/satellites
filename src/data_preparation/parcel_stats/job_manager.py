@@ -11,10 +11,10 @@ while ownership prevents duplicate parcel results in overlapping tile rasters.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 import hashlib
 import math
 import time
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 
@@ -26,7 +26,7 @@ from openeo.extra.job_management import MultiBackendJobManager, create_job_db, g
 
 from shared.io import write_data
 
-from data_preparation.parcel_stats.openeo import OpenEOZonalStats
+from .openeo import OpenEOZonalStats
 
 
 def compute_tile_buffer_metres(
@@ -39,7 +39,6 @@ def compute_tile_buffer_metres(
     robust for long, narrow parcels, unlike deriving a length from parcel area.
     The maximum radius is multiplied by ``safety_factor`` and rounded upward.
     """
-
     # Validate inputs and compute a conservative buffer that ensures every
     # parcel remains fully contained in the buffered remote tile used for
     # downloading raster extents.
@@ -107,6 +106,83 @@ def _non_empty_tile_job_count(partition: gpd.GeoDataFrame, tile_width: int, work
     return len(counts), int(counts.max())
 
 
+def _validate_tile_width_inputs(
+    parcels: gpd.GeoDataFrame,
+    parcel_id_col: str,
+    user_count: int,
+    jobs_per_user: int,
+) -> tuple[int, int]:
+    """Validate primary ``compute_tile_width`` inputs and return normalized counts."""
+    if not isinstance(parcels, gpd.GeoDataFrame) or parcels.empty:
+        raise ValueError("Error: parcels must be a non-empty GeoDataFrame.")
+    if parcels.crs is None:
+        raise ValueError("Error: parcels must have a CRS.")
+    if parcel_id_col not in parcels.columns:
+        raise ValueError(f"Error: Parcel ID column does not exist: {parcel_id_col!r}.")
+    if parcels[parcel_id_col].isna().any() or parcels[parcel_id_col].duplicated().any():
+        raise ValueError(f"Error: {parcel_id_col!r} must contain unique non-null values.")
+    if isinstance(user_count, bool) or int(user_count) < 1:
+        raise ValueError("Error: user_count must be a positive integer.")
+    if isinstance(jobs_per_user, bool) or int(jobs_per_user) < 1:
+        raise ValueError("Error: jobs_per_user must be a positive integer.")
+    return int(user_count), int(jobs_per_user)
+
+
+def _validate_spatial_parts(
+    parcels: gpd.GeoDataFrame,
+    spatial_parts: Sequence[gpd.GeoDataFrame] | None,
+    parcel_id_col: str,
+) -> list[gpd.GeoDataFrame]:
+    """Validate spatial partitions and ensure they cover every input parcel exactly once."""
+    parts = list(spatial_parts) if spatial_parts is not None else [parcels]
+    if not parts or any(not isinstance(part, gpd.GeoDataFrame) or part.empty or part.crs is None for part in parts):
+        raise ValueError("Error: spatial_parts must contain non-empty GeoDataFrames.")
+    combined_ids = [parcel_id for part in parts for parcel_id in part[parcel_id_col].tolist()]
+    if len(combined_ids) != len(set(combined_ids)) or set(combined_ids) != set(parcels[parcel_id_col]):
+        raise ValueError("Error: spatial_parts must contain every input parcel exactly once.")
+    return parts
+
+
+def _normalize_candidate_widths(candidate_widths: Sequence[int]) -> tuple[int, ...]:
+    """Normalize and validate candidate widths as sorted unique positive integers."""
+    widths = tuple(int(width) for width in candidate_widths)
+    if not widths or any(width <= 0 for width in widths) or len(set(widths)) != len(widths):
+        raise ValueError("Error: candidate_widths must contain unique positive integers.")
+    return tuple(sorted(widths))
+
+
+def _build_tile_width_comparison(
+    parts: list[gpd.GeoDataFrame],
+    widths: tuple[int, ...],
+    working_epsg: int,
+    slots: int,
+) -> pd.DataFrame:
+    """Build tile-width comparison metrics across spatial partitions."""
+    comparison_rows = []
+    for width in widths:
+        job_counts, maximum_loads = zip(*(_non_empty_tile_job_count(part, width, int(working_epsg)) for part in parts))
+        comparison_rows.append(
+            {
+                "tile_size_km": width / 1_000,
+                "total_jobs": sum(job_counts),
+                "min_jobs_per_partition": min(job_counts),
+                "median_jobs_per_partition": float(np.median(job_counts)),
+                "max_jobs_per_partition": max(job_counts),
+                "max_parcels_per_job": max(maximum_loads),
+                "fills_user_slots": min(job_counts) >= slots,
+            }
+        )
+    return pd.DataFrame(comparison_rows)
+
+
+def _select_tile_width(tile_comparison: pd.DataFrame) -> tuple[int, pd.DataFrame]:
+    """Select the final tile width and return the eligible subset used for messaging."""
+    eligible = tile_comparison.loc[tile_comparison["fills_user_slots"]]
+    # Prefer the largest width that still fills each user's per-partition job slots.
+    selected = int((eligible.iloc[-1] if not eligible.empty else tile_comparison.iloc[0])["tile_size_km"] * 1_000)
+    return selected, eligible
+
+
 def compute_tile_width(
     parcels: gpd.GeoDataFrame,
     parcel_id_col: str,
@@ -124,50 +200,11 @@ def compute_tile_width(
     real planner's representative-point rule; boundary-crossing geometries are
     handled by ``tile_buffer_metres`` rather than forcing oversized core tiles.
     """
-    if not isinstance(parcels, gpd.GeoDataFrame) or parcels.empty:
-        raise ValueError("Error: parcels must be a non-empty GeoDataFrame.")
-    if parcels.crs is None:
-        raise ValueError("Error: parcels must have a CRS.")
-    if parcel_id_col not in parcels.columns:
-        raise ValueError(f"Error: Parcel ID column does not exist: {parcel_id_col!r}.")
-    if parcels[parcel_id_col].isna().any() or parcels[parcel_id_col].duplicated().any():
-        raise ValueError(f"Error: {parcel_id_col!r} must contain unique non-null values.")
-    if isinstance(user_count, bool) or int(user_count) < 1:
-        raise ValueError("Error: user_count must be a positive integer.")
-    if isinstance(jobs_per_user, bool) or int(jobs_per_user) < 1:
-        raise ValueError("Error: jobs_per_user must be a positive integer.")
-    users, slots = int(user_count), int(jobs_per_user)
-
-    parts = list(spatial_parts) if spatial_parts is not None else [parcels]
-    if not parts or any(not isinstance(part, gpd.GeoDataFrame) or part.empty or part.crs is None for part in parts):
-        raise ValueError("Error: spatial_parts must contain non-empty GeoDataFrames.")
-    combined_ids = [parcel_id for part in parts for parcel_id in part[parcel_id_col].tolist()]
-    if len(combined_ids) != len(set(combined_ids)) or set(combined_ids) != set(parcels[parcel_id_col]):
-        raise ValueError("Error: spatial_parts must contain every input parcel exactly once.")
-
-    widths = tuple(int(width) for width in candidate_widths)
-    if not widths or any(width <= 0 for width in widths) or len(set(widths)) != len(widths):
-        raise ValueError("Error: candidate_widths must contain unique positive integers.")
-    widths = tuple(sorted(widths))
-
-    comparison_rows = []
-    for width in widths:
-        job_counts, maximum_loads = zip(*(_non_empty_tile_job_count(part, width, int(working_epsg)) for part in parts))
-        comparison_rows.append(
-            {
-                "tile_size_km": width / 1_000,
-                "total_jobs": sum(job_counts),
-                "min_jobs_per_partition": min(job_counts),
-                "median_jobs_per_partition": float(np.median(job_counts)),
-                "max_jobs_per_partition": max(job_counts),
-                "max_parcels_per_job": max(maximum_loads),
-                "fills_user_slots": min(job_counts) >= slots,
-            }
-        )
-
-    tile_comparison = pd.DataFrame(comparison_rows)
-    eligible = tile_comparison.loc[tile_comparison["fills_user_slots"]]
-    selected = int((eligible.iloc[-1] if not eligible.empty else tile_comparison.iloc[0])["tile_size_km"] * 1_000)
+    users, slots = _validate_tile_width_inputs(parcels, parcel_id_col, user_count, jobs_per_user)
+    parts = _validate_spatial_parts(parcels, spatial_parts, parcel_id_col)
+    widths = _normalize_candidate_widths(candidate_widths)
+    tile_comparison = _build_tile_width_comparison(parts, widths, int(working_epsg), slots)
+    selected, eligible = _select_tile_width(tile_comparison)
     active_users = min(users, len(parts))
     print(
         f"Concurrency target: {users} users x {slots} jobs = {users * slots} remote slots; "
@@ -256,6 +293,7 @@ class OpenEOJobManagerZonalStats(OpenEOZonalStats):
         run_identifier: str | None = None,
         **kwargs,
     ) -> None:
+        """Initialize tile planning, polling, and retry controls for openEO job execution."""
         self.tile_size_metres = self._positive_integer(tile_size_metres, "tile_size_metres")
         self.tile_buffer_metres = self._non_negative_integer(tile_buffer_metres, "tile_buffer_metres")
         if not isinstance(fit_tiles_to_parcels, bool):
@@ -272,7 +310,6 @@ class OpenEOJobManagerZonalStats(OpenEOZonalStats):
 
     def _validate_run_identifier(self, value: str | None) -> str:
         """Return a compact user label or generate one for this run."""
-
         if value is None:
             return datetime.now().astimezone().strftime("run-%Y%m%d-%H%M%S")
         if not isinstance(value, str):
@@ -292,7 +329,6 @@ class OpenEOJobManagerZonalStats(OpenEOZonalStats):
 
     def _positive_integer(self, value, name: str) -> int:
         """Check that a value is a positive integer and return it as an int."""
-
         if isinstance(value, bool):
             raise TypeError(f"Error: {name} must be a positive integer.")
         try:
@@ -305,7 +341,6 @@ class OpenEOJobManagerZonalStats(OpenEOZonalStats):
 
     def _non_negative_integer(self, value, name: str) -> int:
         """Check that a value is a non-negative integer and return it as an int."""
-
         if isinstance(value, bool):
             raise TypeError(f"Error: {name} must be a non-negative integer.")
         try:
@@ -318,7 +353,6 @@ class OpenEOJobManagerZonalStats(OpenEOZonalStats):
 
     def _ensure_job_retry_tracking(self, job_db) -> None:
         """Add persistent retry metadata to new or pre-retry job databases."""
-
         jobs = job_db.df
         changed = False
         if "retry_count" not in jobs.columns:
@@ -351,14 +385,12 @@ class OpenEOJobManagerZonalStats(OpenEOZonalStats):
     @staticmethod
     def _clean_job_id(value) -> str:
         """Return a usable persisted job ID, excluding null-like values."""
-
         if value is None or pd.isna(value):
             return ""
         return str(value).strip()
 
     def _reset_retryable_failed_jobs(self, job_db) -> int:
         """Reset eligible terminal failures for a bounded retry."""
-
         self._ensure_job_retry_tracking(job_db)
         failed = job_db.get_by_status(statuses=self.RETRYABLE_JOB_FAILURE_STATUSES).copy()
         if failed.empty:
@@ -404,7 +436,6 @@ class OpenEOJobManagerZonalStats(OpenEOZonalStats):
 
     def _wait_before_job_retry(self, retry_count: int) -> None:
         """Apply the configured backend cooldown before a retry wave."""
-
         if retry_count > 0 and self.job_retry_delay_seconds > 0:
             self.source_logger.warning(
                 "Waiting %s seconds before retrying %s failed tile job(s).", self.job_retry_delay_seconds, retry_count
@@ -413,7 +444,6 @@ class OpenEOJobManagerZonalStats(OpenEOZonalStats):
 
     def _build_or_reuse_tile_job(self, row, connection, plan):
         """Reuse a job whose start failed, or build a replacement job."""
-
         existing_job_id = self._clean_job_id(row.get("id"))
         if row.get("retry_mode") == "restart" and existing_job_id:
             return connection.job(existing_job_id), True
@@ -422,7 +452,6 @@ class OpenEOJobManagerZonalStats(OpenEOZonalStats):
 
     def _run_signature(self) -> str:
         """Keep tile caches separate from original and differently sized runs."""
-
         # The base signature is derived from the original parameters, so that any change
         # in the original parameters will invalidate the cache. The suffix is derived
         # from the tile parameters, so that different tile sizes or buffers will also
@@ -431,7 +460,7 @@ class OpenEOJobManagerZonalStats(OpenEOZonalStats):
         base = super()._run_signature()
         strategy = "job-manager-v1-parcel-bounds" if self.fit_tiles_to_parcels else "job-manager-v7-buffered-tiles"
         suffix = hashlib.sha256(
-            (f"{strategy}:{self.tile_size_metres}:buffer:{self.tile_buffer_metres}").encode("utf-8")
+            (f"{strategy}:{self.tile_size_metres}:buffer:{self.tile_buffer_metres}").encode()
         ).hexdigest()[:8]
         return f"{base}-tiles-{suffix}"
 
@@ -496,7 +525,6 @@ class OpenEOJobManagerZonalStats(OpenEOZonalStats):
 
     def _build_tile_plan(self, cube_dir: Path):
         """Return tile rows and whole-parcel batches, rejecting split parcels."""
-
         if self.fit_tiles_to_parcels:
             return self._build_fitted_tile_plan(cube_dir)
         metric = self.parcels.to_crs(epsg=self.working_epsg)
@@ -645,10 +673,8 @@ class OpenEOJobManagerZonalStats(OpenEOZonalStats):
         sentinel1_temporal = sentinel1_temporal.resample_cube_spatial(sentinel2_temporal, method="bilinear")
         return sentinel2_temporal.merge_cubes(sentinel1_temporal)
 
-    def _run_openeo_jobs(self, cube_dir):
-        """Persist, submit, monitor and download true tile jobs."""
-
-        plans = self._build_tile_plan(cube_dir)
+    def _log_tile_plan_summary(self, plans: list[dict]) -> int:
+        """Log planned tile-job statistics and return singleton tile-job count."""
         parcel_counts = [len(plan["parcels"]) for plan in plans]
         singleton_jobs = sum(count == 1 for count in parcel_counts)
         self.source_logger.info(
@@ -660,23 +686,22 @@ class OpenEOJobManagerZonalStats(OpenEOZonalStats):
             max(parcel_counts),
             singleton_jobs,
         )
+        return singleton_jobs
+
+    def _raise_if_pathological_tile_plan(self, plans: list[dict], singleton_jobs: int) -> None:
+        """Reject plans that split each parcel into its own remote job."""
         if not self.fit_tiles_to_parcels and len(plans) >= 10 and singleton_jobs == len(plans):
             raise RuntimeError(
                 "Error: Refusing to submit a pathological tile plan: every remote job contains one parcel. Check the split_area AOI and tile grouping before retrying."
             )
-        # Keep the tile intact for both remote processing and local statistics:
-        # all parcels assigned to a tile are handled together.
-        pending_batches = [(plan["batch_number"], plan["parcels"], Path(plan["target_path"])) for plan in plans]
-        uncached = [plan for plan in plans if not self._batch_available(plan["target_path"])]
-        if not uncached:
-            self.source_logger.info("All %s tile cubes are already cached.", len(plans))
-            return pending_batches
 
-        self.source_logger.info("Connecting to openEO backend %s.", self.OPENEO_URL)
-        connection = openeo.connect(self.OPENEO_URL, auto_validate=False)
-        self._authenticate_openeo_connection(connection)
-        plan_lookup = {plan["batch_number"]: plan for plan in plans}
+    @staticmethod
+    def _pending_batches_from_plans(plans: list[dict]) -> list[tuple[int, gpd.GeoDataFrame, Path]]:
+        """Build pending-batch tuples consumed by local statistics workers."""
+        return [(plan["batch_number"], plan["parcels"], Path(plan["target_path"])) for plan in plans]
 
+    def _prepare_tile_job_database(self, cube_dir: Path, uncached: list[dict]):
+        """Create or reopen persistent tile-job tracking for uncached plans."""
         job_rows = pd.DataFrame(
             [
                 {
@@ -698,9 +723,11 @@ class OpenEOJobManagerZonalStats(OpenEOZonalStats):
         )
         database_path = cube_dir / "tile_jobs.parquet"
         if database_path.exists():
-            job_db = get_job_db(database_path)
-        else:
-            job_db = create_job_db(database_path, df=job_rows)
+            return get_job_db(database_path), database_path
+        return create_job_db(database_path, df=job_rows), database_path
+
+    def _build_tile_start_job_callback(self, plan_lookup: dict[int, dict]):
+        """Create the start-job callback used by MultiBackendJobManager."""
 
         def start_job(row, connection, **_kwargs):
             plan = plan_lookup[int(row["batch_number"])]
@@ -714,34 +741,71 @@ class OpenEOJobManagerZonalStats(OpenEOZonalStats):
             self.source_logger.info(message)
             return job
 
-        manager = _NetCDFTileJobManager(
-            poll_sleep=self.job_poll_seconds, root_dir=cube_dir / "job_manager", download_results=False
-        )
-        manager.add_backend("cdse", connection=connection, parallel_jobs=self.openeo_parallel_jobs)
-        self._restore_finished_tile_downloads(manager, connection, job_db, plan_lookup)
+        return start_job
+
+    def _run_tile_jobs_with_retries(self, manager, job_db, start_job) -> None:
+        """Run one or more manager waves until retryable failures are exhausted."""
         retry_count = self._reset_retryable_failed_jobs(job_db)
         self._wait_before_job_retry(retry_count)
         while True:
             manager.run_jobs(job_db=job_db, start_job=start_job)
             retry_count = self._reset_retryable_failed_jobs(job_db)
             if retry_count == 0:
-                break
+                return
             self._wait_before_job_retry(retry_count)
 
-        missing = [Path(plan["target_path"]) for plan in plans if not self._batch_available(plan["target_path"])]
+    @staticmethod
+    def _missing_tile_outputs(plans: list[dict], batch_available) -> list[Path]:
+        """Return expected tile outputs that are still absent after job execution."""
+        return [Path(plan["target_path"]) for plan in plans if not batch_available(plan["target_path"])]
+
+    def _raise_missing_tile_outputs(self, missing: list[Path], job_db, database_path: Path, cube_dir: Path) -> None:
+        """Raise a detailed error when expected tile outputs remain missing."""
+        failed = job_db.get_by_status(statuses=self.RETRYABLE_JOB_FAILURE_STATUSES)
+        failure_details = ""
+        if not failed.empty:
+            descriptions = [
+                f"batch {int(row['batch_number'])} job {row['id']} with status {row['status']} "
+                f"after {int(row['retry_count'])} retries"
+                for _, row in failed.iterrows()
+            ]
+            failure_details = f" Failed jobs: {', '.join(descriptions)}."
+        raise RuntimeError(
+            f"Error: MultiBackendJobManager finished without {len(missing)} expected NetCDF files. Inspect {database_path} and {cube_dir / 'job_manager'} for statuses and error logs.{failure_details}"
+        )
+
+    def _run_openeo_jobs(self, cube_dir):
+        """Persist, submit, monitor and download true tile jobs."""
+        cube_dir = Path(cube_dir)
+        plans = self._build_tile_plan(cube_dir)
+        singleton_jobs = self._log_tile_plan_summary(plans)
+        self._raise_if_pathological_tile_plan(plans, singleton_jobs)
+        # Keep the tile intact for both remote processing and local statistics:
+        # all parcels assigned to a tile are handled together.
+        pending_batches = self._pending_batches_from_plans(plans)
+        uncached = [plan for plan in plans if not self._batch_available(plan["target_path"])]
+        if not uncached:
+            self.source_logger.info("All %s tile cubes are already cached.", len(plans))
+            return pending_batches
+
+        self.source_logger.info("Connecting to openEO backend %s.", self.OPENEO_URL)
+        connection = openeo.connect(self.OPENEO_URL, auto_validate=False)
+        self._authenticate_openeo_connection(connection)
+        plan_lookup = {plan["batch_number"]: plan for plan in plans}
+        job_db, database_path = self._prepare_tile_job_database(cube_dir, uncached)
+        start_job = self._build_tile_start_job_callback(plan_lookup)
+
+        manager = _NetCDFTileJobManager(
+            poll_sleep=self.job_poll_seconds, root_dir=cube_dir / "job_manager", download_results=False
+        )
+        manager.add_backend("cdse", connection=connection, parallel_jobs=self.openeo_parallel_jobs)
+        self._restore_finished_tile_downloads(manager, connection, job_db, plan_lookup)
+        self._run_tile_jobs_with_retries(manager, job_db, start_job)
+
+        missing = self._missing_tile_outputs(plans, self._batch_available)
+        # Every planned batch must have either a raw cube or a committed statistics cache.
         if missing:
-            failed = job_db.get_by_status(statuses=self.RETRYABLE_JOB_FAILURE_STATUSES)
-            failure_details = ""
-            if not failed.empty:
-                descriptions = [
-                    f"batch {int(row['batch_number'])} job {row['id']} with status {row['status']} "
-                    f"after {int(row['retry_count'])} retries"
-                    for _, row in failed.iterrows()
-                ]
-                failure_details = f" Failed jobs: {', '.join(descriptions)}."
-            raise RuntimeError(
-                f"Error: MultiBackendJobManager finished without {len(missing)} expected NetCDF files. Inspect {database_path} and {cube_dir / 'job_manager'} for statuses and error logs.{failure_details}"
-            )
+            self._raise_missing_tile_outputs(missing, job_db, database_path, cube_dir)
         return pending_batches
 
     def _restore_finished_tile_downloads(self, manager, connection, job_db, plan_lookup) -> None:

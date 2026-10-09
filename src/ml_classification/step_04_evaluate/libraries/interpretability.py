@@ -8,6 +8,7 @@ other plotting in the same process.
 
 from __future__ import annotations
 
+import logging
 import warnings
 from pathlib import Path
 
@@ -17,7 +18,7 @@ import pandas as pd
 
 from ml_classification.shared.logging import print_formatted_txt
 from ml_classification.shared.persistence import save_frame_csv
-from ml_classification.shared.reports.plotting import _save_figure as _save_figure
+from ml_classification.shared.reports.plotting import _save_figure as _save_figure  # noqa: PLC0414 - explicit public re-export
 from ml_classification.step_04_evaluate.libraries.feature_importance import (
     extract_feature_importance_frame,
     select_top_models_for_interpretability,
@@ -52,28 +53,10 @@ def save_shap_summary_plot(
     except Exception as exc:
         raise RuntimeError("Error: SHAP is not installed in the current environment.") from exc
 
-    fitted_preprocessor = estimator.named_steps.get("preprocessor") if hasattr(estimator, "named_steps") else None
-    fitted_model = estimator.named_steps.get("model", estimator) if hasattr(estimator, "named_steps") else estimator
-    if fitted_model.__class__.__name__ == "ContiguousLabelClassifier" and hasattr(fitted_model, "estimator_"):
-        fitted_model = fitted_model.estimator_
-
-    transformed = fitted_preprocessor.transform(X_sample) if fitted_preprocessor is not None else X_sample
-    feature_names = None
-    if fitted_preprocessor is not None and hasattr(fitted_preprocessor, "get_feature_names_out"):
-        try:
-            feature_names = list(fitted_preprocessor.get_feature_names_out())
-        except Exception:
-            feature_names = None
-    if feature_names is None and hasattr(X_sample, "columns"):
-        feature_names = list(X_sample.columns)
-    if hasattr(transformed, "toarray"):
-        transformed = transformed.toarray()
-    transformed = np.asarray(transformed)
-    if transformed.ndim != 2 or transformed.shape[0] == 0:
+    fitted_preprocessor, fitted_model = _resolve_shap_estimator_parts(estimator)
+    transformed, feature_names = _prepare_shap_inputs(fitted_preprocessor, X_sample)
+    if transformed is None:
         return
-    if feature_names is None:
-        feature_names = [f"feature_{idx}" for idx in range(transformed.shape[1])]
-    feature_names = [name.split("__", 1)[-1] for name in feature_names]
 
     with warnings.catch_warnings():
         warnings.filterwarnings(
@@ -81,26 +64,80 @@ def save_shap_summary_plot(
         )
         background = transformed[: min(100, len(transformed))]
         eval_data = transformed[: min(200, len(transformed))]
-
-        shap_values = None
-        try:
-            shap_values = shap.Explainer(fitted_model).shap_values(eval_data)
-        except Exception:
-            shap_values = None
-        if shap_values is None and _supports_tree_shap(fitted_model):
-            try:
-                shap_values = shap.TreeExplainer(fitted_model, feature_names=feature_names).shap_values(eval_data)
-            except Exception:
-                shap_values = None
-        if shap_values is None and hasattr(fitted_model, "predict_proba"):
-            shap_values = shap.Explainer(fitted_model.predict_proba, background, feature_names=feature_names)(eval_data)
-        elif shap_values is None and hasattr(fitted_model, "predict"):
-            shap_values = shap.Explainer(fitted_model.predict, background, feature_names=feature_names)(eval_data)
-        if shap_values is None:
-            raise RuntimeError(
-                f"Error: SHAP is not supported for model type {fitted_model.__class__.__name__} because it is not callable."
-            )
+        shap_values = _compute_shap_values(shap, fitted_model, eval_data, background, feature_names)
         _render_shap_summary_figure(shap, shap_values, eval_data, feature_names, output_path, model_name, max_display)
+
+
+def _resolve_shap_estimator_parts(estimator):
+    """Return fitted preprocessor and fitted model used for SHAP explanations."""
+    if not hasattr(estimator, "named_steps"):
+        return None, estimator
+    fitted_preprocessor = estimator.named_steps.get("preprocessor")
+    fitted_model = estimator.named_steps.get("model", estimator)
+    if fitted_model.__class__.__name__ == "ContiguousLabelClassifier" and hasattr(fitted_model, "estimator_"):
+        fitted_model = fitted_model.estimator_
+    return fitted_preprocessor, fitted_model
+
+
+def _prepare_shap_inputs(fitted_preprocessor, X_sample: pd.DataFrame):
+    """Transform input data and derive feature names for SHAP plotting."""
+    transformed = fitted_preprocessor.transform(X_sample) if fitted_preprocessor is not None else X_sample
+    feature_names = _extract_feature_names_for_shap(fitted_preprocessor, X_sample)
+    if hasattr(transformed, "toarray"):
+        transformed = transformed.toarray()
+    transformed = np.asarray(transformed)
+    if transformed.ndim != 2 or transformed.shape[0] == 0:
+        return None, feature_names
+    if feature_names is None:
+        feature_names = [f"feature_{idx}" for idx in range(transformed.shape[1])]
+    feature_names = [name.split("__", 1)[-1] for name in feature_names]
+    return transformed, feature_names
+
+
+def _extract_feature_names_for_shap(fitted_preprocessor, X_sample: pd.DataFrame):
+    """Resolve feature names from preprocessor output, with fallback to input columns."""
+    feature_names = None
+    if fitted_preprocessor is not None and hasattr(fitted_preprocessor, "get_feature_names_out"):
+        try:
+            feature_names = list(fitted_preprocessor.get_feature_names_out())
+        except Exception:
+            logging.getLogger(__name__).debug("Error: save_shap_summary_plot failed; using its fallback.", exc_info=True)
+            feature_names = None
+    if feature_names is None and hasattr(X_sample, "columns"):
+        feature_names = list(X_sample.columns)
+    return feature_names
+
+
+def _compute_shap_values(shap, fitted_model, eval_data: np.ndarray, background: np.ndarray, feature_names: list[str]):
+    """Compute SHAP values with fallbacks across explainer types."""
+    shap_values = _run_shap_attempt(lambda: shap.Explainer(fitted_model).shap_values(eval_data))
+    if shap_values is None and _supports_tree_shap(fitted_model):
+        shap_values = _run_shap_attempt(
+            lambda: shap.TreeExplainer(fitted_model, feature_names=feature_names).shap_values(eval_data)
+        )
+    if shap_values is None:
+        shap_values = _compute_predictor_shap_values(shap, fitted_model, eval_data, background, feature_names)
+    if shap_values is not None:
+        return shap_values
+    raise RuntimeError(f"Error: SHAP is not supported for model type {fitted_model.__class__.__name__} because it is not callable.")
+
+
+def _compute_predictor_shap_values(shap, fitted_model, eval_data: np.ndarray, background: np.ndarray, feature_names: list[str]):
+    """Compute SHAP values from predict_proba/predict callables when direct explainers fail."""
+    if hasattr(fitted_model, "predict_proba"):
+        return shap.Explainer(fitted_model.predict_proba, background, feature_names=feature_names)(eval_data)
+    if hasattr(fitted_model, "predict"):
+        return shap.Explainer(fitted_model.predict, background, feature_names=feature_names)(eval_data)
+    return None
+
+
+def _run_shap_attempt(compute_fn):
+    """Execute a SHAP computation branch and return None when it fails."""
+    try:
+        return compute_fn()
+    except Exception:
+        logging.getLogger(__name__).debug("Error: save_shap_summary_plot failed; using its fallback.", exc_info=True)
+        return None
 
 
 def _supports_tree_shap(model) -> bool:
@@ -200,6 +237,7 @@ def _canvas_to_rgb_array(canvas) -> np.ndarray:
 
 
 def save_interpretability(config, cv_metrics_df, test_metrics_df, fitted_estimators, X_train):
+    """Save feature-importance and SHAP interpretability artifacts for top models."""
     # Select top models for interpretability analysis and optionally produce SHAP/importance outputs.
     available = cv_metrics_df["model"].tolist()
     top_n = min(config.interpretability_top_models, len(available))
@@ -265,6 +303,7 @@ def save_interpretability(config, cv_metrics_df, test_metrics_df, fitted_estimat
                 )
                 row["shap_created"] = True
             except Exception as exc:
+                logging.getLogger(__name__).debug("Error: save_interpretability failed; using its fallback.", exc_info=True)
                 message = f"SHAP skipped for {model_name}: {exc}"
                 print_formatted_txt(message, "WARNING")
                 row["notes"] = f"{row['notes']} {message}".strip()

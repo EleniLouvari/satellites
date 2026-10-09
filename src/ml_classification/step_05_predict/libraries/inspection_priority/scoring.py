@@ -105,18 +105,10 @@ def _apply_label_aware_policy(
     return need, check_type
 
 
-def _inspection_reasons(row: pd.Series, config) -> str:
-    """Return stable, pipe-separated explanations for one parcel score."""
-    reasons: list[str] = []
-    confidence = row[config.prediction_confidence_level_column]
-    reliability = row[config.inspection_data_reliability_column]
-    geometry_risk = row["geometry_risk"]
-    label_status = row["label_prediction_status"]
-    check_type = row["inspection_check_type"]
-
-    # Put the primary operational explanation first in the pipe-separated reason string.
+def _append_label_alignment_reasons(reasons: list[str], label_status: str, check_type: str, inspection_need: str) -> None:
+    """Append declaration-vs-prediction reasons in stable priority order."""
     if label_status == "DIFFERENT":
-        if check_type == "DECLARATION_CONFLICT" and row["inspection_need"] == "VERY_HIGH":
+        if check_type == "DECLARATION_CONFLICT" and inspection_need == "VERY_HIGH":
             reasons.append("STRONG_DECLARATION_CONFLICT")
         elif check_type == "DECLARATION_CONFLICT":
             reasons.append("DECLARATION_CONFLICT")
@@ -125,14 +117,26 @@ def _inspection_reasons(row: pd.Series, config) -> str:
     if check_type == "INSUFFICIENT_EO_EVIDENCE":
         reasons.append("INSUFFICIENT_EO_EVIDENCE")
 
-    # Normalize raw values again for robust row-level reason assignment.
-    if not pd.isna(confidence):
-        confidence = str(confidence).strip().upper()
-    if not pd.isna(reliability):
-        reliability = pd.to_numeric(reliability, errors="coerce")
-        if pd.isna(reliability) or not 0.0 <= float(reliability) <= 1.0:
-            reliability = np.nan
 
+def _normalize_row_confidence(value) -> str | float:
+    """Normalize confidence labels for reason assignment."""
+    if pd.isna(value):
+        return np.nan
+    return str(value).strip().upper()
+
+
+def _normalize_row_reliability(value) -> float:
+    """Normalize reliability values to [0, 1], returning NaN for invalid rows."""
+    if pd.isna(value):
+        return np.nan
+    reliability = pd.to_numeric(value, errors="coerce")
+    if pd.isna(reliability) or not 0.0 <= float(reliability) <= 1.0:
+        return np.nan
+    return float(reliability)
+
+
+def _append_confidence_reasons(reasons: list[str], confidence: str | float) -> None:
+    """Append confidence-level reasons in deterministic order."""
     if pd.isna(confidence):
         reasons.append("INVALID_MODEL_CONFIDENCE")
     elif confidence == "LOW":
@@ -142,6 +146,9 @@ def _inspection_reasons(row: pd.Series, config) -> str:
     elif confidence != "HIGH":
         reasons.append("INVALID_MODEL_CONFIDENCE")
 
+
+def _append_data_reliability_reasons(reasons: list[str], reliability: float, config) -> None:
+    """Append reliability reasons using configured threshold bands."""
     if pd.isna(reliability):
         reasons.append("MISSING_DATA_RELIABILITY")
     elif reliability < config.inspection_low_data_reliability_threshold:
@@ -149,12 +156,30 @@ def _inspection_reasons(row: pd.Series, config) -> str:
     elif reliability < config.inspection_medium_data_reliability_threshold:
         reasons.append("MEDIUM_DATA_RELIABILITY")
 
+
+def _append_geometry_reasons(reasons: list[str], geometry_risk: float, config) -> None:
+    """Append geometry complexity reasons using configured threshold bands."""
     if pd.isna(geometry_risk):
         reasons.append("MISSING_GEOMETRY_COMPLEXITY")
     elif geometry_risk >= config.inspection_high_geometry_risk_threshold:
         reasons.append("HIGH_GEOMETRY_COMPLEXITY")
     elif geometry_risk >= config.inspection_medium_geometry_risk_threshold:
         reasons.append("MEDIUM_GEOMETRY_COMPLEXITY")
+
+
+def _inspection_reasons(row: pd.Series, config) -> str:
+    """Return stable, pipe-separated explanations for one parcel score."""
+    reasons: list[str] = []
+    confidence = _normalize_row_confidence(row[config.prediction_confidence_level_column])
+    reliability = _normalize_row_reliability(row[config.inspection_data_reliability_column])
+    geometry_risk = row["geometry_risk"]
+    label_status = row["label_prediction_status"]
+    check_type = row["inspection_check_type"]
+
+    _append_label_alignment_reasons(reasons, label_status, check_type, row["inspection_need"])
+    _append_confidence_reasons(reasons, confidence)
+    _append_data_reliability_reasons(reasons, reliability, config)
+    _append_geometry_reasons(reasons, geometry_risk, config)
 
     return "|".join(reasons) if reasons else "NONE"
 
