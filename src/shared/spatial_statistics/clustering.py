@@ -38,7 +38,7 @@ def spatial_clustering_using_kmeans(gdf, num_clusters="auto", max_clusters=10, p
     """
     expect_true(max_clusters is not None, "Variable <max_clusters> is None; please provide a valid integer number!")
     expect_true(max_clusters > 0, "Variable <max_clusters> is zero; please provide a valid integer number!")
-    expect_true(type(max_clusters) == int, "Variable <max_clusters> is not integer; please provide a valid integer number!")
+    expect_true(type(max_clusters) is int, "Variable <max_clusters> is not integer; please provide a valid integer number!")
     expect_true(
         max_clusters == int(max_clusters),
         "Variable <max_clusters> is not integer; please provide a valid integer number!",

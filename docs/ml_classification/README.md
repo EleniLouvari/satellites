@@ -13,6 +13,14 @@ Pipeline steps:
 4. `run_evaluate()`
 5. `run_predict()`
 
+The preparation report's correlation heatmap uses numeric features whose names
+contain the `_median` statistic token (for example, `NDVI_median__20240701`).
+It shows the first 20 matching features in input order. The limit is the
+`max_columns=20` argument of `save_correlation_heatmap` in
+`src/ml_classification/step_02_prepare/libraries/plots.py`, not a pipeline
+configuration field. This filter affects only the heatmap, not model inputs.
+Regenerate an existing report with `pipeline.create_reports(step="prepare")`.
+
 ## New: Incremental Training & Filtered Evaluation
 
 **Want to add new models without retraining everything?** Or evaluate only a subset of trained models?
@@ -33,8 +41,19 @@ The SVM uses numeric imputation and standardization, categorical imputation and
 one-hot encoding, and the configured optional label balancing. Its class
 probabilities support evaluation and soft voting. The existing default tuning
 space searches `C`, kernel (`linear`, `rbf`, `poly`), and `gamma`; override it via
-`tune_params["support_vector_machine"]`. Keep `model__probability` enabled if
-overriding it.
+`tune_params["support_vector_machine"]`. Existing flat keys such as `model__C`
+and `model__kernel` remain supported. `model__probability=True` is retained for
+compatibility; disabling probabilities is rejected.
+
+Probabilities use `CalibratedClassifierCV(SVC(), ensemble=False)` with sigmoid
+calibration instead of the deprecated `SVC(probability=True)` option. Internal
+stratified calibration uses up to five shuffled folds, seeded by `random_state`,
+and reduces the fold count for small classes. Each fit requires at least two
+classes and two samples per class, including within search subsamples and outer
+training folds. The base SVC is then refitted on all rows supplied to that fit.
+Predicted labels follow the highest calibrated probability. Newly trained model
+probabilities and labels can therefore differ from the previous libsvm calibration.
+Existing saved models are not converted; retrain them to use this implementation.
 
 [Scikit-learn's SVC documentation](https://scikit-learn.org/stable/modules/generated/sklearn.svm.SVC.html)
 notes that kernel SVM training scales at least quadratically with sample count,
@@ -91,6 +110,19 @@ Schema metadata:
 - JSON summaries include `_schema` with `artifact` and `schema_version`.
 - Each step writes `schema_manifest.json` with JSON/CSV output contracts.
 - Prediction step also writes `05_predict/predict_summary.json`.
+
+The Step 5 HTML report describes prediction confidence and class reliability as
+separate signals. Its summary shows the confidence method, class reliability's
+inspection-policy status, and the number of parcels where class reliability was
+applied. Enabled with zero applied parcels is distinguished from disabled or
+unrecorded application. These values come from saved predictions and the frozen
+selection contract, so changing live configuration does not relabel a saved run.
+The JSON summary retains its existing fields for compatibility.
+
+To refresh an existing report after updating the code, restart the notebook kernel,
+recreate `config` and `pipeline` for the same run directory, then call
+`pipeline.create_reports(step="predict")`. This reads saved predictions without
+training models or recalculating prediction and inspection decisions.
 
 Minimal usage:
 
@@ -194,8 +226,9 @@ or class pooling are used. Classes with fewer than
 `class_reliability_minimum_oof_support` predictions remain invalid and `LOW`.
 
 The defaults map OOF class precision `>=0.80` to `HIGH`, `>=0.60` to `MEDIUM`,
-and lower precision to `LOW`. Final confidence is the lower of parcel rank
-confidence and this frozen class reliability level.
+and lower precision to `LOW`. Final confidence uses parcel rank evidence only.
+When enabled, class reliability enters the inspection decision table without
+changing confidence or the confidence-only review flag.
 
 For soft voting, the predicted label remains probability-based. If the
 rank-aggregated winner disagrees with that label, the parcel receives `LOW`
@@ -217,26 +250,25 @@ geometry_risk = percentile_rank(geom_shape_complexity_score)
 inspection_score = 100 * (0.60*confidence_risk + 0.25*data_risk + 0.15*geometry_risk)
 ```
 
-The numeric score is deliberately independent of the farmer declaration. When
-the declared target is available, Step 5 compares it with the prediction and
-uses that comparison only as an operational policy overlay. It writes
-`label_prediction_status`, the score-derived `inspection_need_base`, and the
-final label-aware `inspection_need`.
+The numeric score and `inspection_need_base` are diagnostics only. Final priority
+comes from one direct rule table using class reliability, declared-versus-predicted
+agreement, rank confidence, data reliability, and geometry risk. See the
+[complete 20-rule decision table](INSPECTION_PRIORITY_DECISION_TABLE.md) for every
+combination, exact boundaries, disabled/missing-input behavior, and queue ordering.
 
-Rows needing attention are separated into two mutually exclusive types:
+The seven priorities are Very Low, Low, Low–Medium, Medium, Medium–High, High,
+and Very High. `UNKNOWN` is an unscored status. Outputs include `inspection_need`,
+`inspection_priority_label`, `inspection_rule`, `inspection_class_reliability_applied`,
+`inspection_check_type`, and `inspection_reasons`. Very Low/Low need no check;
+Medium–High/High/Very High disagreements are suspected declaration conflicts;
+remaining cases need evidence verification. The queue uses priority and stable
+input order, never the diagnostic score.
 
-- `DECLARATION_CONFLICT`: high-confidence prediction and reliable EO data support
-  a crop different from the farmer declaration. A clean-geometry conflict is
-  promoted to `VERY_HIGH` with reason `STRONG_DECLARATION_CONFLICT`.
-- `INSUFFICIENT_EO_EVIDENCE`: low confidence, unreliable observations, complex
-  geometry, or missing evidence means EO cannot reliably verify the declaration.
-
-The remaining priority values are `LOW`, `MEDIUM`, `MEDIUM_UNCERTAIN`,
-`MEDIUM_HIGH`, `HIGH`, and `UNKNOWN`. The final artifacts also include a
-pipe-separated `inspection_reasons` field. The weights and evidence thresholds
-are configuration fields so they can later be calibrated against validation
-errors. The Step 5 report crosses prediction confidence, data reliability,
-geometry risk, declaration agreement, and inspection score.
+With existing saved member probabilities and an OOF reliability contract,
+`pipeline.recalculate_prediction_quality()` updates prediction outputs without
+retraining. Legacy guard contracts now supply independent policy evidence.
+Rerun Step 4 to refresh evaluation artifacts or change its frozen reliability flag.
+Recreating reports alone does not recalculate saved predictions.
 
 The report keeps all existing model-confidence diagnostics in a
 `Confidence Levels` tab and places the composite operational workflow in a separate

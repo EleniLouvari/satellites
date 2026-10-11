@@ -1,133 +1,103 @@
 # Inspection Priority Decision Table
 
-This page summarizes how inspection priority is computed in the ML classification pipeline.
+Visual reference: [Full analytical workflow](<Full Workflow.png>), including
+evidence calculations, validation branches, all 20 rules, and queue ordering.
 
-## Visual maps (how values flow)
+## Policy and inputs
 
-### A) End-to-end inspection-priority flow
+Step 5 applies one rule-based mechanism to five inputs: predicted-class OOF
+reliability, declared-versus-predicted label agreement, parcel rank confidence,
+data reliability, and geometry risk. It never caps rank confidence with class
+reliability. Numeric uncertainty scores do not determine priority or queue order.
 
-```mermaid
-flowchart TD
-  A[prediction_confidence_level] --> D[confidence_risk]
-  B[data_reliability_score] --> E[data_risk = 1 - data_reliability_score]
-  C[geom_shape_complexity_score] --> F[geometry_risk = percentile rank]
+The seven ordered priorities are **Very Low, Low, Low–Medium, Medium,
+Medium–High, High, Very High**. Medium means inconclusive evidence requiring
+verification. Higher bands indicate increasingly convincing declaration conflicts;
+lower bands indicate increasingly convincing agreement. These are operational
+rules, not calibrated probabilities that a declaration is incorrect.
 
-  D --> G[inspection_score]
-  E --> G
-  F --> G
+## Complete decision table
 
-  G --> H{inspection_need_base}
-  H -->|score >= 50| H1[HIGH]
-  H -->|25 <= score < 50| H2[MEDIUM]
-  H -->|score < 25| H3[LOW]
-  H -->|missing| H4[UNKNOWN]
+These rules apply with class reliability enabled and valid inputs. Conditions
+within a row use AND. Any means any valid value. The first matching rule wins;
+overlapping low-evidence rules always assign Medium. IDs are persisted in
+`inspection_rule` so the decision can be traced to this table.
 
-  I[label_prediction_status\nSAME / DIFFERENT / NO_DECLARATION / UNAVAILABLE] --> J[Label-aware policy override]
-  H --> J
-  A --> J
-  B --> J
-  F --> J
+| Rule | Class reliability | Declared vs predicted | Rank confidence | Data reliability | Geometry risk | Inspection Priority Label |
+|---|---|---|---|---|---|---|
+| R01 | High | Same | High | > 0.8 | < 0.5 | Very Low |
+| R02 | High | Same | High | > 0.8 | >= 0.5 | Low |
+| R03 | Medium | Same | High | > 0.8 | < 0.5 | Low |
+| R04 | Medium | Same | High | > 0.8 | >= 0.5 | Low–Medium |
+| R05 | High | Same | Medium | > 0.8 | < 0.5 | Low–Medium |
+| R06 | High | Same | Medium | > 0.8 | >= 0.5 | Medium |
+| R07 | Medium | Same | Medium | > 0.8 | Any | Medium |
+| R08 | Low | Same | Any | Any | Any | Medium |
+| R09 | Any | Same | Low | Any | Any | Medium |
+| R10 | Any | Same | Any | <= 0.8 | Any | Medium |
+| R11 | High | Different | High | > 0.8 | < 0.5 | Very High |
+| R12 | High | Different | High | > 0.8 | >= 0.5 | High |
+| R13 | Medium | Different | High | > 0.8 | < 0.5 | High |
+| R14 | Medium | Different | High | > 0.8 | >= 0.5 | Medium–High |
+| R15 | High | Different | Medium | > 0.8 | < 0.5 | Medium–High |
+| R16 | High | Different | Medium | > 0.8 | >= 0.5 | Medium |
+| R17 | Medium | Different | Medium | > 0.8 | Any | Medium |
+| R18 | Low | Different | Any | Any | Any | Medium |
+| R19 | Any | Different | Low | Any | Any | Medium |
+| R20 | Any | Different | Any | <= 0.8 | Any | Medium |
 
-  J --> K[inspection_need]
-  J --> L[inspection_check_type]
-  J --> M[inspection_reasons]
+The table uses default thresholds. Data reliability must be **strictly greater
+than** `inspection_medium_data_reliability_threshold` (default 0.8).
+Geometry is favorable only **below** `inspection_medium_geometry_risk_threshold`
+(default 0.5). Exactly 0.8 is not high data reliability; exactly 0.5 is in the
+less favorable geometry band. These existing configuration settings remain
+customizable; the comparison operators do not change.
 
-  K --> N[Final inspection queue\ninspection_top_priority_parcels.csv]
-  L --> N
-  G --> N
-```
+## Disabled and unavailable inputs
 
-### B) Score calculation map
+- When class reliability is disabled, omit its condition: High rank + high data
+  produces Very Low/Very High for Same/Different with favorable geometry and
+  Low/High otherwise. Medium rank + high data + favorable geometry produces
+  Low–Medium/Medium–High; other valid comparable cases produce Medium. The
+  corresponding R01/R02/R05/R06/R09/R10 or R11/R12/R15/R16/R19/R20 identifiers
+  are used with `inspection_class_reliability_applied=False`. Class evidence
+  is retained unchanged, never relabeled High.
+- Enabled reliability that is missing, unrecognized, or invalid due to
+  insufficient OOF support produces Medium with
+  `inspection_rule=CLASS_RELIABILITY_UNAVAILABLE`. It does not invalidate rank
+  confidence. This differs from measured Low reliability in R08/R18.
+- A missing declaration with valid prediction evidence produces Medium and
+  `inspection_rule=NO_DECLARATION`. No conflict is inferred.
+- Missing predictions, invalid/missing rank levels, explicitly invalid rank
+  evidence, invalid data reliability (outside [0, 1]), or missing/negative/
+  nonfinite geometry complexity produce `UNKNOWN` with
+  `inspection_rule=REQUIRED_EVIDENCE_UNAVAILABLE`. Unknown is an unscored status,
+  outside the seven priority bands.
+- Entirely missing required confidence/data/geometry source columns skip the
+  inspection layer with a warning and missing-column metadata.
 
-```mermaid
-flowchart LR
-  CR[confidence_risk] --> S
-  DR[data_risk] --> S
-  GR[geometry_risk] --> S
-  S[inspection_score = 100 *\n(0.60*confidence_risk + 0.25*data_risk + 0.15*geometry_risk)\nclip to [0,100], round 2]
-```
+## Confidence and class evidence
 
-### C) Final-need decision map (policy layer)
+Rank confidence remains HIGH/MEDIUM/LOW from Borda agreement, mean Borda,
+rank range, ties, and the minimum model count. Class reliability never changes
+its level, validity, reason, or confidence-only review flag. See the
+[confidence methodology](rank_based_ensemble_confidence_methodology.md).
 
-```mermaid
-flowchart TD
-  A[label_prediction_status] --> B{SAME?}
-  B -->|Yes| S1{strong evidence\n& geometry good}
-  S1 -->|Yes| S2[inspection_need = LOW]
-  S1 -->|No| S3[inspection_need = MEDIUM\ncheck_type = INSUFFICIENT_EO_EVIDENCE]
+Class reliability is learned only from training OOF predictions of the selected
+strategy, using the predicted class's precision and predicted-class support:
 
-  B -->|No| C{DIFFERENT?}
-  C -->|Yes| D1{sufficient evidence?}
-  D1 -->|Yes + geometry good| D2[VERY_HIGH + DECLARATION_CONFLICT]
-  D1 -->|Yes + geometry not good| D3[HIGH + DECLARATION_CONFLICT]
-  D1 -->|No| D4[MEDIUM_HIGH or MEDIUM_UNCERTAIN\n+ INSUFFICIENT_EO_EVIDENCE]
+| Class reliability | Default rule |
+|---|---|
+| HIGH | Support >= 100 and precision >= 0.80 |
+| MEDIUM | Support >= 100 and precision >= 0.60 but < 0.80 |
+| LOW, valid | Support >= 100 and precision < 0.60 |
+| LOW, invalid | Support < 100; use the unavailable-evidence fallback |
 
-  C -->|No| E{NO_DECLARATION?}
-  E -->|Yes| E1[keep inspection_need_base\nif need != LOW -> INSUFFICIENT_EO_EVIDENCE]
-  E -->|No (UNAVAILABLE)| E2[UNKNOWN + INSUFFICIENT_EO_EVIDENCE]
-```
+Step 4 freezes this table and its enabled flag. Step 5 propagates the frozen
+flag as `inspection_class_reliability_enabled`, overriding live configuration.
+Direct dataframe scoring without this field uses `config.class_reliability_enabled`.
 
-## How the 3 key inputs are calculated
-
-### Quick dependency graph for the 3 inputs
-
-```mermaid
-flowchart LR
-    subgraph CONF[confidence branch]
-      C1[member probabilities per selected model]
-      C2[rank + Borda diagnostics]
-      C3[prediction_confidence_level]
-      C1 --> C2 --> C3
-    end
-
-    subgraph DATA[data reliability branch]
-      D1[observed_mask, periods, variables, intersected pixels]
-      D2[data_reliability_score = observed_count / expected_pixel_count]
-      D1 --> D2
-    end
-
-    subgraph GEOM[geometry complexity branch]
-      G1[geom_area, perimeter, compactness, shape index, elongation, interior ratio]
-      G2[log-penalty aggregation]
-      G3[geom_shape_complexity_score]
-      G1 --> G2 --> G3
-    end
-```
-
-### 1) `prediction_confidence_level` (from Step 5 prediction)
-
-The confidence level is rank-based and is computed from selected ensemble member probabilities for the **final predicted class**.
-
-1. Convert each model's class probabilities to descending ranks per parcel.
-2. Convert ranks to Borda scores in `[0, 100]`:
-
-  `borda = 100 * (n_classes - rank) / (n_classes - 1)`
-
-3. For the final predicted class, compute diagnostics across models:
-  - `prediction_mean_borda`
-  - `prediction_rank_range`
-  - agreement with Borda winner
-  - tie flag on Borda winner
-4. Assign rank confidence:
-  - `HIGH` if
-    - Borda winner agrees with final prediction,
-    - no winner tie,
-    - `prediction_mean_borda >= 90`,
-    - `prediction_rank_range <= 2`,
-    - enough models (`minimum_models`, default 3)
-  - `MEDIUM` if same guards hold and:
-    - `prediction_mean_borda >= 75`,
-    - `prediction_rank_range <= 4`
-  - otherwise `LOW`
-
-If class-reliability guard is enabled, the final `prediction_confidence_level` is the lower of:
-- rank confidence level, and
-- predicted-class OOF precision reliability level (`HIGH`/`MEDIUM`/`LOW`).
-
-Defaults for class reliability:
-- `HIGH` if OOF support >= 100 and precision >= 0.80
-- `MEDIUM` if OOF support >= 100 and precision >= 0.60
-- else `LOW`
+## Geometry and observation evidence
 
 ### 2) `data_reliability_score` (from parcel zonal-stat extraction)
 
@@ -166,63 +136,48 @@ Then:
 
 Higher values indicate more complex/irregular parcel geometry.
 
-## One-page decision table
+## Outputs and diagnostic score
 
-| Step | What is computed | Rule / Formula | Output field(s) | Meaning |
-|---|---|---|---|---|
-| 1 | Validate required inputs | Must exist: `prediction_confidence_level`, `data_reliability_score`, `geom_shape_complexity_score` | (gate) | If missing, inspection scoring is not produced. |
-| 2 | Model-confidence risk | Map confidence to risk: HIGH -> 0.0, MEDIUM -> 0.5, LOW -> 1.0 | `confidence_risk` | Higher value means lower model trust. |
-| 3 | EO-data risk | `data_risk = 1 - data_reliability_score` | `data_risk` | Higher value means weaker EO evidence quality. |
-| 4 | Geometry risk | Percentile rank of `geom_shape_complexity_score` within prediction set | `geometry_risk` | Higher value means more complex geometry. |
-| 5 | Composite inspection score | `inspection_score = 100 * (0.60*confidence_risk + 0.25*data_risk + 0.15*geometry_risk)`, clipped to [0, 100], rounded to 2 decimals | `inspection_score` | Continuous risk intensity (0 low risk, 100 high risk). |
-| 6 | Base need (score only) | HIGH if score >= 50; MEDIUM if score >= 25 and < 50; LOW if < 25; UNKNOWN if score missing | `inspection_need_base` | Priority before declaration/prediction policy overrides. |
-| 7 | Declaration-vs-prediction status | Compare normalized declared and predicted labels -> `SAME`, `DIFFERENT`, `NO_DECLARATION`, `UNAVAILABLE` | `label_prediction_status` | Label context for operational policy. |
-| 8 | Evidence sufficiency | `evidence_is_sufficient` when score is valid AND confidence=HIGH AND data reliability >= 0.80 AND geometry risk present | (internal rule) | Controls whether disagreement becomes conflict or uncertainty. |
-| 9 | Final need + check type | Policy override by status: SAME, DIFFERENT, NO_DECLARATION, UNAVAILABLE (details below) | `inspection_need`, `inspection_check_type` | Final operational categorization. |
-| 10 | Explainability reasons | Add stable reason tags from confidence/data/geometry/declaration logic | `inspection_reasons` | Per-parcel audit trail. |
-| 11 | Final inspection list | Keep rows with `inspection_check_type != NONE`; sort by need rank then by score desc | `inspection_top_priority_parcels.csv` | Actionable queue for field/desk inspection. |
+- `inspection_need`: machine-readable priority (`VERY_LOW`, `LOW`, `LOW_MEDIUM`,
+  `MEDIUM`, `MEDIUM_HIGH`, `HIGH`, `VERY_HIGH`) or unscored `UNKNOWN`.
+- `inspection_priority_label`: readable label from the decision table.
+- `inspection_rule`: first matching rule ID or explicit fallback identifier.
+- `inspection_class_reliability_applied`: whether valid enabled class evidence
+  participated in a comparable, valid policy decision.
+- `inspection_check_type`: `NONE` for Very Low/Low; `DECLARATION_CONFLICT` for
+  Different labels with Medium–High/High/Very High; `INSUFFICIENT_EO_EVIDENCE`
+  for remaining cases. The last name is retained for compatibility and includes
+  model/class uncertainty and missing evidence as well as EO quality issues.
+- `inspection_reasons`: pipe-separated diagnostic reasons, including
+  MEDIUM/LOW_CLASS_RELIABILITY, unavailable reliability, and missing declarations.
 
-## Step 9 policy details (final operational override)
+The former `MEDIUM_UNCERTAIN` category is replaced by Medium with explicit reasons.
 
-### When `label_prediction_status = SAME`
-- If evidence is sufficient and geometry is good (`geometry_risk < 0.50`) -> `inspection_need = LOW`
-- Otherwise (valid score) -> `inspection_need = MEDIUM`
-- If score invalid -> `inspection_need = UNKNOWN`
-- Non-strong cases are flagged as `inspection_check_type = INSUFFICIENT_EO_EVIDENCE`
+For continuity, the numeric score and score-only base category remain diagnostics:
 
-### When `label_prediction_status = DIFFERENT`
-- Sufficient evidence + good geometry -> `inspection_need = VERY_HIGH`, `inspection_check_type = DECLARATION_CONFLICT`
-- Sufficient evidence + not-good geometry -> `inspection_need = HIGH`, `inspection_check_type = DECLARATION_CONFLICT`
-- Insufficient evidence + low confidence + low data reliability + complex geometry -> `inspection_need = MEDIUM_UNCERTAIN`, `inspection_check_type = INSUFFICIENT_EO_EVIDENCE`
-- Other insufficient-evidence disagreements -> `inspection_need = MEDIUM_HIGH`, `inspection_check_type = INSUFFICIENT_EO_EVIDENCE`
-- Invalid score -> `inspection_need = UNKNOWN`
+```text
+confidence_risk = HIGH: 0.0, MEDIUM: 0.5, LOW: 1.0
+inspection_score = 100 * (0.60*confidence_risk
+                        + 0.25*(1 - data_reliability_score)
+                        + 0.15*geometry_risk)
+inspection_need_base = HIGH if score >= 50, MEDIUM if >= 25, otherwise LOW
+```
 
-### When `label_prediction_status = NO_DECLARATION`
-- Keep `inspection_need_base`
-- If final need is not LOW -> `inspection_check_type = INSUFFICIENT_EO_EVIDENCE`
+Weights and score thresholds affect only these diagnostic fields. Neither the
+score nor `inspection_need_base` enters any inspection-priority rule.
 
-### When `label_prediction_status = UNAVAILABLE`
-- Force `inspection_need = UNKNOWN`
-- Force `inspection_check_type = INSUFFICIENT_EO_EVIDENCE`
+The inspection queue includes `inspection_check_type != NONE`, ordered Very
+High, High, Medium–High, Medium, Low–Medium, Low, Very Low, then Unknown. Ties
+preserve input order; diagnostic scores do not break ties. Exported queue rows
+include the class evidence, readable label, matched rule, and reasons.
 
-## Interpretation guide
+## Updating existing runs
 
-- `inspection_score`: continuous risk intensity.
-- `inspection_need`: final priority class used by operations.
-- `inspection_check_type`:
-  - `DECLARATION_CONFLICT`: reliable declaration/prediction mismatch.
-  - `INSUFFICIENT_EO_EVIDENCE`: confidence/data/geometry not strong enough.
-  - `NONE`: no operational check requested.
-
-## Final queue ordering
-
-Priority rank used to build the final list:
-1. `VERY_HIGH`
-2. `HIGH`
-3. `MEDIUM_HIGH`
-4. `MEDIUM_UNCERTAIN`
-5. `MEDIUM`
-6. `LOW`
-7. `UNKNOWN`
-
-Within each priority group, parcels are sorted by `inspection_score` descending.
+Existing outputs remain unchanged until recalculated. With saved member
+probabilities and a supported frozen OOF contract, call
+`pipeline.recalculate_prediction_quality()` to apply rank-only confidence and
+these rules without retraining. Legacy guard contracts are read as independent
+class evidence under the new policy; they no longer cap confidence. Rerun Step 4
+first to refresh evaluation confidence artifacts and write the version 3 contract,
+or to change the frozen class-reliability flag. Obsolete class x Top-1 contracts
+still require Step 4. Recreating HTML reports alone does not recalculate outputs.

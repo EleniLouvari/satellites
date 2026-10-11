@@ -41,6 +41,7 @@ def _prediction_rows() -> pd.DataFrame:
             "prediction_confidence_valid": [True] * 8,
             "prediction_confidence_reason": ["rank_confidence_high"] * 8,
             "prediction_class_oof_precision": [0.93, 0.74, 0.82, 0.74, 0.89, 0.93, 0.82, 0.96],
+            "prediction_class_reliability_valid": [True] * 8,
             "prediction_class_reliability_level": ["HIGH", "MEDIUM", "HIGH", "MEDIUM", "HIGH", "HIGH", "HIGH", "HIGH"],
             "prediction_rank_confidence_level": ["HIGH", "HIGH", "MEDIUM", "LOW", "HIGH", "MEDIUM", "LOW", "HIGH"],
         }
@@ -67,15 +68,13 @@ def test_prepare_confidence_diagnostics_uses_known_reference_rows_and_normalizes
 
 
 def test_build_prediction_summary_includes_contract_and_artifact_metadata() -> None:
-    config = SimpleNamespace(
-        target_column="label",
-        prediction_confidence_level_column="prediction_confidence_level",
-    )
+    """Report the inspection role and actual row count instead of a confidence exclusion flag."""
+    config = SimpleNamespace(target_column="label", prediction_confidence_level_column="prediction_confidence_level")
     predictions = pd.DataFrame(
         {
             "label": ["A", None],
             "prediction_confidence_level": ["HIGH", "LOW"],
-            "prediction_class_reliability_applied": [True, True],
+            "inspection_class_reliability_applied": [True, True],
             "inspection_need": ["HIGH", "LOW"],
             "inspection_check_type": ["DECLARATION_CONFLICT", "INSUFFICIENT_EO_EVIDENCE"],
             "label_prediction_status": ["agree", "missing_label"],
@@ -86,19 +85,55 @@ def test_build_prediction_summary_includes_contract_and_artifact_metadata() -> N
     confidence_artifacts = SimpleNamespace(summary={"validation_rows_with_reference": 1})
 
     summary, class_reliability_applied = report_module._build_prediction_summary(
-        config=config,
-        final_df=predictions,
-        selection=selection,
-        confidence_artifacts=confidence_artifacts,
+        config=config, final_df=predictions, selection=selection, confidence_artifacts=confidence_artifacts
     )
 
     expect_true(class_reliability_applied)
     expect_equal(summary["rows_total"], 2)
     expect_equal(summary["rows_unknown_original"], 1)
     expect_equal(summary["confidence_method"], "within-model ranks")
-    expect_equal(summary["class_reliability_enabled"], True)
-    expect_equal(summary["final_confidence_rule"], "rank_plus_class_reliability")
+    expect_equal(summary["class_reliability_enabled_for_inspection"], True)
+    expect_equal(summary["class_reliability_role"], "Inspection priority")
+    expect_equal(summary["class_reliability_inspection_status"], "Applied to inspection priority")
+    expect_equal(summary["class_reliability_inspection_rows"], 2)
+    expect_true("final_confidence_rule" not in summary)
+    expect_true("class_reliability_applied_to_final_confidence" not in summary)
     expect_equal(summary["validation_rows_with_reference"], 1)
+
+
+@pytest.mark.parametrize(
+    ("enabled", "applied", "expected_status", "expected_count"),
+    [
+        (True, [True, False], "Applied to inspection priority", 1),
+        (False, [False, False], "Disabled for inspection priority", 0),
+        (True, [False, False], "Enabled; no eligible parcels with valid class and inspection evidence", 0),
+        (True, None, "Enabled; inspection application not recorded in saved predictions", "Not recorded"),
+        (None, None, "Not recorded in saved predictions or selection contract", "Not recorded"),
+    ],
+)
+def test_report_distinguishes_enabled_from_applied_class_reliability(enabled, applied, expected_status, expected_count):
+    """Saved policy flags and row application determine the report, independently of live config."""
+    config = SimpleNamespace(
+        target_column="label", prediction_confidence_level_column="prediction_confidence_level",
+        class_reliability_enabled=not enabled,
+    )
+    predictions = pd.DataFrame({"label": ["A", None]})
+    if enabled is not None:
+        predictions["inspection_class_reliability_enabled"] = enabled
+    if applied is not None:
+        predictions["inspection_class_reliability_applied"] = applied
+    selection = {"selection_type": "soft_voting", "selected_models": ["m1"]}
+
+    summary, _ = report_module._build_prediction_summary(config, predictions, selection, None)
+    formula = report_module._build_confidence_formula(summary)
+
+    expect_equal(summary["class_reliability_enabled_for_inspection"], enabled if enabled is not None else "Not recorded")
+    expect_equal(summary["class_reliability_inspection_status"], expected_status)
+    expect_equal(summary["class_reliability_inspection_rows"], expected_count)
+    # Runs without rank-confidence columns must describe the probability fallback accurately.
+    expect_equal(formula.iloc[0]["Evidence"], "maximum probability")
+    expect_equal(formula.iloc[1]["Use in this run"], expected_status)
+    expect_equal(formula.isna().any().any(), False)
 
 
 def test_resolve_rank_confidence_contract_returns_disabled_summary_contract() -> None:
@@ -259,6 +294,11 @@ def test_prediction_report_exports_confidence_graphs_tables_and_sankey(request):
     )
 
     report = (output_dir / "report.html").read_text(encoding="utf-8")
+    expect_in("How Prediction Confidence and Inspection Priority Use Evidence", report)
+    expect_in("class_reliability_inspection_rows", report)
+    expect_true("class_reliability_applied_to_final_confidence" not in report)
+    expect_true("final_confidence_rule" not in report)
+    expect_true("Used in final confidence" not in report)
     expect_in("Borda Consensus and Prediction Correctness", report)
     expect_in("Confidence Metric Median Comparison", report)
     expect_in("Distribution Comparison", report)

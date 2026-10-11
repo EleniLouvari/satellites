@@ -11,6 +11,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, ClassifierMixin, clone
+from sklearn.calibration import CalibratedClassifierCV
 
 # Optional estimators are imported lazily below so the base pipeline remains lightweight.
 from sklearn.compose import ColumnTransformer
@@ -23,6 +24,7 @@ from sklearn.ensemble import (
 )
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression, SGDClassifier
+from sklearn.model_selection import StratifiedKFold
 from sklearn.naive_bayes import GaussianNB
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.neural_network import MLPClassifier
@@ -30,6 +32,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import FunctionTransformer, OneHotEncoder, StandardScaler
 from sklearn.svm import SVC
 from sklearn.tree import DecisionTreeClassifier
+from sklearn.utils.validation import check_is_fitted
 
 from ml_classification.shared.config.config import ClassificationPipelineConfig
 
@@ -42,6 +45,63 @@ class ModelCandidate:
     builder: Callable[[], Pipeline]
     param_distributions: dict[str, list]
     supports_predict_proba: bool = True
+
+
+class CalibratedSVC(ClassifierMixin, BaseEstimator):
+    """Calibrate SVC probabilities while retaining the existing flat tuning parameters."""
+
+    def __init__(
+        self, *, C=1.0, kernel="rbf", degree=3, gamma="scale", coef0=0.0,
+        shrinking=True, probability=True, tol=1e-3, cache_size=200,
+        class_weight=None, verbose=False, max_iter=-1,
+        decision_function_shape="ovr", break_ties=False, random_state=None,
+    ):
+        """Store SVC settings; probability=True remains a compatibility option."""
+        self.C = C
+        self.kernel = kernel
+        self.degree = degree
+        self.gamma = gamma
+        self.coef0 = coef0
+        self.shrinking = shrinking
+        self.probability = probability
+        self.tol = tol
+        self.cache_size = cache_size
+        self.class_weight = class_weight
+        self.verbose = verbose
+        self.max_iter = max_iter
+        self.decision_function_shape = decision_function_shape
+        self.break_ties = break_ties
+        self.random_state = random_state
+
+    def fit(self, X, y, sample_weight=None):
+        """Fit sigmoid calibration on out-of-fold scores, then refit SVC on all rows."""
+        if self.probability is not True:
+            raise ValueError("Error: The SVM candidate requires probability=True for calibrated probability outputs.")
+        _, counts = np.unique(y, return_counts=True)
+        if len(counts) < 2 or counts.min() < 2:
+            raise ValueError("Error: SVM probability calibration requires at least two samples per class and two classes.")
+        # Halving and outer CV can leave fewer than five examples of a class.
+        cv = StratifiedKFold(n_splits=min(5, int(counts.min())), shuffle=True, random_state=self.random_state)
+        svc_params = self.get_params(deep=False)
+        # Never pass sklearn's deprecated probability parameter, including False.
+        svc_params.pop("probability")
+        self.calibrator_ = CalibratedClassifierCV(SVC(**svc_params), cv=cv, ensemble=False, n_jobs=1)
+        self.calibrator_.fit(X, y, sample_weight=sample_weight)
+        self.classes_ = self.calibrator_.classes_
+        self.n_features_in_ = self.calibrator_.n_features_in_
+        if hasattr(self.calibrator_, "feature_names_in_"):
+            self.feature_names_in_ = self.calibrator_.feature_names_in_
+        return self
+
+    def predict(self, X):
+        """Return the class with the highest calibrated probability."""
+        check_is_fitted(self, "calibrator_")
+        return self.calibrator_.predict(X)
+
+    def predict_proba(self, X):
+        """Return calibrated probabilities in classes_ order."""
+        check_is_fitted(self, "calibrator_")
+        return self.calibrator_.predict_proba(X)
 
 
 class ContiguousLabelClassifier(ClassifierMixin, BaseEstimator):
@@ -225,7 +285,7 @@ def build_model_candidates(
             builder=lambda: _build_pipeline_with_optional_balancer(
                 config,
                 _build_linear_preprocessor(config, numeric_features, categorical_features),
-                SVC(probability=True, class_weight="balanced", random_state=config.random_state),
+                CalibratedSVC(class_weight="balanced", random_state=config.random_state),
             ),
             param_distributions=config.tune_params["support_vector_machine"],
         ),

@@ -1,15 +1,13 @@
 from copy import deepcopy
 
 import numpy as np
+import pandas as pd
 import pytest
 
-from ml_classification.shared.class_reliability import combine_confidence_components, get_class_reliability
-from ml_classification.shared.rank_confidence import (
-    assign_confidence_levels,
-    calculate_rank_confidence,
-    probabilities_to_ranks,
-)
+from ml_classification.shared.class_reliability import get_class_reliability
+from ml_classification.shared.rank_confidence import assign_confidence_levels, calculate_rank_confidence, probabilities_to_ranks
 from ml_classification.step_04_evaluate.libraries.class_reliability import calculate_oof_class_reliability
+from ml_classification.step_04_evaluate.libraries.ranking import attach_class_reliability
 from tests.utils import expect_equal, expect_false, expect_true
 
 
@@ -143,35 +141,31 @@ def test_holdout_lookup_does_not_modify_frozen_oof_contract():
     expect_equal(contract, frozen)
 
 
-def test_complete_final_confidence_matrix_and_invalid_evidence():
-    rank = np.repeat(np.array(["HIGH", "MEDIUM", "LOW"]), 3)
-    reliability = np.tile(np.array(["HIGH", "MEDIUM", "LOW"]), 3)
-    result = combine_confidence_components(
-        rank,
-        np.ones(9, dtype=bool),
-        np.array([f"rank_confidence_{value.lower()}" for value in rank]),
-        reliability,
-        np.ones(9, dtype=bool),
-        np.array(["sufficient_oof_support"] * 9),
+@pytest.mark.parametrize("class_valid", [True, False])
+def test_evaluation_class_evidence_never_caps_rank_confidence(class_valid):
+    """All nine level combinations preserve rank level, validity, and reason in evaluation."""
+    rank = np.repeat(["HIGH", "MEDIUM", "LOW"], 3)
+    predicted = np.tile(["a", "b", "c"], 3)
+    frame = pd.DataFrame(
+        {
+            "predicted_class": predicted,
+            "rank_confidence_level": rank,
+            "rank_confidence_valid": [True] * 8 + [False],
+            "rank_confidence_reason": ["rank_evidence"] * 8 + ["insufficient_models"],
+        }
     )
-    expect_equal(result["prediction_confidence_level"].tolist(), [
-        "HIGH",
-        "MEDIUM",
-        "LOW",
-        "MEDIUM",
-        "MEDIUM",
-        "LOW",
-        "LOW",
-        "LOW",
-        "LOW",
-    ])
-    invalid = combine_confidence_components(
-        np.array(["HIGH", "HIGH"]),
-        np.array([False, True]),
-        np.array(["insufficient_models", "rank_confidence_high"]),
-        np.array(["HIGH", "HIGH"]),
-        np.array([True, False]),
-        np.array(["sufficient_oof_support", "insufficient_oof_class_support"]),
-    )
-    expect_equal(invalid["prediction_confidence_level"].tolist(), ["LOW", "LOW"])
-    expect_equal(invalid["prediction_confidence_valid"].tolist(), [False, False])
+    original = frame.copy(deep=True)
+    contract = {
+        "method": "oof_precision",
+        "classes": {
+            name: {"level": level, "valid": class_valid}
+            for name, level in zip(["a", "b", "c"], ["HIGH", "MEDIUM", "LOW"], strict=True)
+        },
+    }
+    frozen = deepcopy(contract)
+    result = attach_class_reliability(frame, contract)
+    for suffix in ("level", "valid", "reason"):
+        expect_equal(result[f"prediction_confidence_{suffix}"].tolist(), frame[f"rank_confidence_{suffix}"].tolist())
+    expect_equal(result["class_reliability_valid"].tolist(), [class_valid] * 9)
+    pd.testing.assert_frame_equal(frame, original)
+    expect_equal(contract, frozen)

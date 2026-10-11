@@ -33,7 +33,7 @@ def fix_json_chars_in_column_names(df):
 
 def fix_json_chars_in_column_values(df, col_to_exclude):
     """Fix json chars in column values."""
-    cols = [col for col, dt in df.dtypes.items() if dt == object]
+    cols = [col for col, dt in df.dtypes.items() if is_object_dtype(dt)]
     cols = [col for col in cols if col not in col_to_exclude]
 
     for col in cols:

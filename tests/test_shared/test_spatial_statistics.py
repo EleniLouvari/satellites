@@ -64,10 +64,13 @@ def test_queen_weights_include_corner_neighbors_without_self_links():
         crs="EPSG:3857",
         index=[10, 20, 30],
     )
-    matrix = weights.calculate_spatial_weights_for_polygons(polygons)
+    with pytest.warns(UserWarning, match="The weights matrix is not fully connected"):
+        matrix = weights.calculate_spatial_weights_for_polygons(polygons)
     expect_equal(set(matrix.neighbors[10]), {20})
     expect_equal(set(matrix.neighbors[20]), {10})
     expect_equal(matrix.neighbors[30], [])
+    expect_equal(matrix.n_components, 2)
+    expect_equal(matrix.islands, [30])
 
 
 def test_local_scores_use_other_observations_and_keep_input_unchanged():

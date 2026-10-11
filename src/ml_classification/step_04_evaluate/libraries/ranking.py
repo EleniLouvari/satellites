@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score, precision_recall_fscore_support, roc_auc_score
 
-from ml_classification.shared.class_reliability import combine_confidence_components, get_class_reliability
+from ml_classification.shared.class_reliability import get_class_reliability
 from ml_classification.shared.probabilities import apply_class_probability_multipliers
 from ml_classification.shared.rank_confidence import (
     classify_ensemble_rank_based,
@@ -43,7 +43,9 @@ def build_parcel_ranking_outputs(
     avg_rank = np.mean(model_ranks, axis=0)
     median_rank = np.median(model_ranks, axis=0)
 
-    rank_confidence, strategy_indices = _rank_confidence_and_indices(config, selection, labels, stacked, selected_models, avg_prob_norm)
+    rank_confidence, strategy_indices = _rank_confidence_and_indices(
+        config, selection, labels, stacked, selected_models, avg_prob_norm
+    )
     parcel_df = _build_parcel_ranking_frame(
         config,
         labels,
@@ -58,9 +60,7 @@ def build_parcel_ranking_outputs(
         strategy_indices,
         rank_confidence,
     )
-    summary_df = _build_ranking_summary(
-        config, labels, y_true, parcel_df, avg_prob_norm, median_prob_norm, len(selected_models)
-    )
+    summary_df = _build_ranking_summary(config, labels, y_true, parcel_df, avg_prob_norm, median_prob_norm, len(selected_models))
     return parcel_df, summary_df
 
 
@@ -273,7 +273,7 @@ def summarize_rank_confidence(parcel_df: pd.DataFrame) -> tuple[pd.DataFrame, pd
     if parcel_df.empty:
         return pd.DataFrame(columns=summary_columns), pd.DataFrame(columns=class_columns)
 
-    # Prefer guarded final confidence, with older column names retained as report fallbacks.
+    # Prefer the published rank-only confidence, retaining older column names as report fallbacks.
     level_column = next(
         (
             column
@@ -332,26 +332,15 @@ def summarize_rank_confidence(parcel_df: pd.DataFrame) -> tuple[pd.DataFrame, pd
     return pd.DataFrame(summary_rows, columns=summary_columns), class_summary.reindex(columns=class_columns)
 
 
-def apply_class_reliability_guard(
-    parcel_df: pd.DataFrame, reliability_contract: dict[str, Any], *, combine_with_rank: bool = True
-) -> pd.DataFrame:
-    """Attach frozen OOF class reliability and optionally combine it with rank confidence."""
+def attach_class_reliability(parcel_df: pd.DataFrame, reliability_contract: dict[str, Any]) -> pd.DataFrame:
+    """Attach frozen OOF class reliability while preserving rank-only confidence."""
     if parcel_df.empty:
         return parcel_df.copy()
     result = parcel_df.copy()
-    # Lookup uses the frozen OOF contract; these evaluation rows do not refit class reliability.
+    # Evaluation rows only look up the frozen OOF table; they never refit it.
     reliability = get_class_reliability(result["predicted_class"].to_numpy(), reliability_contract)
     for name, values in reliability.items():
         result[name] = values
-    if combine_with_rank:
-        final = combine_confidence_components(
-            result["rank_confidence_level"].to_numpy(),
-            result["rank_confidence_valid"].to_numpy(),
-            result["rank_confidence_reason"].to_numpy(),
-            reliability["class_reliability_level"],
-            reliability["class_reliability_valid"],
-            reliability["class_reliability_reason"],
-        )
-        for name, values in final.items():
-            result[name] = values
+    for suffix in ("level", "valid", "reason"):
+        result[f"prediction_confidence_{suffix}"] = result[f"rank_confidence_{suffix}"]
     return result

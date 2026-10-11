@@ -2,6 +2,9 @@
 
 Reusable exploratory data analysis for pandas `DataFrame` and GeoPandas `GeoDataFrame` inputs.
 
+See the [detailed workflow and flowchart](WORKFLOW.md) for execution order,
+optional branches, diagnostic subsets, saved outputs, and rerun behavior.
+
 See [FEATURE_SELECTION_GUIDE.md](FEATURE_SELECTION_GUIDE.md) for the full explanation of the ordered ML feature-screening criteria.
 
 ## Minimal usage
@@ -54,7 +57,9 @@ It replaces the former `max_columns_for_plots`, `max_target_scatter_features`, a
 
 Feature-based plots use the same ML-screening order as `feature_selection_proposal.csv`: proposed `use` features first, followed by `review`
 and `exclude` features in their evidence-ranked order. When target evidence is unavailable, unflagged columns with less missingness come first.
-The CSV artifacts retain all analyzed features even when plots display only the configured maximum.
+The CSV artifacts retain computed results even when plots display fewer features.
+VIF calculation itself is capped by `max_features_per_plot`; PCA and Mahalanobis
+use `max_multivariate_features`. See the [diagnostic subset details](WORKFLOW.md#7-plot-order-vif-pca-and-multivariate-outliers).
 
 ## Target-aware feature screening
 
@@ -74,7 +79,7 @@ These are univariate screening diagnostics, not a final feature-selection decisi
 cross-validation, model-based importance, and the correlation/VIF diagnostics because redundant variables can share the same signal.
 
 The automated proposal applies these criteria in order: hard exclusions and leakage configuration, data quality, target association with
-false-discovery-rate control, redundancy, and a parsimonious initial shortlist. The shortlist defaults to 20 variables; change it with
+false-discovery-rate control, redundancy, and a parsimonious initial shortlist. The shortlist defaults to 50 variables; change it with
 `feature_selection_max_features` or set that option to `None`. Configure known post-outcome fields with
 `feature_selection_exclude_columns=(...)`. The final criterion remains train-only cross-validation and permutation importance, which belongs
 after the train/test split and is intentionally not treated as an EDA result.

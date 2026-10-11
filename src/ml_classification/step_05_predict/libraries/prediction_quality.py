@@ -8,11 +8,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from ml_classification.shared.class_reliability import combine_confidence_components, get_class_reliability
-from ml_classification.shared.rank_confidence import (
-    classify_ensemble_rank_based,
-    rank_confidence_thresholds_from_config,
-)
+from ml_classification.shared.class_reliability import get_class_reliability
+from ml_classification.shared.rank_confidence import classify_ensemble_rank_based, rank_confidence_thresholds_from_config
 from ml_classification.step_05_predict.libraries.inspection_priority.scoring import calculate_inspection_metrics
 
 
@@ -27,6 +24,7 @@ def apply_rank_confidence_columns(config, final_df: pd.DataFrame, rank_confidenc
         "prediction_confidence_reason": "prediction_confidence_reason",
         "prediction_confidence_source": "prediction_confidence_source",
         "prediction_class_reliability_applied": "prediction_class_reliability_applied",
+        "inspection_class_reliability_enabled": "inspection_class_reliability_enabled",
         "prediction_mean_borda": "prediction_mean_borda",
         "prediction_rank_range": "prediction_rank_range",
         "prediction_mean_rank": "prediction_mean_rank",
@@ -76,7 +74,9 @@ def resolve_rank_confidence_contract(config, selection: dict[str, Any]) -> dict[
             "Error: selection_summary.json contains the obsolete class x Top-1 confidence method. Rerun Step 4 before production prediction."
         )
     if config.rank_confidence_enabled and getattr(config, "class_reliability_enabled", True):
-        raise RuntimeError("Error: selection_summary.json has no frozen class-reliability contract. Rerun Step 4 before prediction.")
+        raise RuntimeError(
+            "Error: selection_summary.json has no frozen class-reliability contract. Rerun Step 4 before prediction."
+        )
     return {
         "enabled": bool(config.rank_confidence_enabled),
         "method": "rank_consensus_only" if config.rank_confidence_enabled else None,
@@ -97,7 +97,7 @@ def _resolve_frozen_rank_contract(frozen: object, supported_methods: set[str]) -
     method = frozen.get("method")
     if method not in supported_methods:
         raise RuntimeError(
-            "Error: The frozen confidence contract uses an obsolete method. Rerun Step 4 to create the rank-consensus-with-class-reliability contract."
+            "Error: The frozen confidence contract uses an obsolete method. Rerun Step 4 to create the rank-consensus contract."
         )
     rank = frozen.get("rank")
     reliability = frozen.get("class_reliability")
@@ -106,7 +106,8 @@ def _resolve_frozen_rank_contract(frozen: object, supported_methods: set[str]) -
         raise RuntimeError("Error: The frozen confidence contract is incomplete; rerun Step 4.")
     return {
         "enabled": True,
-        "method": method,
+        "method": "rank_consensus_only",
+        "class_reliability_role": "inspection_policy",
         "class_reliability_enabled": bool(frozen.get("class_reliability_enabled", True)),
         "thresholds": _rank_thresholds_from_frozen(rank),
         "minimum_models": int(rank["minimum_models"]),
@@ -163,31 +164,22 @@ def calculate_rank_confidence(config, selection, predictions, member_probabiliti
         minimum_models=contract["minimum_models"],
     )
     if contract["class_reliability"] is not None:
-        reliability = get_class_reliability(predictions, contract["class_reliability"])
-        result.update(reliability)
-        class_reliability_applied = bool(contract.get("class_reliability_enabled", True))
-        result["prediction_class_reliability_applied"] = class_reliability_applied
-        result["prediction_confidence_source"] = "rank_plus_class_reliability" if class_reliability_applied else "rank_only"
-        if class_reliability_applied:
-            final = combine_confidence_components(
-                result["rank_confidence_level"],
-                result["rank_confidence_valid"],
-                result["rank_confidence_reason"],
-                reliability["class_reliability_level"],
-                reliability["class_reliability_valid"],
-                reliability["class_reliability_reason"],
-            )
-            result.update(final)
-        else:
-            result["prediction_confidence_level"] = result["rank_confidence_level"]
-            result["prediction_confidence_valid"] = result["rank_confidence_valid"]
-            result["prediction_confidence_reason"] = result["rank_confidence_reason"]
+        result.update(get_class_reliability(predictions, contract["class_reliability"]))
     else:
-        result["prediction_class_reliability_applied"] = False
-        result["prediction_confidence_source"] = "rank_only"
-        result["prediction_confidence_level"] = result["rank_confidence_level"]
-        result["prediction_confidence_valid"] = result["rank_confidence_valid"]
-        result["prediction_confidence_reason"] = result["rank_confidence_reason"]
+        # Recalculation must overwrite stale class evidence when the contract has none.
+        result.update(
+            class_oof_precision=np.full(len(predictions), np.nan),
+            class_oof_support=np.zeros(len(predictions), dtype=int),
+            class_reliability_level=np.full(len(predictions), "LOW"),
+            class_reliability_valid=np.zeros(len(predictions), dtype=bool),
+            class_reliability_reason=np.full(len(predictions), "missing_class_reliability"),
+        )
+    # Class reliability is a policy input, never a cap on confidence or its validity.
+    result["inspection_class_reliability_enabled"] = bool(contract.get("class_reliability_enabled", False))
+    result["prediction_class_reliability_applied"] = False
+    result["prediction_confidence_source"] = "rank_only"
+    for suffix in ("level", "valid", "reason"):
+        result[f"prediction_confidence_{suffix}"] = result[f"rank_confidence_{suffix}"]
     # Return both parcel results and contract provenance for output summaries.
     return result, contract
 
@@ -225,6 +217,8 @@ def add_inspection_metrics(config, final_df: pd.DataFrame) -> tuple[pd.DataFrame
             "data": config.inspection_data_weight,
             "geometry": config.inspection_geometry_weight,
         },
+        "inspection_policy_method": "decision_table_v1",
+        "class_reliability_applied_to_inspection_policy": bool(scored["inspection_class_reliability_applied"].any()),
         "inspection_need_counts": scored["inspection_need"].value_counts(dropna=False).to_dict(),
         "inspection_check_type_counts": scored["inspection_check_type"].value_counts(dropna=False).to_dict(),
         "label_prediction_status_counts": scored["label_prediction_status"].value_counts(dropna=False).to_dict(),

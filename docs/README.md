@@ -11,6 +11,7 @@
 - [Multiuser guide](data_preparation/openeo/MULTIUSER_IMPLEMENTATION_GUIDE.md)
 - [Planet workflow](data_preparation/planet.md)
 - [EDA](eda/README.md) and [feature-screening guide](eda/FEATURE_SELECTION_GUIDE.md)
+- [Detailed EDA workflow and flowchart](eda/WORKFLOW.md)
 - [ML overview](ml_classification/OVERVIEW.md)
 - [ML configuration and usage](ml_classification/README.md)
 - [ML architecture](ml_classification/STRUCTURE.md)

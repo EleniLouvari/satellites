@@ -4,6 +4,7 @@ import joblib
 import numpy as np
 import pandas as pd
 import pytest
+from sklearn.base import clone
 from sklearn.model_selection import StratifiedKFold, cross_val_predict
 
 from ml_classification.shared.config.config import ClassificationPipelineConfig
@@ -12,9 +13,13 @@ from ml_classification.step_03_train.train import TrainStep
 from tests.utils import expect_equal, expect_subset, expect_true
 
 
+pytestmark = pytest.mark.filterwarnings("error::FutureWarning")
+
+
 @pytest.mark.parametrize("n_classes", [2, 3])
 @pytest.mark.parametrize("kernel", ["linear", "rbf", "poly"])
 def test_svm_search_probabilities_and_serialization(monkeypatch, tmp_path, n_classes, kernel):
+    """Search, OOF predictions, and persistence retain warning-free probability outputs."""
     monkeypatch.setattr(models, "_safe_import", lambda name: None)
     config = ClassificationPipelineConfig(
         project_dir=tmp_path,
@@ -63,3 +68,32 @@ def test_svm_search_probabilities_and_serialization(monkeypatch, tmp_path, n_cla
     model_path = tmp_path / "svm.joblib"
     joblib.dump(fitted, model_path)
     np.testing.assert_allclose(joblib.load(model_path).predict_proba(unseen), probabilities)
+
+
+@pytest.mark.parametrize("samples_per_class", [2, 4, 6])
+def test_svm_calibration_handles_small_classes_reproducibly(samples_per_class):
+    """Small folds calibrate without requiring five observations per class."""
+    y = np.repeat(["crop_a", "crop_b"], samples_per_class)
+    X = np.arange(len(y), dtype=float).reshape(-1, 1)
+    model = models.CalibratedSVC(random_state=42, class_weight="balanced")
+    model.set_params(C=0.5, kernel="linear", probability=True)
+    fitted = clone(model).fit(X, y)
+    probabilities = fitted.predict_proba(X)
+    expect_equal(fitted.classes_.tolist(), ["crop_a", "crop_b"])
+    expect_true(np.isfinite(probabilities).all())
+    np.testing.assert_allclose(probabilities.sum(axis=1), 1.0)
+    np.testing.assert_allclose(clone(model).fit(X, y).predict_proba(X), probabilities)
+    np.testing.assert_array_equal(fitted.predict(X), fitted.classes_[probabilities.argmax(axis=1)])
+
+
+@pytest.mark.parametrize("labels", [[0, 1, 1], [0, 0, 0]])
+def test_svm_calibration_rejects_insufficient_class_support(labels):
+    """Unsupported class counts fail with an actionable error before calibration."""
+    with pytest.raises(ValueError, match="Error: SVM probability calibration requires"):
+        models.CalibratedSVC().fit(np.arange(len(labels)).reshape(-1, 1), labels)
+
+
+def test_svm_calibration_requires_probabilities():
+    """A legacy override cannot disable probabilities required by the pipeline."""
+    with pytest.raises(ValueError, match="Error: The SVM candidate requires probability=True"):
+        models.CalibratedSVC(probability=False).fit([[0], [1], [2], [3]], [0, 0, 1, 1])

@@ -76,13 +76,17 @@ def save_train_test_feature_distributions(
 
 
 def save_correlation_heatmap(df: pd.DataFrame, output_path: str | Path, max_columns: int = 20) -> None:
-    """Save a correlation heatmap for numeric features."""
-    # Restrict very wide matrices to a bounded number of columns.
-    numeric_df = df.select_dtypes(include=["number"]).copy()
+    """Plot numeric median features in input order, capped at ``max_columns``."""
+    # Filter before applying the cap so other statistics do not consume plot slots.
+    numeric_df = df.select_dtypes(include=["number"]).filter(regex=r"_median(?:_|$)")
+    numeric_df = numeric_df.iloc[:, :max_columns]
     if numeric_df.shape[1] < 2:
+        # Replace any previous heatmap when regenerating a report without enough medians.
+        fig, ax = plt.subplots(figsize=(14, 12))
+        ax.text(0.5, 0.5, "Fewer than two numeric median features available.", ha="center", va="center")
+        ax.set_axis_off()
+        _save_figure(fig, output_path)
         return
-    if numeric_df.shape[1] > max_columns:
-        numeric_df = numeric_df.iloc[:, :max_columns]
     corr = numeric_df.corr(numeric_only=True)
     mask = np.triu(np.ones_like(corr, dtype=bool))
     fontsize = 6 if corr.shape[1] > 8 else 8
@@ -101,5 +105,5 @@ def save_correlation_heatmap(df: pd.DataFrame, output_path: str | Path, max_colu
         annot_kws={"fontsize": fontsize},
         ax=ax,
     )
-    ax.set_title("Correlation Matrix with Heatmap")
+    ax.set_title(f"Correlation Matrix: Median Features (first {len(corr)}, max {max_columns})")
     _save_figure(fig, output_path)

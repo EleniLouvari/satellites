@@ -25,13 +25,10 @@ from ml_classification.step_04_evaluate.libraries.model_evaluation import (
     to_geo_classifier_result_row,
     validate_probability_class_order,
 )
-from ml_classification.step_04_evaluate.libraries.model_selection import (
-    evaluate_voting_candidate,
-    sort_metrics_without_voting,
-)
+from ml_classification.step_04_evaluate.libraries.model_selection import evaluate_voting_candidate, sort_metrics_without_voting
 from ml_classification.step_04_evaluate.libraries.plots import save_model_comparison_plot
 from ml_classification.step_04_evaluate.libraries.ranking import (
-    apply_class_reliability_guard,
+    attach_class_reliability,
     build_parcel_ranking_outputs,
     rank_positions_desc,
     summarize_rank_confidence,
@@ -82,11 +79,9 @@ class EvaluateStep(PipelineStepBase):
         return summarize_rank_confidence(parcel_df)
 
     @staticmethod
-    def _apply_class_reliability_guard(
-        parcel_df: pd.DataFrame, reliability_contract: dict[str, Any], *, combine_with_rank: bool = True
-    ) -> pd.DataFrame:
-        """Attach frozen OOF class reliability and optionally combine it with rank confidence."""
-        return apply_class_reliability_guard(parcel_df, reliability_contract, combine_with_rank=combine_with_rank)
+    def _attach_class_reliability(parcel_df: pd.DataFrame, reliability_contract: dict[str, Any]) -> pd.DataFrame:
+        """Attach frozen OOF class reliability without changing rank confidence."""
+        return attach_class_reliability(parcel_df, reliability_contract)
 
     def _to_geo_classifier_result_row(
         self, y_true: pd.Series, y_pred: np.ndarray, probabilities: np.ndarray | None, labels: list[str], model_name: str

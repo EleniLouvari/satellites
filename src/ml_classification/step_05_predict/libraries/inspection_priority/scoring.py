@@ -13,9 +13,23 @@ INSPECTION_OUTPUT_COLUMNS = (
     "inspection_score",
     "inspection_need_base",
     "inspection_need",
+    "inspection_priority_label",
+    "inspection_rule",
+    "inspection_class_reliability_applied",
     "inspection_check_type",
     "inspection_reasons",
 )
+
+INSPECTION_PRIORITY_LABELS = {
+    "VERY_HIGH": "Very High",
+    "HIGH": "High",
+    "MEDIUM_HIGH": "Medium–High",
+    "MEDIUM": "Medium",
+    "LOW_MEDIUM": "Low–Medium",
+    "LOW": "Low",
+    "VERY_LOW": "Very Low",
+    "UNKNOWN": "Unknown",
+}
 
 
 def _normalize_label(value):
@@ -36,7 +50,10 @@ def _label_prediction_status(data: pd.DataFrame, config) -> pd.Series:
     target_column = getattr(config, "target_column", None)
     prediction_column = getattr(config, "prediction_column", None)
     # Older/custom datasets may not carry both label columns; keep the safe default.
-    if not target_column or not prediction_column or target_column not in data or prediction_column not in data:
+    if not prediction_column or prediction_column not in data:
+        return pd.Series("UNAVAILABLE", index=data.index, dtype="string")
+    if not target_column or target_column not in data:
+        status.loc[data[prediction_column].isna()] = "UNAVAILABLE"
         return status
 
     # Normalize both sides before comparing farmer crop codes with model outputs.
@@ -45,7 +62,7 @@ def _label_prediction_status(data: pd.DataFrame, config) -> pd.Series:
     declared = declaration.notna()
     comparable = declared & prediction.notna()
     # A known declaration without a model result cannot support a conflict decision.
-    status.loc[declared & ~prediction.notna()] = "UNAVAILABLE"
+    status.loc[~prediction.notna()] = "UNAVAILABLE"
     # SAME/DIFFERENT is assigned only where both values are actually available.
     status.loc[comparable] = np.where(declaration.loc[comparable].eq(prediction.loc[comparable]), "SAME", "DIFFERENT")
     return status
@@ -54,55 +71,75 @@ def _label_prediction_status(data: pd.DataFrame, config) -> pd.Series:
 def _apply_label_aware_policy(
     result: pd.DataFrame, confidence: pd.Series, reliability: pd.Series, config
 ) -> tuple[pd.Series, pd.Series]:
-    """Convert base risk into an operational need and a mutually exclusive check type."""
-    # Start from the label-independent score category; declaration rules override it below.
-    need = result["inspection_need_base"].copy()
-    check_type = pd.Series("NONE", index=result.index, dtype="string")
+    """Apply the twenty direct rules; numeric diagnostic scores never assign priority."""
     status = result["label_prediction_status"]
-    geometry_risk = result["geometry_risk"]
-    valid = result["inspection_score"].notna()
-
-    # Reuse the configured quality thresholds so scoring, reasons, and policy stay aligned.
-    data_high = reliability >= config.inspection_medium_data_reliability_threshold
-    data_low = reliability < config.inspection_low_data_reliability_threshold
-    geometry_good = geometry_risk < config.inspection_medium_geometry_risk_threshold
-    geometry_complex = geometry_risk >= config.inspection_high_geometry_risk_threshold
-    # Sufficient evidence requires a valid score, HIGH model confidence, and reliable EO data.
-    evidence_is_sufficient = valid & confidence.eq("HIGH") & data_high & geometry_risk.notna()
-
-    # Agreement under strong evidence needs no check; weaker agreement remains inconclusive.
-    same = status.eq("SAME")
-    strong_verification = same & evidence_is_sufficient & geometry_good
-    need.loc[strong_verification] = "LOW"
-    need.loc[same & valid & ~strong_verification] = "MEDIUM"
-    need.loc[same & ~valid] = "UNKNOWN"
-    check_type.loc[same & ~strong_verification] = "INSUFFICIENT_EO_EVIDENCE"
-
-    # A reliable disagreement is a suspected declaration conflict, not an EO-quality failure.
-    different = status.eq("DIFFERENT")
-    declaration_conflict = different & evidence_is_sufficient
-    strong_conflict = declaration_conflict & geometry_good
-    need.loc[strong_conflict] = "VERY_HIGH"
-    need.loc[declaration_conflict & ~geometry_good] = "HIGH"
-    check_type.loc[declaration_conflict] = "DECLARATION_CONFLICT"
-
-    # All remaining disagreements lack enough EO/model evidence to assert a declaration conflict.
-    insufficient_difference = different & ~declaration_conflict
-    # LOW confidence plus poor data and complex geometry is explicitly marked uncertain.
-    uncertain_difference = insufficient_difference & valid & confidence.eq("LOW") & data_low & geometry_complex
-    need.loc[uncertain_difference] = "MEDIUM_UNCERTAIN"
-    need.loc[insufficient_difference & valid & ~uncertain_difference] = "MEDIUM_HIGH"
-    need.loc[insufficient_difference & ~valid] = "UNKNOWN"
-    check_type.loc[insufficient_difference] = "INSUFFICIENT_EO_EVIDENCE"
-
-    # Without a farmer declaration, retain the base need and classify only non-LOW cases.
-    no_declaration = status.eq("NO_DECLARATION")
-    check_type.loc[no_declaration & need.ne("LOW")] = "INSUFFICIENT_EO_EVIDENCE"
-    # A missing prediction prevents verification even when a declaration exists.
-    unavailable = status.eq("UNAVAILABLE")
+    geometry = result["geometry_risk"]
+    valid = confidence.isin(["HIGH", "MEDIUM", "LOW"]) & reliability.notna() & geometry.notna()
+    rank_valid = result.get(
+        "prediction_rank_confidence_valid", result.get("prediction_confidence_valid", pd.Series(True, index=result.index))
+    )
+    valid &= rank_valid.fillna(False).astype(bool)
+    enabled, class_level, class_valid = _policy_class_reliability(result, config)
+    comparable = status.isin(["SAME", "DIFFERENT"])
+    eligible = valid & comparable & (~enabled | class_valid)
+    # Disabled reliability bypasses its condition, without changing the recorded class evidence.
+    class_high = ~enabled | class_level.eq("HIGH")
+    class_medium = enabled & class_level.eq("MEDIUM")
+    high_data = reliability > config.inspection_medium_data_reliability_threshold
+    good_geometry = geometry < config.inspection_medium_geometry_risk_threshold
+    high_rank, medium_rank = confidence.eq("HIGH"), confidence.eq("MEDIUM")
+    conditions = [
+        class_high & high_rank & high_data & good_geometry,
+        class_high & high_rank & high_data & ~good_geometry,
+        class_medium & high_rank & high_data & good_geometry,
+        class_medium & high_rank & high_data & ~good_geometry,
+        class_high & medium_rank & high_data & good_geometry,
+        class_high & medium_rank & high_data & ~good_geometry,
+        class_medium & medium_rank & high_data,
+        enabled & class_level.eq("LOW"),
+        confidence.eq("LOW"),
+        ~high_data,
+    ]
+    same_priorities = ["VERY_LOW", "LOW", "LOW", "LOW_MEDIUM", "LOW_MEDIUM"] + ["MEDIUM"] * 5
+    different_priorities = ["VERY_HIGH", "HIGH", "HIGH", "MEDIUM_HIGH", "MEDIUM_HIGH"] + ["MEDIUM"] * 5
+    need = pd.Series("MEDIUM", index=result.index, dtype="string")
+    rule = pd.Series("CLASS_RELIABILITY_UNAVAILABLE", index=result.index, dtype="string")
+    # First matching rule wins; overlapping low-evidence rules all produce MEDIUM.
+    masks = [condition.fillna(False).to_numpy(dtype=bool) for condition in conditions]
+    for label_status, priorities, offset in [("SAME", same_priorities, 0), ("DIFFERENT", different_priorities, 10)]:
+        selected = eligible & status.eq(label_status)
+        assigned = pd.Series(np.select(masks, priorities, default="MEDIUM"), index=result.index)
+        identifiers = [f"R{number + offset:02d}" for number in range(1, 11)]
+        matched = pd.Series(np.select(masks, identifiers, default="UNCLASSIFIED"), index=result.index)
+        need.loc[selected] = assigned.loc[selected]
+        rule.loc[selected] = matched.loc[selected]
+    rule.loc[valid & status.eq("NO_DECLARATION")] = "NO_DECLARATION"
+    unavailable = ~valid | status.eq("UNAVAILABLE")
     need.loc[unavailable] = "UNKNOWN"
-    check_type.loc[unavailable] = "INSUFFICIENT_EO_EVIDENCE"
+    rule.loc[unavailable] = "REQUIRED_EVIDENCE_UNAVAILABLE"
+    result["inspection_rule"] = rule
+    result["inspection_class_reliability_applied"] = enabled & eligible
+    check_type = pd.Series("INSUFFICIENT_EO_EVIDENCE", index=result.index, dtype="string")
+    check_type.loc[need.isin(["VERY_LOW", "LOW"])] = "NONE"
+    check_type.loc[status.eq("DIFFERENT") & need.isin(["VERY_HIGH", "HIGH", "MEDIUM_HIGH"])] = "DECLARATION_CONFLICT"
     return need, check_type
+
+
+def _policy_class_reliability(result: pd.DataFrame, config) -> tuple[pd.Series, pd.Series, pd.Series]:
+    """Resolve the frozen policy switch and distinguish weak reliability from absent evidence."""
+    enabled = (
+        result.get(
+            "inspection_class_reliability_enabled",
+            pd.Series(bool(getattr(config, "class_reliability_enabled", True)), index=result.index),
+        )
+        .fillna(True)
+        .astype(bool)
+    )
+    level = result.get("prediction_class_reliability_level", pd.Series(pd.NA, index=result.index, dtype="string"))
+    level = level.astype("string").str.strip().str.upper()
+    validity = result.get("prediction_class_reliability_valid", pd.Series(False, index=result.index))
+    valid = validity.fillna(False).astype(bool) & level.isin(["HIGH", "MEDIUM", "LOW"])
+    return enabled, level, valid
 
 
 def _append_label_alignment_reasons(reasons: list[str], label_status: str, check_type: str, inspection_need: str) -> None:
@@ -153,7 +190,7 @@ def _append_data_reliability_reasons(reasons: list[str], reliability: float, con
         reasons.append("MISSING_DATA_RELIABILITY")
     elif reliability < config.inspection_low_data_reliability_threshold:
         reasons.append("LOW_DATA_RELIABILITY")
-    elif reliability < config.inspection_medium_data_reliability_threshold:
+    elif reliability <= config.inspection_medium_data_reliability_threshold:
         reasons.append("MEDIUM_DATA_RELIABILITY")
 
 
@@ -170,7 +207,9 @@ def _append_geometry_reasons(reasons: list[str], geometry_risk: float, config) -
 def _inspection_reasons(row: pd.Series, config) -> str:
     """Return stable, pipe-separated explanations for one parcel score."""
     reasons: list[str] = []
-    confidence = _normalize_row_confidence(row[config.prediction_confidence_level_column])
+    confidence = _normalize_row_confidence(
+        row.get("prediction_rank_confidence_level", row[config.prediction_confidence_level_column])
+    )
     reliability = _normalize_row_reliability(row[config.inspection_data_reliability_column])
     geometry_risk = row["geometry_risk"]
     label_status = row["label_prediction_status"]
@@ -180,6 +219,15 @@ def _inspection_reasons(row: pd.Series, config) -> str:
     _append_confidence_reasons(reasons, confidence)
     _append_data_reliability_reasons(reasons, reliability, config)
     _append_geometry_reasons(reasons, geometry_risk, config)
+
+    if row.get("inspection_rule") == "CLASS_RELIABILITY_UNAVAILABLE":
+        reasons.append("CLASS_RELIABILITY_UNAVAILABLE")
+    if row.get("inspection_rule") == "NO_DECLARATION":
+        reasons.append("NO_DECLARATION")
+    if row.get("inspection_class_reliability_applied", False):
+        level = str(row.get("prediction_class_reliability_level", "")).strip().upper()
+        if level in {"LOW", "MEDIUM"}:
+            reasons.append(f"{level}_CLASS_RELIABILITY")
 
     return "|".join(reasons) if reasons else "NONE"
 
@@ -203,11 +251,12 @@ def calculate_inspection_metrics(data: pd.DataFrame, config) -> pd.DataFrame:
 
     # Work on a copy so prediction inputs and existing confidence columns are never mutated.
     result = data.copy()
-    confidence = result[config.prediction_confidence_level_column].astype("string").str.strip().str.upper()
+    confidence = result.get("prediction_rank_confidence_level", result[config.prediction_confidence_level_column])
+    confidence = confidence.astype("string").str.strip().str.upper()
     reliability = pd.to_numeric(result[config.inspection_data_reliability_column], errors="coerce")
     reliability = reliability.where(reliability.between(0.0, 1.0))
     complexity = pd.to_numeric(result[config.inspection_geometry_complexity_column], errors="coerce")
-    complexity = complexity.where(complexity >= 0.0)
+    complexity = complexity.where((complexity >= 0.0) & np.isfinite(complexity))
 
     # Declaration comparison is descriptive and does not enter the numeric score formula.
     result["label_prediction_status"] = _label_prediction_status(result, config)
@@ -238,5 +287,6 @@ def calculate_inspection_metrics(data: pd.DataFrame, config) -> pd.DataFrame:
     result["inspection_need"], result["inspection_check_type"] = _apply_label_aware_policy(
         result, confidence, reliability, config
     )
+    result["inspection_priority_label"] = result["inspection_need"].map(INSPECTION_PRIORITY_LABELS)
     result["inspection_reasons"] = result.apply(_inspection_reasons, axis=1, config=config).astype("string")
     return result

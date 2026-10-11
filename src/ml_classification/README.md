@@ -55,7 +55,7 @@ shared/
     final_dashboard_artifact.py     dashboard artifact data shaping and manifest assembly
     final_dashboard_pipeline.py     dashboard plots and pipeline HTML report assembly
   probabilities.py                  apply saved probability adjustments
-  class_reliability.py               apply saved reliability and combine confidence
+  class_reliability.py               apply saved reliability independently of rank confidence
 step_04_evaluate/libraries/
   class_reliability.py               learn per-class reliability from training OOF predictions
   metrics.py                        score individual and voting models
@@ -90,9 +90,10 @@ step implementations.
 
 For example, `step_04_evaluate/libraries/confidence.py` calls
 `step_04_evaluate/libraries/class_reliability.py` to learn the OOF reliability
-contract. `shared/class_reliability.py` owns `get_class_reliability()` and
-`combine_confidence_components()`, used by both evaluation and prediction to
-apply the frozen contract. The contract method identifier also stays shared.
+contract. `shared/class_reliability.py` owns `get_class_reliability()`, used by evaluation
+and prediction to attach frozen class evidence without modifying rank confidence.
+Prediction applies the [20-rule inspection policy](../../docs/ml_classification/INSPECTION_PRIORITY_DECISION_TABLE.md)
+to class evidence, label agreement, rank confidence, data reliability, and geometry. The contract method identifier also stays shared.
 Cross-step data flow uses the artifacts below rather than imports between
 private step libraries.
 

@@ -1,4 +1,4 @@
-# Rank Consensus with Class Reliability Guard
+# Rank Confidence and Independent Class Reliability
 
 ## Purpose
 
@@ -7,12 +7,11 @@ including any frozen class-probability multipliers. Rank confidence is computed
 after that decision and answers a narrower question: how strongly do the
 selected ensemble members support the soft-voting class?
 
-The user-facing confidence level is the lower of two components:
-
-```text
-final confidence = min(parcel rank confidence, class reliability)
-LOW < MEDIUM < HIGH
-```
+The user-facing confidence level, validity, and reason come exclusively from
+parcel rank evidence. Class reliability is an independent input to the
+[inspection decision table](INSPECTION_PRIORITY_DECISION_TABLE.md), together
+with label agreement, rank confidence, data reliability, and geometry risk.
+It never caps confidence or changes the confidence-only review flag.
 
 ## Parcel rank confidence
 
@@ -71,17 +70,21 @@ There is no class pooling, Top-1 binning, or neighboring-bin pooling.
 
 ## Frozen deployment contract
 
-Step 4 stores the method, version, rank thresholds, minimum model count, and
+Step 4 stores method `rank_consensus_only`, version `3.0`, role
+`class_reliability_role=inspection_policy`, rank thresholds, minimum model count, and
 complete per-class OOF reliability table under `confidence` in
 `04_evaluate/selection_summary.json`. Step 5 applies that contract exactly and
 does not recalculate thresholds or reliability from live configuration.
 
 Selection summaries containing only the obsolete class x Top-1 calibration
-must rerun Step 4 before the guarded method can be used in production.
+must rerun Step 4 before prediction. Existing OOF guard contracts are supported
+as independent policy evidence; their guard is no longer applied. Rerun Step 4
+to refresh evaluation artifacts, then recalculate prediction quality from saved
+member probabilities to update existing predictions without retraining.
 
 ## Review and outputs
 
-When guarded confidence is active:
+When rank confidence is active:
 
 ```text
 prediction_needs_review =
@@ -93,7 +96,9 @@ Maximum soft-voting probability is retained as a diagnostic and is used for
 review only when rank confidence is disabled. Prediction artifacts retain the
 final level, validity, reason, rank diagnostics, Borda winner and tie flag, and
 the predicted class's frozen OOF precision, support, reliability level, and
-validity.
+validity. `prediction_confidence_source` is `rank_only`; the legacy
+`prediction_class_reliability_applied` flag is False. Inspection records its
+own enabled/applied flags, priority label, and matched rule.
 
 Evaluation writes parcel-level OOF/holdout confidence, the OOF class reliability
 table, confidence-level metrics for OOF and holdout, and per-class holdout

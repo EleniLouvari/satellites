@@ -960,3 +960,14 @@ def test_evaluate_step_evaluates_all_models_when_selected_models_none():
 
     expect_equal(len(models_to_evaluate), 4)
     expect_equal(set(models_to_evaluate), {"random_forest", "knn", "extra_trees", "gradient_boosting"})
+
+
+def test_config_rejects_invalid_max_features_per_plot():
+    with np.testing.assert_raises_regex(ValueError, "max_features_per_plot must be >= 1"):
+        ClassificationPipelineConfig(
+            project_dir="test_project",
+            target_column="label",
+            feature_columns=["feature"],
+            max_features_per_plot=0,
+            cv_folds=2,
+        )

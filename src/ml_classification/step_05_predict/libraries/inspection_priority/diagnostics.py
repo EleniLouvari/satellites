@@ -15,7 +15,7 @@ import seaborn as sns
 from ml_classification.step_05_predict.libraries.inspection_priority.plots import save_inspection_relationship_plot
 
 # Policy severity, rather than alphabetical order, determines the inspection queue and table order.
-_NEED_ORDER = ("VERY_HIGH", "HIGH", "MEDIUM_HIGH", "MEDIUM_UNCERTAIN", "MEDIUM", "LOW", "UNKNOWN")
+_NEED_ORDER = ("VERY_HIGH", "HIGH", "MEDIUM_HIGH", "MEDIUM", "LOW_MEDIUM", "LOW", "VERY_LOW", "UNKNOWN")
 _CHECK_TYPE_ORDER = ("DECLARATION_CONFLICT", "INSUFFICIENT_EO_EVIDENCE", "NONE")
 _DECLARATION_ORDER = ("SAME", "DIFFERENT", "NO_DECLARATION", "UNAVAILABLE")
 
@@ -94,21 +94,19 @@ def _declaration_conflict_matrix(data: pd.DataFrame, target_column: str, predict
     )
 
 
+def _data_reliability_levels(values: pd.Series, config) -> pd.Series:
+    """Use strict HIGH and LOW boundaries consistently with policy and diagnostic reasons."""
+    numeric = pd.to_numeric(values, errors="coerce")
+    levels = pd.Series("MEDIUM", index=values.index, dtype="string")
+    levels.loc[numeric < config.inspection_low_data_reliability_threshold] = "LOW"
+    levels.loc[numeric > config.inspection_medium_data_reliability_threshold] = "HIGH"
+    return levels.where(numeric.between(0.0, 1.0))
+
+
 def _evidence_quality_table(data: pd.DataFrame, config) -> pd.DataFrame:
     """Cross data reliability and geometry risk using the configured policy thresholds."""
     working = data.copy()
-    # Left-closed bins place exact threshold values in the higher reliability band.
-    working["data_reliability_level"] = pd.cut(
-        pd.to_numeric(working[config.inspection_data_reliability_column], errors="coerce"),
-        bins=[
-            -np.inf,
-            config.inspection_low_data_reliability_threshold,
-            config.inspection_medium_data_reliability_threshold,
-            np.inf,
-        ],
-        labels=["LOW", "MEDIUM", "HIGH"],
-        right=False,
-    )
+    working["data_reliability_level"] = _data_reliability_levels(working[config.inspection_data_reliability_column], config)
     working["geometry_quality_level"] = pd.cut(
         pd.to_numeric(working["geometry_risk"], errors="coerce"),
         bins=[-np.inf, config.inspection_medium_geometry_risk_threshold, config.inspection_high_geometry_risk_threshold, np.inf],
@@ -149,17 +147,7 @@ def _declaration_need_table(data: pd.DataFrame) -> pd.DataFrame:
 
 def _confidence_data_score_table(data: pd.DataFrame, config) -> pd.DataFrame:
     """Summarize median inspection score by confidence and reliability band."""
-    reliability_band = pd.cut(
-        pd.to_numeric(data[config.inspection_data_reliability_column], errors="coerce"),
-        bins=[
-            -np.inf,
-            config.inspection_low_data_reliability_threshold,
-            config.inspection_medium_data_reliability_threshold,
-            np.inf,
-        ],
-        labels=["LOW", "MEDIUM", "HIGH"],
-        right=False,
-    )
+    reliability_band = _data_reliability_levels(data[config.inspection_data_reliability_column], config)
     confidence = data[config.prediction_confidence_level_column].astype("string").str.upper()
     return (
         data.assign(_confidence=confidence, _reliability_band=reliability_band)
@@ -171,7 +159,7 @@ def _confidence_data_score_table(data: pd.DataFrame, config) -> pd.DataFrame:
 
 def _top_priority_parcels(data: pd.DataFrame, config, limit: int = 100) -> pd.DataFrame:
     """Return the highest-priority parcel-level audit queue with its explanations."""
-    # Sort by final policy need first and use the numeric score to order parcels within each need level.
+    # Stable ties preserve input order; diagnostic scores do not determine queue priority.
     priority_rank = {need: rank for rank, need in enumerate(_NEED_ORDER)}
     working = data.loc[data["inspection_check_type"].ne("NONE")].copy()
     working["_priority_rank"] = working["inspection_need"].map(priority_rank).fillna(len(priority_rank))
@@ -184,15 +172,15 @@ def _top_priority_parcels(data: pd.DataFrame, config, limit: int = 100) -> pd.Da
         "geometry_risk",
         "inspection_score",
         "inspection_need",
+        "inspection_priority_label",
+        "inspection_rule",
+        "prediction_class_reliability_level",
+        "inspection_class_reliability_applied",
         "inspection_check_type",
         "inspection_reasons",
     ]
     columns = [column for column in columns if column in working]
-    return (
-        working.sort_values(["_priority_rank", "inspection_score"], ascending=[True, False])
-        .head(limit)[columns]
-        .reset_index(drop=True)
-    )
+    return working.sort_values("_priority_rank", kind="stable").head(limit)[columns].reset_index(drop=True)
 
 
 def _save_figure(fig: plt.Figure, output_path: Path) -> Path:

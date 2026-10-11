@@ -11,9 +11,7 @@ from ml_classification.shared.reports.confidence_diagnostics import (
     prepare_class_risk_display_table,
 )
 from ml_classification.shared.reports.report_html import write_html_report
-from ml_classification.step_05_predict.libraries.inspection_priority.diagnostics import (
-    export_operational_inspection_diagnostics,
-)
+from ml_classification.step_05_predict.libraries.inspection_priority.diagnostics import export_operational_inspection_diagnostics
 
 
 def write_predict_report(config, final_df: pd.DataFrame, selection: dict[str, Any]) -> None:
@@ -28,7 +26,7 @@ def write_predict_report(config, final_df: pd.DataFrame, selection: dict[str, An
         "prediction_confidence_valid",
         "prediction_confidence_reason",
         "prediction_confidence_source",
-        "prediction_class_reliability_applied",
+        "inspection_class_reliability_enabled",
         "prediction_mean_borda",
         "prediction_rank_range",
         "prediction_mean_rank",
@@ -59,6 +57,9 @@ def write_predict_report(config, final_df: pd.DataFrame, selection: dict[str, An
         "inspection_score",
         "inspection_need_base",
         "inspection_need",
+        "inspection_priority_label",
+        "inspection_rule",
+        "inspection_class_reliability_applied",
         "inspection_check_type",
         "label_prediction_status",
         "inspection_reasons",
@@ -76,24 +77,23 @@ def write_predict_report(config, final_df: pd.DataFrame, selection: dict[str, An
     )
     # Operational inspection uses all eligible parcels; correctness diagnostics need known reference labels.
     inspection_artifacts = export_operational_inspection_diagnostics(final_df, config, config.predict_dir)
-    prediction_summary, class_reliability_applied = _build_prediction_summary(
-        config=config,
-        final_df=final_df,
-        selection=selection,
-        confidence_artifacts=confidence_artifacts,
+    prediction_summary, _ = _build_prediction_summary(
+        config=config, final_df=final_df, selection=selection, confidence_artifacts=confidence_artifacts
     )
 
     sections: list[dict[str, Any]] = [
         {"title": "Prediction Summary", "kv": prediction_summary},
         {"title": "Prediction Preview", "table": final_df[preview_columns + probability_columns].head(50)},
     ]
-    confidence_formula = _build_confidence_formula(class_reliability_applied)
+    confidence_formula = _build_confidence_formula(prediction_summary)
     sections.append(
         {
-            "title": "How Final Confidence Is Calculated",
+            "title": "How Prediction Confidence and Inspection Priority Use Evidence",
             "text": (
-                "Rank confidence is always calculated. Class reliability is also always calculated and reported, "
-                "but it only influences the final prediction confidence when class_reliability_enabled is true."
+                "Prediction confidence describes model support. Class reliability describes the predicted class's "
+                "historical out-of-fold precision and is a separate input to inspection priority. "
+                "The status and parcel count below show its actual use in this saved run. "
+                "An enabled setting can have zero applied parcels when the required evidence is unavailable."
             ),
             "table": confidence_formula,
         }
@@ -125,11 +125,7 @@ def write_predict_report(config, final_df: pd.DataFrame, selection: dict[str, An
 
 
 def _build_prediction_diagnostics_section(
-    config,
-    confidence_artifacts,
-    inspection_artifacts,
-    data_reliability_column: str,
-    geometry_complexity_column: str,
+    config, confidence_artifacts, inspection_artifacts, data_reliability_column: str, geometry_complexity_column: str
 ) -> dict[str, Any]:
     """Build the combined diagnostics section with confidence and inspection tabs."""
     # Keep model-confidence auditing and operational inspection policy in separate report tabs.
@@ -144,7 +140,7 @@ def _build_prediction_diagnostics_section(
         "title": "Prediction Diagnostics",
         "text": (
             "Use Confidence Levels to audit model agreement and prediction errors. Use Inspection Priority to "
-            "plan parcel checks using confidence, EO data reliability, geometry, and declaration agreement."
+            "plan parcel checks using confidence, class reliability, EO data reliability, geometry, and declaration agreement."
         ),
         "tabs": [
             {"label": "Confidence Levels", "sections": confidence_sections},
@@ -154,10 +150,7 @@ def _build_prediction_diagnostics_section(
 
 
 def _build_inspection_sections(
-    config,
-    inspection_artifacts,
-    data_reliability_column: str,
-    geometry_complexity_column: str,
+    config, inspection_artifacts, data_reliability_column: str, geometry_complexity_column: str
 ) -> list[dict[str, Any]]:
     """Build inspection-priority diagnostic sections."""
     if inspection_artifacts is None:
@@ -194,8 +187,8 @@ def _build_inspection_sections(
             "Inspection score combines three independent uncertainty signals on a 0-100 scale. The scatter "
             "shows data reliability against the score, color identifies prediction confidence, point size "
             "represents relative geometry risk, and marker shape distinguishes declaration agreement. The "
-            "numeric score remains label-independent; declaration agreement only refines inspection need and "
-            "check type. Geometry interior-area ratio is not added separately because it is already incorporated "
+            "numeric score is diagnostic only and never assigns priority. The decision table directly combines "
+            "class reliability, rank confidence, data reliability, geometry, and declaration agreement. Geometry interior-area ratio is not added separately because it is already incorporated "
             "in geom_shape_complexity_score."
         ),
         "table": inspection_formula,
@@ -226,7 +219,7 @@ def _build_inspection_sections(
         "text": (
             "DECLARATION_CONFLICT identifies reliable EO evidence supporting a crop different from the farmer "
             "declaration. INSUFFICIENT_EO_EVIDENCE identifies parcels where confidence, observation coverage, "
-            "or geometry does not support a reliable verification. These types are mutually exclusive."
+            "class reliability, or geometry does not support a reliable verification. These types are mutually exclusive."
         ),
         "table": inspection_artifacts.tables["inspection_check_type_summary"],
     }
@@ -239,8 +232,8 @@ def _build_inspection_sections(
         "title": "Final Inspection Need by Declaration Agreement",
         "text": (
             "This matrix shows how agreement with the farmer declaration changes the operational priority. "
-            "The numeric inspection score is unchanged; only the final need category receives this transparent "
-            "policy overlay."
+            "Seven ordered priority bands come from direct rules. The numeric uncertainty score does not "
+            "determine the category or queue order."
         ),
         "table": inspection_artifacts.tables["inspection_need_summary"],
     }
@@ -293,7 +286,7 @@ def _build_inspection_sections(
         "title": "Confidence Review versus Operational Inspection Need",
         "text": (
             "This cross-check shows where the confidence-only review flag and the composite operational policy "
-            "agree or differ. Differences are expected because operational priority also uses data reliability, "
+            "agree or differ. Operational priority also uses class reliability, data reliability, "
             "geometry, and farmer-declaration agreement."
         ),
         "table": inspection_artifacts.tables["inspection_confidence_review_comparison"],
@@ -307,7 +300,7 @@ def _build_inspection_sections(
         {
             "title": "Top-Priority Parcel Inspection Queue",
             "text": (
-                "The queue is ordered first by final inspection need and then by inspection score. It preserves "
+                "The queue follows final inspection priority, preserving input order within each band. It preserves "
                 "the declared and predicted crops, all evidence components, check type, and human-readable reason "
                 "codes required for parcel-level follow-up."
             ),
@@ -456,11 +449,11 @@ def _build_confidence_sections(confidence_artifacts) -> list[dict[str, Any]]:
             {
                 "title": "Class Reliability by Predicted Class",
                 "text": (
-                    "This view shows the class-reliability signal used by the final confidence calculation. "
+                    "This view shows the class-reliability signal used by the inspection policy. "
                     "Each row groups parcels by predicted class and reports the rate that needs checking, the "
                     "median out-of-fold precision for that class, and the support count. When "
                     "class_reliability_enabled is false, the same class-reliability table is still shown as a "
-                    "diagnostic, but it does not lower the final confidence. This is the same view previously "
+                    "diagnostic, but it does not enter inspection policy. Class reliability never lowers rank confidence. This is the same view previously "
                     "described as Need-to-Check Rate by Predicted Class."
                 ),
                 "images": [{"title": "Class Reliability by Predicted Class", "path": class_rate_path}],
@@ -538,44 +531,70 @@ def _build_prediction_summary(
     }
     if confidence_artifacts is not None:
         prediction_summary.update(confidence_artifacts.summary)
-    # Accept both current and legacy contract keys when summarizing saved selections.
-    confidence_contract = selection.get("confidence") or selection.get("rank_confidence") or {}
-    class_reliability_enabled = bool(confidence_contract.get("class_reliability_enabled", False))
-    # Report whether the guard was actually applied, separately from whether it was configured.
-    class_reliability_applied = bool(final_df.get("prediction_class_reliability_applied", pd.Series([False])).iloc[0])
-    prediction_summary.update(
-        {
-            "class_reliability_enabled": class_reliability_enabled,
-            "class_reliability_applied_to_final_confidence": class_reliability_applied,
-            "final_confidence_rule": "rank_plus_class_reliability" if class_reliability_applied else "rank_only",
-        }
-    )
+    reliability_summary, class_reliability_applied = _build_class_reliability_summary(final_df, selection)
+    prediction_summary.update(reliability_summary)
     return prediction_summary, class_reliability_applied
 
 
-def _build_confidence_formula(class_reliability_applied: bool) -> pd.DataFrame:
-    """Build the explanatory table for final-confidence calculation."""
+def _build_class_reliability_summary(final_df: pd.DataFrame, selection: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """Distinguish the saved inspection switch from actual parcel-level application."""
+    # Accept both current and legacy contract keys when summarizing saved selections.
+    confidence_contract = selection.get("confidence") or selection.get("rank_confidence") or {}
+    class_reliability_enabled = confidence_contract.get("class_reliability_enabled")
+    if confidence_contract.get("enabled") is False:
+        class_reliability_enabled = False
+    if "inspection_class_reliability_enabled" in final_df:
+        # Saved row flags describe the applied contract, even if live config has changed.
+        class_reliability_enabled = bool(final_df["inspection_class_reliability_enabled"].fillna(False).any())
+    # Policy application is independent of rank-only confidence.
+    class_reliability_applied = bool(
+        final_df.get("inspection_class_reliability_applied", pd.Series(False, index=final_df.index)).any()
+    )
+    applied_rows = (
+        int(final_df["inspection_class_reliability_applied"].fillna(False).sum())
+        if "inspection_class_reliability_applied" in final_df
+        else None
+    )
+    if class_reliability_applied:
+        reliability_status = "Applied to inspection priority"
+        if class_reliability_enabled is None:
+            class_reliability_enabled = True
+    elif class_reliability_enabled is False:
+        reliability_status = "Disabled for inspection priority"
+    elif class_reliability_enabled is None:
+        reliability_status = "Not recorded in saved predictions or selection contract"
+    elif applied_rows is None:
+        reliability_status = "Enabled; inspection application not recorded in saved predictions"
+    else:
+        reliability_status = "Enabled; no eligible parcels with valid class and inspection evidence"
+    return (
+        {
+            "class_reliability_role": "Inspection priority",
+            "class_reliability_enabled_for_inspection": (
+                class_reliability_enabled if class_reliability_enabled is not None else "Not recorded"
+            ),
+            "class_reliability_inspection_status": reliability_status,
+            "class_reliability_inspection_rows": applied_rows if applied_rows is not None else "Not recorded",
+        },
+        class_reliability_applied,
+    )
+
+
+def _build_confidence_formula(prediction_summary: dict[str, Any]) -> pd.DataFrame:
+    """Explain each signal's role and its actual use in the saved predictions."""
     return pd.DataFrame(
         [
             {
-                "Component": "Rank confidence",
-                "How it is computed": (
-                    "Borda score and rank-range agreement across models; final class must agree with the Borda winner"
-                ),
-                "Used in final confidence": "Always",
+                "Signal": "Prediction confidence",
+                "Evidence": prediction_summary["confidence_method"],
+                "Role": "Confidence-only review flag and confidence level when available",
+                "Use in this run": "Reported in prediction outputs",
             },
             {
-                "Component": "Class reliability",
-                "How it is computed": ("OOF precision of the predicted class from the frozen class-reliability contract"),
-                "Used in final confidence": "Only when class_reliability_enabled is true",
-            },
-            {
-                "Component": "Final prediction confidence",
-                "How it is computed": (
-                    "If class reliability is enabled, take the lower of rank confidence and class reliability; otherwise"
-                    " use rank confidence only"
-                ),
-                "Used in final confidence": ("rank_plus_class_reliability" if class_reliability_applied else "rank_only"),
+                "Signal": "Class reliability",
+                "Evidence": "Frozen OOF precision and support of the predicted class",
+                "Role": "Inspection priority decision table",
+                "Use in this run": prediction_summary["class_reliability_inspection_status"],
             },
         ]
     )

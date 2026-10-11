@@ -229,11 +229,7 @@ class PredictStep(PipelineStepBase):
             "class_reliability_method": (
                 rank_contract["class_reliability"].get("method") if rank_contract["class_reliability"] is not None else None
             ),
-            "final_confidence_rule": (
-                "rank_plus_class_reliability"
-                if bool(final_df.get("prediction_class_reliability_applied", pd.Series([False])).iloc[0])
-                else "rank_only"
-            ),
+            "final_confidence_rule": "rank_only",
             "rank_confidence_minimum_models": rank_contract["minimum_models"],
             "rank_confidence_level_counts": (
                 final_df[self.config.prediction_confidence_level_column].value_counts().to_dict()
@@ -313,11 +309,7 @@ class PredictStep(PipelineStepBase):
             "class_reliability_method": (
                 rank_contract["class_reliability"].get("method") if rank_contract["class_reliability"] is not None else None
             ),
-            "final_confidence_rule": (
-                "rank_plus_class_reliability"
-                if bool(final_df.get("prediction_class_reliability_applied", pd.Series([False])).iloc[0])
-                else "rank_only"
-            ),
+            "final_confidence_rule": "rank_only",
             "rank_confidence_minimum_models": rank_contract["minimum_models"],
             **inspection_summary,
         }

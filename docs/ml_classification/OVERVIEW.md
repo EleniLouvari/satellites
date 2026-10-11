@@ -16,7 +16,7 @@ and a runner for measuring sensitivity to the random seed.
   HTTP viewer, confidence diagnostics, and final dashboard. Each step retains
   its own `libraries/report.py` to assemble its report.
 - Evaluation owns metrics, probability optimization, and OOF class reliability
-  fitting. Applying reliability and combining confidence remain shared. Prediction groups its
+  fitting. Applying the independent reliability lookup remains shared. Prediction groups its
   inspection scoring, diagnostics, and plots in `libraries/inspection_priority/`.
 - `sensitivity/` contains the multi-seed runner and its own `libraries/`.
 - `to_delete/` holds the former `core/`, `steps/`, `reporting/`, and `visuals/`
@@ -110,10 +110,10 @@ places for source data or code.
   `LOW` support from the selected members' within-model ranks. Defaults use a
   mean Borda score of 90/75 and predicted-class rank ranges of 2/4 for
   HIGH/MEDIUM, with Borda-winner agreement required.
-- `class_reliability_enabled=True`: guards rank confidence with frozen OOF
-  precision for the predicted class. Defaults are HIGH at `>=0.80`, MEDIUM at
-  `>=0.60`, and at least 100 OOF predictions for that exact class. Final
-  confidence is the lower of rank confidence and class reliability.
+- `class_reliability_enabled=True`: includes frozen predicted-class OOF reliability
+  in the [inspection decision table](INSPECTION_PRIORITY_DECISION_TABLE.md).
+  Defaults are HIGH at `>=0.80`, MEDIUM at `>=0.60`, and at least 100 OOF
+  predictions for that exact class. Prediction confidence remains rank-only.
 - `open_html_report=True`: open generated HTML reports after writing them.
 
 Satellite zonal statistics already writes one ML-ready GeoParquet row per

@@ -134,6 +134,7 @@ class ClassificationPipelineConfig:
     inspection_scoring_enabled: bool = True
     inspection_data_reliability_column: str = "data_reliability_score"
     inspection_geometry_complexity_column: str = "geom_shape_complexity_score"
+    # Weights and score thresholds affect diagnostic outputs only, never rule-based priority.
     inspection_model_weight: float = 0.60
     inspection_data_weight: float = 0.25
     inspection_geometry_weight: float = 0.15
@@ -154,6 +155,7 @@ class ClassificationPipelineConfig:
     rank_confidence_high_max_range: float = 2.0
     rank_confidence_medium_min_borda: float = 75.0
     rank_confidence_medium_max_range: float = 4.0
+    # Apply frozen OOF reliability in inspection policy; prediction confidence remains rank-only.
     class_reliability_enabled: bool = True
     class_reliability_minimum_oof_support: int = 100
     class_reliability_high_min_precision: float = 0.80
@@ -174,6 +176,7 @@ class ClassificationPipelineConfig:
     # ================================================================================
     float_dtype: str = "float32"
     max_distribution_features: int = 9
+    max_features_per_plot: int = 20
     max_map_geometries: int = 20000
     output_schema_version: str = "1.2.0"
     log_filename: str = "pipeline.log"
@@ -409,6 +412,7 @@ class ClassificationPipelineConfig:
             (int(self.shap_sample_size) >= 10, "shap_sample_size must be >= 10."),
             (int(self.feature_importance_top_n) >= 1, "feature_importance_top_n must be >= 1."),
             (int(self.max_distribution_features) >= 1, "max_distribution_features must be >= 1."),
+            (int(self.max_features_per_plot) >= 1, "max_features_per_plot must be >= 1."),
             (int(self.max_map_geometries) >= 1, "max_map_geometries must be >= 1."),
             (int(self.spatial_split_grid_size) >= 2, "spatial_split_grid_size must be >= 2."),
             (int(self.lstm_min_timesteps) >= 2, "lstm_min_timesteps must be >= 2."),

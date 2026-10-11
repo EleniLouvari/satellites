@@ -16,7 +16,7 @@ from ml_classification.shared.persistence import save_frame_csv
 from ml_classification.shared.rank_confidence import rank_confidence_thresholds_from_config
 from ml_classification.step_04_evaluate.libraries.class_reliability import calculate_oof_class_reliability
 from ml_classification.step_04_evaluate.libraries.ranking import (
-    apply_class_reliability_guard,
+    attach_class_reliability,
     build_parcel_ranking_outputs,
     summarize_rank_confidence,
 )
@@ -40,7 +40,6 @@ def evaluate_rank_confidence(
     """Persist ranking/confidence diagnostics and attach the frozen contract to selection."""
     labels = inputs["context"]["labels"]
     confidence_enabled = bool(config.rank_confidence_enabled)
-    reliability_guard_enabled = bool(confidence_enabled and config.class_reliability_enabled)
 
     # Step 1: Build ranking outputs per split (holdout/train/oof) from already-computed probability caches.
     parcel_ranking_df, ranking_method_summary_df = _build_ranking_outputs(
@@ -71,13 +70,14 @@ def evaluate_rank_confidence(
     class_reliability = None
     # Step 2: Fit class reliability once from OOF predictions, then apply it consistently to all ranking frames.
     if confidence_enabled:
-        class_reliability = _fit_class_reliability_from_oof(config=config, labels=labels, oof_parcel_ranking_df=oof_parcel_ranking_df)
+        class_reliability = _fit_class_reliability_from_oof(
+            config=config, labels=labels, oof_parcel_ranking_df=oof_parcel_ranking_df
+        )
         parcel_ranking_df, train_parcel_ranking_df, oof_parcel_ranking_df = _apply_class_reliability_to_rankings(
             parcel_ranking_df=parcel_ranking_df,
             train_parcel_ranking_df=train_parcel_ranking_df,
             oof_parcel_ranking_df=oof_parcel_ranking_df,
             class_reliability=class_reliability,
-            reliability_guard_enabled=reliability_guard_enabled,
         )
 
     # Step 3: Persist ranking/confidence artifacts so report generation never depends on in-memory state.
@@ -102,7 +102,6 @@ def evaluate_rank_confidence(
         config=config,
         selection=selection,
         confidence_enabled=confidence_enabled,
-        reliability_guard_enabled=reliability_guard_enabled,
         class_reliability=class_reliability,
         holdout_monotonic=holdout_monotonic,
         parcel_ranking_df=parcel_ranking_df,
@@ -159,12 +158,7 @@ def _build_oof_ranking_outputs(
     if not config.rank_confidence_enabled or not probability_cache:
         return pd.DataFrame()
     oof_parcel_ranking_df, _ = build_parcel_ranking_outputs(
-        config=config,
-        probability_cache=probability_cache,
-        selection=selection,
-        labels=labels,
-        y_true=y_train,
-        id_col=id_train,
+        config=config, probability_cache=probability_cache, selection=selection, labels=labels, y_true=y_train, id_col=id_train
     )
     return oof_parcel_ranking_df
 
@@ -192,18 +186,11 @@ def _apply_class_reliability_to_rankings(
     train_parcel_ranking_df: pd.DataFrame,
     oof_parcel_ranking_df: pd.DataFrame,
     class_reliability: dict[str, object],
-    reliability_guard_enabled: bool,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Attach class-reliability fields and optionally combine with rank confidence."""
-    parcel_ranking_df = apply_class_reliability_guard(
-        parcel_ranking_df, class_reliability, combine_with_rank=reliability_guard_enabled
-    )
-    train_parcel_ranking_df = apply_class_reliability_guard(
-        train_parcel_ranking_df, class_reliability, combine_with_rank=reliability_guard_enabled
-    )
-    oof_parcel_ranking_df = apply_class_reliability_guard(
-        oof_parcel_ranking_df, class_reliability, combine_with_rank=reliability_guard_enabled
-    )
+    """Attach class-reliability diagnostics without modifying rank confidence."""
+    parcel_ranking_df = attach_class_reliability(parcel_ranking_df, class_reliability)
+    train_parcel_ranking_df = attach_class_reliability(train_parcel_ranking_df, class_reliability)
+    oof_parcel_ranking_df = attach_class_reliability(oof_parcel_ranking_df, class_reliability)
     return parcel_ranking_df, train_parcel_ranking_df, oof_parcel_ranking_df
 
 
@@ -305,7 +292,6 @@ def _build_confidence_contract(
     config: ClassificationPipelineConfig,
     selection: dict,
     confidence_enabled: bool,
-    reliability_guard_enabled: bool,
     class_reliability: dict[str, object] | None,
     holdout_monotonic: bool | None,
     parcel_ranking_df: pd.DataFrame,
@@ -314,8 +300,9 @@ def _build_confidence_contract(
     """Build the frozen confidence contract consumed by step-05 prediction."""
     return {
         "enabled": confidence_enabled,
-        "method": ("rank_consensus_with_class_reliability_guard" if reliability_guard_enabled else "rank_consensus_only"),
-        "version": "2.0",
+        "method": "rank_consensus_only",
+        "version": "3.0",
+        "class_reliability_role": "inspection_policy",
         "prediction_basis": selection["selection_type"],
         "class_reliability_enabled": bool(config.class_reliability_enabled),
         "rank": {"minimum_models": int(config.rank_confidence_minimum_models), **rank_confidence_thresholds_from_config(config)},

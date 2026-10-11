@@ -8,10 +8,7 @@ from ml_classification.shared.reports.report_helpers import _prepare_cv_results_
 from ml_classification.shared.reports.report_html import _render_table
 from ml_classification.step_03_train.libraries import report as train_reports_module
 from ml_classification.step_04_evaluate.libraries import report as reports_module
-from ml_classification.step_04_evaluate.libraries.report import (
-    _build_average_metrics_section,
-    _prepare_analytical_metrics,
-)
+from ml_classification.step_04_evaluate.libraries.report import _build_average_metrics_section, _prepare_analytical_metrics
 from tests.utils import expect_equal, expect_in, expect_true
 
 
@@ -132,9 +129,7 @@ def test_write_evaluate_report_separates_oof_evidence_from_holdout_validation():
         top_voting_models=3,
     )
     metrics_df = pd.DataFrame([{"model": "base_model", "f1_macro": 0.80}])
-    confidence_df = pd.DataFrame(
-        [{"confidence_level": "HIGH", "parcels": 10, "accuracy": 0.90}]
-    )
+    confidence_df = pd.DataFrame([{"confidence_level": "HIGH", "parcels": 10, "accuracy": 0.90}])
     selection = {
         "selection_type": "single_model",
         "selected_models": ["base_model"],
@@ -154,11 +149,11 @@ def test_write_evaluate_report_separates_oof_evidence_from_holdout_validation():
     sections = write_html_report.call_args.kwargs["sections"]
     titles = [section["title"] for section in sections]
     oof_title = "OOF Confidence Performance (Descriptive)"
-    holdout_title = "Holdout Validation: Rank Consensus with Class Reliability Guard"
+    holdout_title = "Holdout Validation: Rank Confidence"
     expect_true(titles.index(oof_title) < titles.index(holdout_title))
-    expect_in("not an independent validation result", next(
-        section["text"] for section in sections if section["title"] == oof_title
-    ))
+    expect_in(
+        "not an independent validation result", next(section["text"] for section in sections if section["title"] == oof_title)
+    )
 
 
 def test_write_evaluate_report_styles_voting_members_and_other_models():

@@ -58,7 +58,7 @@ def write_prepare_report(config, prepare_summary: dict[str, Any], train_df: pd.D
                 "images": [
                     {"title": "Train-Test Class Balance", "path": config.prepare_dir / "plots" / "train_test_distribution.png"},
                     {
-                        "title": "Numeric Correlation Heatmap",
+                        "title": "Median Feature Correlation Heatmap",
                         "path": config.prepare_dir / "plots" / "numeric_correlation_heatmap.png",
                     },
                     {

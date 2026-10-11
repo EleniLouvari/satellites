@@ -70,7 +70,7 @@ def save_inspection_relationship_plot(data: pd.DataFrame, output_path: str | Pat
     ax.set_ylim(0.0, 100.0)
     ax.set_title("Parcel inspection score by confidence and data reliability", loc="left", fontweight="bold")
     ax.set_xlabel("Data reliability score (higher is better)")
-    ax.set_ylabel("Inspection score (higher means greater inspection need)")
+    ax.set_ylabel("Diagnostic uncertainty score (does not assign priority)")
     ax.grid(color="#D9E2EC", linewidth=0.8)
     ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1.0), frameon=True)
     _save_figure(fig, output_path)

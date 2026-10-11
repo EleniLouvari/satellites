@@ -108,7 +108,11 @@ class PrepareStep(PipelineStepBase):
         save_split_distribution_plot(
             train_df[self.config.target_column], test_df[self.config.target_column], plots / "train_test_distribution.png"
         )
-        save_correlation_heatmap(train_df[active_features], plots / "numeric_correlation_heatmap.png")
+        save_correlation_heatmap(
+            train_df[active_features],
+            plots / "numeric_correlation_heatmap.png",
+            max_columns=self.config.max_features_per_plot,
+        )
         save_train_test_feature_distributions(
             train_df,
             test_df,

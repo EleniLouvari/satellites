@@ -38,7 +38,7 @@ _PERCENTAGE_METRICS = (
     "precision_weighted",
     "recall_weighted",
     "roc_auc_weighted",
-)
+)
 
 # Keep this helper focused on a single transformation so the reporting pipeline stays easy to follow.
 
@@ -412,13 +412,13 @@ def write_evaluate_report(
         test_average_section,
         classification_links,
     )
-    # OOF evidence fitted the guard, so display it separately from independent holdout diagnostics.
+    # OOF evidence fitted class reliability, so distinguish it from independent holdout diagnostics.
     if oof_confidence_metrics_df is not None and not oof_confidence_metrics_df.empty:
         sections.append(
             {
                 "title": "OOF Confidence Performance (Descriptive)",
                 "text": (
-                    "These out-of-fold rows fitted the per-class precision guard, so this section "
+                    "These out-of-fold rows fitted the class reliability used by inspection policy, so this section "
                     "describes the frozen evidence but is not an independent validation result."
                 ),
                 "table": oof_confidence_metrics_df,
@@ -426,12 +426,12 @@ def write_evaluate_report(
         )
     if confidence_metrics_df is not None and not confidence_metrics_df.empty:
         confidence_text = (
-            "Final confidence is the lower of parcel rank consensus and the frozen OOF precision level "
-            "for the predicted class. Soft voting still selects the class; ranks only measure member support."
+            "Final confidence uses parcel rank consensus alone. Frozen OOF precision is an inspection-policy input "
+            "for the predicted class. Soft voting still selects the class; ranks measure member support."
         )
         sections.append(
             {
-                "title": "Holdout Validation: Rank Consensus with Class Reliability Guard",
+                "title": "Holdout Validation: Rank Confidence",
                 "text": confidence_text,
                 "table": confidence_metrics_df,
                 "links": _report_links(config.evaluate_dir / "confidence"),

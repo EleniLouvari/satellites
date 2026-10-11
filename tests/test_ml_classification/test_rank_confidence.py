@@ -413,18 +413,15 @@ def test_prediction_uses_frozen_step_four_confidence_contract():
     expect_equal(result["prediction_confidence_level"].tolist(), ["HIGH"])
 
 
-def test_prediction_applies_frozen_oof_class_reliability():
+@pytest.mark.parametrize("minimum_support", [100, 201])
+def test_prediction_retains_frozen_class_reliability_without_capping_confidence(minimum_support):
     reliability = calculate_oof_class_reliability(
         np.array(["a"] * 95 + ["b"] * 5 + ["b"] * 20 + ["a"] * 80),
         np.array(["a"] * 100 + ["b"] * 100),
         ["a", "b"],
+        minimum_support=minimum_support,
     )
-    thresholds = {
-        "high_min_borda": 90.0,
-        "high_max_range": 2.0,
-        "medium_min_borda": 75.0,
-        "medium_max_range": 4.0,
-    }
+    thresholds = {"high_min_borda": 90.0, "high_max_range": 2.0, "medium_min_borda": 75.0, "medium_max_range": 4.0}
     selection = {
         "selected_models": ["m1", "m2", "m3"],
         "labels": ["a", "b"],
@@ -442,7 +439,9 @@ def test_prediction_applies_frozen_oof_class_reliability():
 
     result, _ = step._calculate_rank_confidence(selection, np.array(["a", "b"]), members)
 
-    expect_equal(result["prediction_confidence_level"].tolist(), ["HIGH", "LOW"])
+    expect_equal(result["prediction_confidence_level"].tolist(), ["HIGH", "HIGH"])
+    expect_true(result["inspection_class_reliability_enabled"])
+    expect_equal(result["prediction_confidence_valid"].tolist(), [True, True])
     expect_equal(result["class_oof_precision"].tolist(), pytest.approx([0.95, 0.20]))
 
 
