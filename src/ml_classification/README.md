@@ -97,6 +97,9 @@ to class evidence, label agreement, rank confidence, data reliability, and geome
 With `inspection_include_outlier=True`, prediction then raises flagged rows by one
 priority band, retaining `inspection_need_before_outlier` and
 `inspection_outlier_adjusted` for auditing. The contract method identifier stays shared.
+Inspection diagnostics export a saved base-to-final priority transition matrix
+and CSV. Operational plots use final priority; score/confidence plots are unchanged
+by the EDA flag. Older artifacts without base priorities have no transition plot.
 Cross-step data flow uses the artifacts below rather than imports between
 private step libraries.
 

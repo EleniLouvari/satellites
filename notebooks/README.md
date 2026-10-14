@@ -17,6 +17,14 @@ follow: `1_parcel_stats_openEO_fill.ipynb` → `2_parcel_features.ipynb` →
 Existing external input and output paths and saved notebook outputs are retained.
 Review the path/configuration cell before running a notebook against your data.
 
+The Neuro classification notebook joins EDA `is_outlier` by parcel ID with a
+one-to-one check, retains it in metadata when selecting columns, and excludes it
+from model features. It enables `inspection_include_outlier=True`: Step 5 raises
+true outliers one priority band after the base rules, capped at Very High;
+Unknown remains unscored. Reports show before/after priority transitions and
+sort the inspection queue by final priority. See the
+[inspection decision table](../docs/ml_classification/INSPECTION_PRIORITY_DECISION_TABLE.md).
+
 `projects/neuro/1_parcel_stats_openEO_fill.ipynb` loads CDSE accounts from PostgreSQL
 with `load_openeo_users_from_db()`. Install the `database` extra and provide
 `DB_NAME`, `TBL_USERS`, and `POSTGRES_*` in the kernel environment. `.env` is not

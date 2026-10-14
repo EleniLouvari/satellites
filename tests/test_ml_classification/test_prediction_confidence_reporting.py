@@ -16,6 +16,7 @@ from ml_classification.shared.reports.confidence_diagnostics import (
     prepare_confidence_diagnostics,
 )
 from ml_classification.step_05_predict.libraries import report as report_module
+from ml_classification.step_05_predict.libraries.inspection_priority.diagnostics import _outlier_priority_transitions
 from ml_classification.step_05_predict.libraries.inspection_priority.plots import save_inspection_relationship_plot
 from ml_classification.step_05_predict.libraries.inspection_priority.scoring import calculate_inspection_metrics
 from ml_classification.step_05_predict.libraries.prediction_quality import resolve_rank_confidence_contract
@@ -247,11 +248,13 @@ def test_prediction_report_exports_confidence_graphs_tables_and_sankey(request):
         inspection_high_geometry_risk_threshold=0.75,
         inspection_medium_score_threshold=25.0,
         inspection_high_score_threshold=50.0,
+        inspection_include_outlier=True,
         random_state=42,
     )
     predictions = _prediction_rows().assign(
         data_reliability_score=[0.95, 0.82, 0.74, 0.55, 0.91, 0.68, 0.42, 0.87],
         geom_shape_complexity_score=[1.0, 1.4, 1.8, 2.5, 1.2, 2.1, 3.2, 1.1],
+        is_outlier=[True, True, False, None, True, False, True, False],
     )
     # Include one reliable disagreement so the declaration-conflict matrix is exercised.
     predictions.loc[1, "prediction_confidence_level"] = "HIGH"
@@ -329,6 +332,15 @@ def test_prediction_report_exports_confidence_graphs_tables_and_sankey(request):
     expect_in("inspection_include_outlier", report)
     expect_in("inspection_need_before_outlier", report)
     expect_in("inspection_outlier_adjusted", report)
+    expect_in("EDA is_outlier: Base versus Final Inspection Priority", report)
+    expect_in("inspection_outlier_priority_transitions.png", report)
+    transitions = pd.read_csv(output_dir / "data" / "inspection_outlier_priority_transitions.csv", index_col=0)
+    expect_equal(int(transitions.to_numpy().sum()), len(predictions))
+    expected_transitions = pd.crosstab(predictions["inspection_need_before_outlier"], predictions["inspection_need"])
+    pd.testing.assert_frame_equal(
+        transitions.loc[expected_transitions.index, expected_transitions.columns], expected_transitions,
+        check_names=False, check_index_type=False, check_column_type=False,
+    )
 
     expected_inspection_tables = {
         "inspection_need_summary.csv",
@@ -340,6 +352,7 @@ def test_prediction_report_exports_confidence_graphs_tables_and_sankey(request):
         "inspection_need_by_declaration_status.csv",
         "inspection_score_by_confidence_data.csv",
         "inspection_top_priority_parcels.csv",
+        "inspection_outlier_priority_transitions.csv",
     }
     expect_true(all((output_dir / "data" / filename).exists() for filename in expected_inspection_tables))
     expected_inspection_plots = {
@@ -351,8 +364,23 @@ def test_prediction_report_exports_confidence_graphs_tables_and_sankey(request):
         "inspection_declaration_conflicts.png",
         "inspection_confidence_review_comparison.png",
         "inspection_evidence_quality_heatmap.png",
+        "inspection_outlier_priority_transitions.png",
     }
     expect_true(all((output_dir / "plots" / filename).exists() for filename in expected_inspection_plots))
     relationship_image = mpimg.imread(output_dir / "plots" / "inspection_risk_relationships.png")
     expect_true(relationship_image.shape[1] >= 2_000)
     expect_true(relationship_image.shape[0] >= 1_000)
+
+
+def test_outlier_transition_audit_preserves_caps_unknown_and_legacy_absence():
+    """Saved transitions count real increases, capped outliers, and unscored rows separately."""
+    saved = pd.DataFrame({
+        "inspection_need_before_outlier": ["LOW", "VERY_HIGH", "UNKNOWN", "MEDIUM", "MEDIUM"],
+        "inspection_need": ["LOW_MEDIUM", "VERY_HIGH", "UNKNOWN", "MEDIUM_HIGH", "MEDIUM"],
+    })
+    table = _outlier_priority_transitions(saved)
+    expect_equal(int(table.to_numpy().sum()), 5)
+    for before, after in zip(saved["inspection_need_before_outlier"], saved["inspection_need"]):
+        expect_equal(table.loc[before, after], 1)
+    expect_true(_outlier_priority_transitions(saved.drop(columns="inspection_need_before_outlier")).empty)
+    expect_equal(int(_outlier_priority_transitions(saved.iloc[:0]).to_numpy().sum()), 0)

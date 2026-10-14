@@ -145,7 +145,8 @@ def _build_prediction_diagnostics_section(
         "title": "Prediction Diagnostics",
         "text": (
             "Use Confidence Levels to audit model agreement and prediction errors. Use Inspection Priority to "
-            "plan parcel checks using confidence, class reliability, EO data reliability, geometry, and declaration agreement."
+            "plan parcel checks using confidence, class reliability, EO data reliability, geometry, declaration agreement, "
+            "and the optional EDA is_outlier adjustment."
         ),
         "tabs": [
             {"label": "Confidence Levels", "sections": confidence_sections},
@@ -194,7 +195,8 @@ def _build_inspection_sections(
             "represents relative geometry risk, and marker shape distinguishes declaration agreement. The "
             "numeric score is diagnostic only and never assigns priority. The decision table directly combines "
             "class reliability, rank confidence, data reliability, geometry, and declaration agreement. Geometry interior-area ratio is not added separately because it is already incorporated "
-            "in geom_shape_complexity_score."
+            "in geom_shape_complexity_score. The optional is_outlier adjustment then raises final priority by one "
+            "band; it does not change this diagnostic score or confidence."
         ),
         "table": inspection_formula,
     }
@@ -203,12 +205,32 @@ def _build_inspection_sections(
         relationship_section["images"] = [{"title": "Inspection Score Relationships", "path": relationship_path}]
     sections.append(relationship_section)
 
+    outlier_section: dict[str, Any] = {
+        "title": "EDA is_outlier: Base versus Final Inspection Priority",
+        "text": (
+            "The matrix counts saved decisions before and after the optional outlier adjustment. "
+            "With inspection_include_outlier=True, is_outlier=True raises priority one band, capped at Very High; "
+            "Unknown remains unscored. Disabled, false, missing, or invalid flags leave priority unchanged. "
+            "Diagonal cells are unchanged; off-diagonal cells show increases. The original inspection_rule is "
+            "preserved, with inspection_need_before_outlier, inspection_outlier_adjusted, and reason "
+            "OUTLIER_PRIORITY_INCREASE recording actual increases. Check type is preserved except NONE raised "
+            "to Low–Medium becomes INSUFFICIENT_EO_EVIDENCE. Outliers alone do not establish declaration conflicts. "
+            "All operational charts and queue ordering use final priority. The score and confidence plots are unaffected. "
+            "If saved before-outlier fields are absent, this audit is unavailable; regenerate prediction quality first."
+        ),
+        "table": inspection_artifacts.tables["inspection_outlier_priority_transitions"],
+    }
+    outlier_path = inspection_artifacts.images.get("outlier_transitions")
+    if outlier_path is not None:
+        outlier_section["images"] = [{"title": "Outlier Priority Transitions", "path": outlier_path}]
+    sections.append(outlier_section)
+
     confidence_data_section: dict[str, Any] = {
         "title": "Inspection Score by Confidence and Data Reliability",
         "text": (
             "This enlarged matrix preserves the previous confidence-by-reliability view. Each cell is the median "
             "label-independent inspection score for parcels in that combination; geometry risk still contributes "
-            "to every parcel score and therefore to the displayed median."
+            "to every parcel score and therefore to the displayed median. is_outlier does not change these scores."
         ),
         "table": inspection_artifacts.tables["inspection_score_by_confidence_data"],
     }
@@ -224,7 +246,8 @@ def _build_inspection_sections(
         "text": (
             "DECLARATION_CONFLICT identifies reliable EO evidence supporting a crop different from the farmer "
             "declaration. INSUFFICIENT_EO_EVIDENCE identifies parcels where confidence, observation coverage, "
-            "class reliability, or geometry does not support a reliable verification. These types are mutually exclusive."
+            "class reliability, or geometry does not support a reliable verification, or an outlier adjustment "
+            "raises a NONE row into review. These types are mutually exclusive."
         ),
         "table": inspection_artifacts.tables["inspection_check_type_summary"],
     }
@@ -296,7 +319,7 @@ def _build_inspection_sections(
         "text": (
             "This cross-check shows where the confidence-only review flag and the composite operational policy "
             "agree or differ. Operational priority also uses class reliability, data reliability, "
-            "geometry, and farmer-declaration agreement."
+            "geometry, farmer-declaration agreement, and the optional is_outlier adjustment."
         ),
         "table": inspection_artifacts.tables["inspection_confidence_review_comparison"],
     }
@@ -650,6 +673,7 @@ def _build_output_links(config, confidence_artifacts, inspection_artifacts) -> l
             "inspection_need_by_declaration_status": "Inspection Need by Declaration Status",
             "inspection_score_by_confidence_data": "Inspection Score by Confidence and Data Reliability",
             "inspection_top_priority_parcels": "Top-Priority Parcel Queue",
+            "inspection_outlier_priority_transitions": "EDA Outlier Priority Transitions",
         }
         output_links.extend(
             {"label": label, "path": config.predict_dir / "data" / f"{artifact_name}.csv"}

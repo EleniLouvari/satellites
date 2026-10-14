@@ -12,6 +12,12 @@ parcel rank evidence. Class reliability is an independent input to the
 [inspection decision table](INSPECTION_PRIORITY_DECISION_TABLE.md), together
 with label agreement, rank confidence, data reliability, and geometry risk.
 It never caps confidence or changes the confidence-only review flag.
+The optional EDA `is_outlier` input then raises the base inspection priority one
+band, capped at Very High, with Unknown unchanged. The Neuro workflow enables
+`inspection_include_outlier=True`. This does not change confidence, OOF class
+reliability, or the diagnostic inspection score. See the
+[OOF workflow](<OOF and Class Reliability Workflow.png>) and
+[full inspection workflow](<Full Workflow.png>).
 
 ## Parcel rank confidence
 

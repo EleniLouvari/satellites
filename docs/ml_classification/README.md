@@ -194,7 +194,7 @@ check summary.
 ML-ready satellite GeoParquet usage:
 
 ```python
-non_features = {"class", "parcel_id", "geometry", "batch_number"}
+non_features = {"class", "parcel_id", "geometry", "batch_number", "is_outlier"}
 features = [column for column in parcels.columns if column not in non_features]
 
 config = ClassificationPipelineConfig(
@@ -251,18 +251,23 @@ inspection_score = 100 * (0.60*confidence_risk + 0.25*data_risk + 0.15*geometry_
 ```
 
 The numeric score and `inspection_need_base` are diagnostics only. Final priority
-comes from one direct rule table using class reliability, declared-versus-predicted
-agreement, rank confidence, data reliability, and geometry risk. See the
+comes from a base rule table using class reliability, declared-versus-predicted
+agreement, rank confidence, data reliability, and geometry risk, followed by the
+optional `is_outlier` adjustment. When `inspection_include_outlier=True`, a true
+flag raises the base priority one band, capped at Very High; Unknown stays unscored. See the
 [complete 20-rule decision table](INSPECTION_PRIORITY_DECISION_TABLE.md) for every
 combination, exact boundaries, disabled/missing-input behavior, and queue ordering.
 
 The seven priorities are Very Low, Low, Low–Medium, Medium, Medium–High, High,
 and Very High. `UNKNOWN` is an unscored status. Outputs include `inspection_need`,
 `inspection_priority_label`, `inspection_rule`, `inspection_class_reliability_applied`,
-`inspection_check_type`, and `inspection_reasons`. Very Low/Low need no check;
-Medium–High/High/Very High disagreements are suspected declaration conflicts;
-remaining cases need evidence verification. The queue uses priority and stable
-input order, never the diagnostic score.
+`inspection_need_before_outlier`, `inspection_outlier_adjusted`,
+`inspection_check_type`, and `inspection_reasons`. Base Very Low/Low need no check;
+base Medium–High/High/Very High disagreements are suspected declaration conflicts;
+remaining cases need evidence verification. Outlier adjustment preserves check
+type except NONE raised to Low–Medium enters evidence review; it never creates
+a declaration conflict. The queue uses final priority and stable input order,
+never the diagnostic score.
 
 With existing saved member probabilities and an OOF reliability contract,
 `pipeline.recalculate_prediction_quality()` updates prediction outputs without
@@ -276,7 +281,9 @@ The report keeps all existing model-confidence diagnostics in a
 image for readability. The operational tab includes check-type and need
 summaries, EO evidence-quality and declaration-agreement matrices,
 predicted-crop inspection rates, reliable declaration conflicts, a comparison
-with the confidence-only review flag, and the ordered parcel inspection queue.
+with the confidence-only review flag, the EDA outlier before/after priority
+matrix, and the ordered parcel inspection queue. Operational charts use final
+priority; diagnostic score and confidence charts are unaffected by outliers.
 
 The zonal-statistics pipeline performs the time-series pivot before writing the
 GeoParquet. The ML pipeline validates the one-row-per-parcel grain, holds out
@@ -364,8 +371,16 @@ fractions.
 ### Include EDA outliers in inspection ranking
 
 Keep `is_outlier` in the input parcel table as metadata, outside `feature_columns`.
+Join EDA results by parcel ID with `validate="one_to_one"`, and retain the flag
+when selecting input columns. The Neuro notebook does both and enables the option.
 Set `inspection_include_outlier=True` in `ClassificationPipelineConfig` to raise
 each flagged parcel's matrix priority by one level, capped at Very High.
 Unknown stays unscored; missing flags leave priority unchanged. The default is
 `False`. See the [outlier adjustment table](INSPECTION_PRIORITY_DECISION_TABLE.md#optional-eda-outlier-adjustment)
 for auditing fields and recalculation behavior.
+
+The report exports `data/inspection_outlier_priority_transitions.csv` and
+`plots/inspection_outlier_priority_transitions.png`: rows are saved base priorities,
+columns are final priorities, and cells count parcels. Diagonal cells are unchanged.
+Older runs without `inspection_need_before_outlier` have no transition plot;
+reports do not infer or recalculate missing decisions.

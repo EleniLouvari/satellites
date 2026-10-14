@@ -248,6 +248,15 @@ These full-dataset diagnostics are not model predictors. Investigate flagged
 records rather than automatically deleting test rows; fit model outlier-handling
 decisions using training data.
 
+For downstream inspection, join `is_outlier` from `eda_annotated_data.parquet`
+to classification inputs by parcel ID with a one-to-one join. Retain it as
+metadata through input-column selection, outside `feature_columns`. The Neuro
+notebook enables `inspection_include_outlier=True`: after the base inspection
+rules, true outliers rise one band (Very High is capped; Unknown stays unscored).
+This occurs in classification Step 5, outside `EDAPipeline.run()`, and leaves
+confidence and OOF class reliability unchanged. See the
+[inspection workflow and plots](../ml_classification/INSPECTION_PRIORITY_DECISION_TABLE.md#optional-eda-outlier-adjustment).
+
 ## 9. Generate plots, persist tables and render HTML
 
 After building artifacts, the pipeline optionally prints the feature proposal

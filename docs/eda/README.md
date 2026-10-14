@@ -87,6 +87,12 @@ after the train/test split and is intentionally not treated as an EDA result.
 The combined outlier flag is diagnostic metadata, not a recommended model feature. Do not automatically delete flagged test rows. First
 verify whether they are data errors; otherwise keep the test set representative and compare training with and without flagged training rows.
 Because this EDA flag is calculated from the complete supplied dataset, do not use it as a predictor in the ML pipeline.
+It can be used as downstream inspection metadata: the Neuro classification
+workflow joins `is_outlier` by parcel ID, retains it outside `feature_columns`,
+and enables `inspection_include_outlier=True`. True outliers then raise the base
+inspection priority one band, capped at Very High; Unknown is unchanged.
+Confidence and diagnostic scores are unaffected. See the
+[inspection policy and workflow](../ml_classification/INSPECTION_PRIORITY_DECISION_TABLE.md).
 The target, configured ID, and prior EDA diagnostic columns are excluded from Mahalanobis scoring; `eda_summary.json` records the exact
 `multivariate_features_used` list.
 

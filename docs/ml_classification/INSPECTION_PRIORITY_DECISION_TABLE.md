@@ -1,29 +1,35 @@
 # Inspection Priority Decision Table
 
 Visual reference: [Full analytical workflow](<Full Workflow.png>), including
-evidence calculations, validation branches, all 20 rules, and queue ordering.
+evidence calculations, validation branches, all 20 base rules, the EDA outlier
+adjustment, and final queue ordering.
 
 ## Policy and inputs
 
-Step 5 applies one rule-based mechanism to five inputs: predicted-class OOF
+Step 5 first applies a base rule matrix to five inputs: predicted-class OOF
 reliability, declared-versus-predicted label agreement, parcel rank confidence,
-data reliability, and geometry risk. It never caps rank confidence with class
+data reliability, and geometry risk. The sixth input, EDA `is_outlier`, raises
+the base result by one band when `inspection_include_outlier=True` (enabled in
+the Neuro workflow; the library default is `False`). It never caps rank confidence with class
 reliability. Numeric uncertainty scores do not determine priority or queue order.
 
 The seven ordered priorities are **Very Low, Low, Low–Medium, Medium,
 Medium–High, High, Very High**. Medium means inconclusive evidence requiring
-verification. Higher bands indicate increasingly convincing declaration conflicts;
-lower bands indicate increasingly convincing agreement. These are operational
+verification. Before outlier adjustment, higher bands indicate increasingly
+convincing declaration conflicts; lower bands indicate increasingly convincing
+agreement. An outlier increase signals additional review priority, not stronger
+evidence of a declaration conflict. These are operational
 rules, not calibrated probabilities that a declaration is incorrect.
 
-## Complete decision table
+## Base decision table
 
 These rules apply with class reliability enabled and valid inputs. Conditions
 within a row use AND. Any means any valid value. The first matching rule wins;
 overlapping low-evidence rules always assign Medium. IDs are persisted in
-`inspection_rule` so the decision can be traced to this table.
+`inspection_rule` so the decision can be traced to this table. The priorities
+below are **before** outlier adjustment, recorded in `inspection_need_before_outlier`.
 
-| Rule | Class reliability | Declared vs predicted | Rank confidence | Data reliability | Geometry risk | Inspection Priority Label |
+| Rule | Class reliability | Declared vs predicted | Rank confidence | Data reliability | Geometry risk | Base Priority Label |
 |---|---|---|---|---|---|---|
 | R01 | High | Same | High | > 0.8 | < 0.5 | Very Low |
 | R02 | High | Same | High | > 0.8 | >= 0.5 | Low |
@@ -55,6 +61,25 @@ customizable; the comparison operators do not change.
 
 ## Optional EDA outlier adjustment
 
+This is the final policy stage, applied after both the base matrix and its
+fallbacks. For example, `NO_DECLARATION` or `CLASS_RELIABILITY_UNAVAILABLE`
+produces Medium before adjustment and Medium–High for an enabled true outlier.
+Neither case becomes a declaration conflict.
+
+```mermaid
+flowchart TD
+    Evidence[Class reliability, label agreement, rank confidence, data reliability, geometry] --> Base[20 base rules or evidence fallback]
+    EDA[EDA is_outlier joined by parcel ID as metadata] --> Enabled{Outlier option enabled and flag true?}
+    Base --> Before[Save inspection_need_before_outlier and inspection_rule]
+    Before --> Enabled
+    Enabled -->|Yes| Raise[Raise one band; Very High and Unknown unchanged]
+    Enabled -->|No / absent / invalid| Keep[Keep base priority]
+    Raise --> Audit[Final inspection_need, adjusted flag and reasons]
+    Keep --> Audit
+    Audit --> Queue[Preserve check type; NONE raised to Low-Medium enters evidence review]
+    Queue --> Sort[Queue by final priority, stable input-order ties]
+```
+
 Set `inspection_include_outlier=True` in `ClassificationPipelineConfig` to apply
 `is_outlier` after the matrix. The default is `False`. Supply the Boolean EDA
 flag as metadata in the input table, joined by parcel ID; keep it out of
@@ -83,6 +108,14 @@ row raised to Low–Medium enters `INSUFFICIENT_EO_EVIDENCE` review.
 are not marked adjusted. The queue sorts on final priority using existing stable
 ties. Recalculation reapplies the matrix first, so increases never accumulate.
 The report and queue include the source flag and adjustment fields.
+
+The report exports `inspection_outlier_priority_transitions.csv` under `data/`
+and a matching PNG under `plots/`. Rows show saved base priority, columns show
+final priority, and cells count parcels. Diagonal cells are unchanged, including
+capped Very High and unscored Unknown. The chart is unavailable for older runs
+without saved base priorities; reports never reconstruct decisions from live
+configuration. All operational plots use final priority. Score-only plots are
+explicitly unaffected by `is_outlier`.
 
 The prediction summary records the enabled switch, whether the column exists,
 and the adjusted row count. Existing runs need `is_outlier` already present in
@@ -176,13 +209,16 @@ Higher values indicate more complex/irregular parcel geometry.
 
 - `inspection_need`: machine-readable priority (`VERY_LOW`, `LOW`, `LOW_MEDIUM`,
   `MEDIUM`, `MEDIUM_HIGH`, `HIGH`, `VERY_HIGH`) or unscored `UNKNOWN`.
-- `inspection_priority_label`: readable label from the decision table.
+- `inspection_priority_label`: readable final label after optional outlier adjustment.
 - `inspection_rule`: first matching rule ID or explicit fallback identifier.
 - `inspection_class_reliability_applied`: whether valid enabled class evidence
   participated in a comparable, valid policy decision.
+- `inspection_need_before_outlier`: base matrix or fallback priority.
+- `inspection_outlier_adjusted`: True only when the outlier stage increased priority.
 - `inspection_check_type`: `NONE` for Very Low/Low; `DECLARATION_CONFLICT` for
   Different labels with Medium–High/High/Very High; `INSUFFICIENT_EO_EVIDENCE`
-  for remaining cases. The last name is retained for compatibility and includes
+  for remaining base cases. After outlier adjustment, preserve this type except
+  NONE raised to Low–Medium becomes `INSUFFICIENT_EO_EVIDENCE`. The last name is retained for compatibility and includes
   model/class uncertainty and missing evidence as well as EO quality issues.
 - `inspection_reasons`: pipe-separated diagnostic reasons, including
   MEDIUM/LOW_CLASS_RELIABILITY, unavailable reliability, and missing declarations.

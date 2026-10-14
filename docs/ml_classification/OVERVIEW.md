@@ -118,6 +118,9 @@ places for source data or code.
   `is_outlier=True` row by one inspection-priority band after the decision table.
   `UNKNOWN` and `VERY_HIGH` remain unchanged; confidence and the numeric score
   are unchanged. See the [policy and audit fields](INSPECTION_PRIORITY_DECISION_TABLE.md).
+  The Neuro notebook enables this switch and retains the EDA flag as metadata
+  through input-column selection. The report shows saved base-to-final priority
+  transitions alongside final-priority operational charts.
 - `open_html_report=True`: open generated HTML reports after writing them.
 
 Satellite zonal statistics already writes one ML-ready GeoParquet row per

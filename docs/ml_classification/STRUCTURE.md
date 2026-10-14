@@ -21,6 +21,12 @@ Each step persists the artifacts required by later steps. This makes the
 workflow restartable: a later step can load earlier artifacts without keeping
 all intermediate objects in memory.
 
+Retain EDA `is_outlier` as input metadata through these steps, outside model
+features. Step 5 applies the base inspection rules, then the optional one-band
+outlier increase, then builds plots and the queue from final priorities.
+The Neuro notebook enables this option. See the
+[complete policy workflow](INSPECTION_PRIORITY_DECISION_TABLE.md#optional-eda-outlier-adjustment).
+
 ## Source package and ownership
 
 The maintained source is organized by workflow step:
@@ -177,6 +183,7 @@ project_dir/
     |   |-- inspection_confidence_review_comparison.csv
     |   |-- inspection_need_by_declaration_status.csv
     |   |-- inspection_score_by_confidence_data.csv
+    |   |-- inspection_outlier_priority_transitions.csv
     |   `-- inspection_top_priority_parcels.csv
     `-- plots/
         |-- filled_target_distribution.png
@@ -185,6 +192,7 @@ project_dir/
         |-- inspection_priority_by_predicted_class.png
         |-- inspection_need_by_declaration_status.png
         |-- inspection_score_confidence_data_heatmap.png
+        |-- inspection_outlier_priority_transitions.png  [when saved base priorities exist]
         |-- inspection_declaration_conflicts.png   [when conflicts exist]
         |-- inspection_evidence_quality_heatmap.png
         `-- inspection_confidence_review_comparison.png

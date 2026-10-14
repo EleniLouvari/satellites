@@ -145,6 +145,16 @@ def _declaration_need_table(data: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def _outlier_priority_transitions(data: pd.DataFrame) -> pd.DataFrame:
+    """Count saved base-to-final priority transitions without inferring legacy decisions."""
+    if "inspection_need_before_outlier" not in data:
+        return pd.DataFrame()
+    # Read persisted decisions, not live configuration: report regeneration must not rescore rows.
+    return pd.crosstab(data["inspection_need_before_outlier"], data["inspection_need"]).reindex(
+        index=_NEED_ORDER, columns=_NEED_ORDER, fill_value=0
+    )
+
+
 def _confidence_data_score_table(data: pd.DataFrame, config) -> pd.DataFrame:
     """Summarize median inspection score by confidence and reliability band."""
     reliability_band = _data_reliability_levels(data[config.inspection_data_reliability_column], config)
@@ -314,6 +324,7 @@ def export_operational_inspection_diagnostics(
     review_comparison = _review_comparison(data, config.prediction_review_column)
     declaration_need = _declaration_need_table(data)
     confidence_data_score = _confidence_data_score_table(data, config)
+    outlier_transitions = _outlier_priority_transitions(data)
     top_priority = _top_priority_parcels(data, config)
     tables = {
         "inspection_need_summary": need_summary,
@@ -325,12 +336,14 @@ def export_operational_inspection_diagnostics(
         "inspection_need_by_declaration_status": declaration_need,
         "inspection_score_by_confidence_data": confidence_data_score,
         "inspection_top_priority_parcels": top_priority,
+        "inspection_outlier_priority_transitions": outlier_transitions,
     }
     matrix_tables = {
         "inspection_declaration_conflict_matrix",
         "inspection_confidence_review_comparison",
         "inspection_need_by_declaration_status",
         "inspection_score_by_confidence_data",
+        "inspection_outlier_priority_transitions",
     }
     # Matrix row labels carry category meaning and must be retained in their CSV exports.
     for name, table in tables.items():
@@ -341,6 +354,14 @@ def export_operational_inspection_diagnostics(
     if save_inspection_relationship_plot(data, relationship_path, config):
         images["relationship"] = relationship_path
     builders = {
+        "outlier_transitions": _save_matrix(
+            outlier_transitions,
+            plots_dir / "inspection_outlier_priority_transitions.png",
+            "EDA is_outlier: saved priority before and after adjustment",
+            "Final inspection priority (after optional outlier adjustment)",
+            "Base inspection priority (before outlier adjustment)",
+            cbar_label="Parcels",
+        ),
         "check_types": _save_check_type_bar(check_summary, plots_dir / "inspection_check_type_distribution.png"),
         "predicted_class": _save_predicted_class_priority(
             class_priority, plots_dir / "inspection_priority_by_predicted_class.png"
@@ -349,13 +370,13 @@ def export_operational_inspection_diagnostics(
             declaration_need,
             plots_dir / "inspection_need_by_declaration_status.png",
             "Final inspection need by declaration agreement",
-            "Label-aware inspection need",
+            "Final priority (after optional outlier adjustment)",
             "Declaration versus prediction",
         ),
         "confidence_data_score": _save_matrix(
             confidence_data_score,
             plots_dir / "inspection_score_confidence_data_heatmap.png",
-            "Median inspection score by confidence and data reliability",
+            "Median diagnostic score (unaffected by is_outlier)",
             "Data reliability level",
             "Prediction confidence level",
             fmt=".1f",
@@ -376,7 +397,7 @@ def export_operational_inspection_diagnostics(
             review_comparison,
             plots_dir / "inspection_confidence_review_comparison.png",
             "Confidence review versus operational inspection need",
-            "Operational inspection need",
+            "Final priority (after optional outlier adjustment)",
             "Confidence-only review flag",
         ),
     }

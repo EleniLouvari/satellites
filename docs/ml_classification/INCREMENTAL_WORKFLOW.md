@@ -409,7 +409,20 @@ config = ClassificationPipelineConfig(
 2. Logs skipped trained models
 3. Generates reports only for selected models
 
-## See Also
+## Refresh inspection priority after adding EDA outliers
+
+Inspection policy changes do not require retraining when saved predictions
+already contain `is_outlier`, member probabilities, and a supported OOF contract.
+Set `config.inspection_include_outlier = True`, call
+`pipeline.recalculate_prediction_quality()`, then
+`pipeline.create_reports(step="predict")` to refresh the plots and before/after
+outlier audit. Recalculation starts from base rules; increases never accumulate.
+If the flag was dropped before saving the input, restore it from EDA by parcel ID
+in the input workflow and regenerate the affected pipeline artifacts. Changing
+configuration or regenerating HTML alone cannot add missing EDA metadata.
+See the [inspection rules](INSPECTION_PRIORITY_DECISION_TABLE.md).
+
+## Related guides
 
 - [ML Classification Pipeline README](README.md)
 - [Configuration Guide](../../src/ml_classification/shared/config/config.py)
