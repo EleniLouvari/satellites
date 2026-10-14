@@ -12,10 +12,9 @@ for related guidance.
 
 ## 1. Complete flowchart
 
-[PNG](EDA_PIPELINE_FLOWCHART.png) · [SVG](EDA_PIPELINE_FLOWCHART.svg) ·
-[Editable draw.io diagram](EDA_PIPELINE_FLOWCHART.drawio)
+[Open PNG](EDA_PIPELINE_FLOWCHART.png)
 
-![EDA pipeline from input data to diagnostics and reports](EDA_PIPELINE_FLOWCHART.svg)
+![EDA pipeline from input data to diagnostics and reports](EDA_PIPELINE_FLOWCHART.png)
 
 ```mermaid
 flowchart TD
@@ -30,7 +29,7 @@ flowchart TD
     G -->|No| J[Empty target evidence and proposal]
     I --> K[Plot feature order and VIF]
     J --> K
-    K --> L[Missingness-target tests, PCA and Mahalanobis scoring]
+    K --> L[Missingness-target tests, PCA and five-method outlier voting]
     L --> M[Annotate all input rows; assemble artifacts]
     M --> N{include_plots?}
     N -->|Yes| O[Write applicable images]
@@ -57,7 +56,7 @@ actual orchestration order. Model validation is outside `EDAPipeline.run()`.
 | `run_eda(df, output_dir, target_column=None, **kwargs)` | Convenience wrapper constructing the configuration and pipeline. |
 | `build_eda_artifacts(df, config)` | Build in-memory artifacts without file/plot/report orchestration. |
 
-Input can come from openEO/Planet parcel statistics, enrichment, or an independent
+Input can come from openEO parcel statistics, enrichment, or an independent
 table. EDA does not call acquisition code. Load the file before calling `run()`;
 the method accepts a table, not a path.
 
@@ -225,37 +224,29 @@ the original feature values.
 PCA receives the full numeric column list, so its subset can include numeric IDs
 or targets. Its subset need not match Mahalanobis or the proposed features.
 
-PCA needs at least two usable columns and three rows. Mahalanobis requires at
-least two usable columns and at least `usable_columns + 2` rows. It uses the
-covariance pseudo-inverse and a chi-square threshold:
-
-```text
-outlier = squared Mahalanobis distance > chi-square quantile(0.975, usable dimensions)
-```
-
-This threshold does not force 2.5% of rows to be flagged. All scored rows are
-considered; the outlier CSV contains only flagged rows.
-`summary["multivariate_features_used"]` records the requested scoring subset;
-all-null/constant columns can subsequently be removed in matrix preparation.
+PCA needs at least two usable columns and three rows. The combined detector
+uses `detect_all_outliers()` with one vote per method: IQR, z-score, Isolation
+Forest, PCA/DBSCAN and Mahalanobis. See [combined parcel outliers](README.md#combined-parcel-outliers)
+for thresholds, preparation, exclusions and limitations. PLS is excluded because
+it requires a meaningful response. Mahalanobis uses covariance rank for its
+chi-square degrees of freedom and requires at least two usable features and
+`usable_columns + 2` rows.
 
 ## 8. Annotate every input row
 
-The annotated copy retains original rows, attributes and geometry and adds or
-replaces three fields:
+The annotated copy preserves rows, attributes, geometry and duplicate indices.
+`is_outlier` now means a strict majority of available detector votes,
+with at least two methods required. Ties are false; unavailable results are null.
+The flag records the majority decision, not a combined confidence estimate.
+Individual nullable votes and counts are stored in `eda_outlier_*` columns;
+Mahalanobis distance and p-value remain separate diagnostics.
+The outlier table retains `row_position` and `source_index` for tracing records.
+`multivariate_features_used` records the requested scoring subset; constant and
+all-null columns can subsequently be removed. The report includes method counts.
 
-| Field | Meaning |
-| --- | --- |
-| `is_outlier_97_5pct` | Nullable Boolean multivariate flag. |
-| `mahalanobis_distance` | Distance for a scored row. |
-| `mahalanobis_pvalue` | Chi-square tail probability. |
-
-Unavailable scores remain null, not automatically `False`. Alignment uses row
-positions, so duplicate source index labels do not misassign scores. The outlier
-table retains `row_position` and `source_index` for tracing flagged records.
-
-These full-dataset diagnostics are not recommended model predictors. Investigate
-flagged records rather than automatically deleting test rows; fit any model
-outlier-handling decisions using training data.
+These full-dataset diagnostics are not model predictors. Investigate flagged
+records rather than automatically deleting test rows; fit model outlier-handling
+decisions using training data.
 
 ## 9. Generate plots, persist tables and render HTML
 

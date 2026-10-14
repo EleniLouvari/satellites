@@ -123,6 +123,7 @@ class PredictStep(PipelineStepBase):
             "prediction_rank_confidence_reason",
             self.config.inspection_data_reliability_column,
             self.config.inspection_geometry_complexity_column,
+            "is_outlier",
             *INSPECTION_OUTPUT_COLUMNS,
         ]
         preview_columns.extend(column for column in optional_confidence_columns if column in final_df.columns)

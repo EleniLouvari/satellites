@@ -9,7 +9,7 @@
 - [openEO scheduling: batches versus partitions](data_preparation/openeo/SCHEDULING.md)
 - [openEO calling example](data_preparation/openeo/CALLING_EXAMPLE.md)
 - [Multiuser guide](data_preparation/openeo/MULTIUSER_IMPLEMENTATION_GUIDE.md)
-- [Planet workflow](data_preparation/planet.md)
+- [Local NetCDF cleaning, checkpoints, and completion](data_preparation/NETCDF_PROCESSING.md)
 - [EDA](eda/README.md) and [feature-screening guide](eda/FEATURE_SELECTION_GUIDE.md)
 - [Detailed EDA workflow and flowchart](eda/WORKFLOW.md)
 - [ML overview](ml_classification/OVERVIEW.md)
@@ -17,6 +17,9 @@
 - [ML architecture](ml_classification/STRUCTURE.md)
 - [Incremental training](ml_classification/INCREMENTAL_WORKFLOW.md)
 - [Rank-confidence methodology](ml_classification/rank_based_ensemble_confidence_methodology.md)
+- [Inspection-priority rules and optional outlier adjustment](ml_classification/INSPECTION_PRIORITY_DECISION_TABLE.md)
+- [Classification source guide](../src/ml_classification/README.md)
+- [Notebook setup and project workflow](../notebooks/README.md)
 
 The original Word manuals are preserved in `manuals/`, and their reference
 images are in `images/`. These historical manuals may show pre-migration import

@@ -360,3 +360,12 @@ breaks ties in row balance. Exact sizes are not guaranteed: a cell with more tha
 `spatial_split_grid_size` to create finer cells if appropriate for the intended
 geographic separation. The preparation report shows actual and target validation
 fractions.
+
+### Include EDA outliers in inspection ranking
+
+Keep `is_outlier` in the input parcel table as metadata, outside `feature_columns`.
+Set `inspection_include_outlier=True` in `ClassificationPipelineConfig` to raise
+each flagged parcel's matrix priority by one level, capped at Very High.
+Unknown stays unscored; missing flags leave priority unchanged. The default is
+`False`. See the [outlier adjustment table](INSPECTION_PRIORITY_DECISION_TABLE.md#optional-eda-outlier-adjustment)
+for auditing fields and recalculation behavior.

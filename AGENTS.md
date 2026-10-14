@@ -52,18 +52,13 @@ The public classes are `OpenEOZonalStats` and `OpenEOJobManagerZonalStats`.
 - Project example:
   [1_parcel_stats_openEO_fill.ipynb](notebooks/projects/neuro/1_parcel_stats_openEO_fill.ipynb).
 
-### Planet acquisition and parcel statistics
+### HUB catalog utilities
 
-`PlanetBasemapZonalStats` processes monthly Planet basemaps from local imagery,
-download manifests, or the HUB catalog, using the shared local statistics engine.
-
-- Read the [Planet workflow](docs/data_preparation/PLANET.md) for delivery
-  downloads, local manifests, catalog inputs, spectral assumptions, and outputs.
-- Source: `src/data_preparation/sources/planet/delivery.py` handles delivery
-  downloads; `src/data_preparation/sources/hub/` handles catalog access;
-  `src/data_preparation/parcel_stats/planet.py` handles parcel statistics.
-- Keep service-specific acquisition in its adapter. The shared
-  `parcel_stats/core/` engine must remain independent of acquisition services.
+Catalog helpers live in `src/data_preparation/sources/hub/`. This checkout does
+not include the former Planet delivery adapter, `PlanetBasemapZonalStats`, or a
+Planet workflow guide. Do not use those APIs in new examples. Keep any future
+service-specific acquisition in its adapter; `parcel_stats/core/` must remain
+independent of acquisition services.
 
 ### Parcel feature enrichment
 

@@ -149,11 +149,20 @@ def _build_report_tabs(artifacts: dict[str, Any], plot_paths: dict[str, Path]) -
                     "images": _select_images(plot_paths, ["numeric_distributions"]),
                 },
                 {
-                    "title": "Multivariate Outliers",
+                    "title": "Outlier Method Counts",
+                    "table": artifacts["outlier_method_summary"],
+                },
+                {
+                    "title": "Combined Outliers (Majority Vote)",
                     "text": (
-                        "This table contains every row flagged at the 97.5% chi-square threshold, not merely a top-N "
-                        "distance preview. "
-                        "The final annotated dataset also retains scores and False flags for all scorable rows."
+                        "Each method has one vote: IQR, z-score, Isolation Forest, PCA/DBSCAN, and Mahalanobis. "
+                        "IQR and z-score vote when any selected feature is flagged. A strict majority of available methods "
+                        "(at least two) is required; ties are not outliers. Missing votes do not count as negative votes. "
+                        "is_outlier records this majority decision, not a confidence estimate. "
+                        "Mahalanobis uses 97.5%; Isolation Forest uses 5% contamination; PCA/DBSCAN uses eps=0.3, "
+                        "min_samples=5 on up to two components. PLS is excluded because it needs a response. "
+                        "All methods use the configured multivariate feature subset, excluding target, ID and diagnostics. "
+                        "The annotated dataset retains every row, individual votes, vote counts and Mahalanobis scores."
                     ),
                     "table": artifacts["multivariate_outliers"],
                     "show_all_rows": True,

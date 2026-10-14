@@ -69,7 +69,7 @@ The first gate removes columns that should not be ordinary model predictors:
 - the target column;
 - the configured parcel or record ID;
 - geometry;
-- EDA diagnostic columns such as `is_outlier_97_5pct`; and
+- EDA diagnostic columns such as `is_outlier`; and
 - columns listed in `feature_selection_exclude_columns`.
 
 Known post-outcome variables and other semantically leaky fields must be added manually to `feature_selection_exclude_columns`.

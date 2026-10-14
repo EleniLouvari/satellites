@@ -13,6 +13,8 @@ INSPECTION_OUTPUT_COLUMNS = (
     "inspection_score",
     "inspection_need_base",
     "inspection_need",
+    "inspection_need_before_outlier",
+    "inspection_outlier_adjusted",
     "inspection_priority_label",
     "inspection_rule",
     "inspection_class_reliability_applied",
@@ -125,6 +127,27 @@ def _apply_label_aware_policy(
     return need, check_type
 
 
+def _apply_outlier_adjustment(result: pd.DataFrame, config) -> None:
+    """Optionally raise a scored outlier's priority one band, preserving the matrix rule."""
+    before = result["inspection_need"].copy()
+    result["inspection_need_before_outlier"] = before
+    result["inspection_outlier_adjusted"] = False
+    if not getattr(config, "inspection_include_outlier", False) or "is_outlier" not in result:
+        return
+    # Accept actual Boolean flags (and equivalent 0/1), never truthy strings or missing data.
+    flagged = result["is_outlier"].eq(True).fillna(False)
+    higher = {
+        "VERY_LOW": "LOW", "LOW": "LOW_MEDIUM", "LOW_MEDIUM": "MEDIUM",
+        "MEDIUM": "MEDIUM_HIGH", "MEDIUM_HIGH": "HIGH", "HIGH": "VERY_HIGH",
+    }
+    adjusted = flagged & before.isin(higher)
+    result.loc[adjusted, "inspection_need"] = before.loc[adjusted].map(higher)
+    result["inspection_outlier_adjusted"] = adjusted.astype(bool)
+    # An outlier can require review without proving a declaration conflict.
+    review = adjusted & result["inspection_check_type"].eq("NONE") & ~result["inspection_need"].isin(["VERY_LOW", "LOW"])
+    result.loc[review, "inspection_check_type"] = "INSUFFICIENT_EO_EVIDENCE"
+
+
 def _policy_class_reliability(result: pd.DataFrame, config) -> tuple[pd.Series, pd.Series, pd.Series]:
     """Resolve the frozen policy switch and distinguish weak reliability from absent evidence."""
     enabled = (
@@ -229,6 +252,9 @@ def _inspection_reasons(row: pd.Series, config) -> str:
         if level in {"LOW", "MEDIUM"}:
             reasons.append(f"{level}_CLASS_RELIABILITY")
 
+    if row.get("inspection_outlier_adjusted", False):
+        reasons.append("OUTLIER_PRIORITY_INCREASE")
+
     return "|".join(reasons) if reasons else "NONE"
 
 
@@ -287,6 +313,7 @@ def calculate_inspection_metrics(data: pd.DataFrame, config) -> pd.DataFrame:
     result["inspection_need"], result["inspection_check_type"] = _apply_label_aware_policy(
         result, confidence, reliability, config
     )
+    _apply_outlier_adjustment(result, config)
     result["inspection_priority_label"] = result["inspection_need"].map(INSPECTION_PRIORITY_LABELS)
     result["inspection_reasons"] = result.apply(_inspection_reasons, axis=1, config=config).astype("string")
     return result

@@ -21,9 +21,16 @@ You trained models A, B, and C in your first run. Now you want to add model D to
 When `run_train()` is called:
 1. The pipeline checks for an existing `model_specs.json` in the train directory
 2. It compares the requested model candidates against previously trained models
-3. Models that already exist are **skipped** and their specs are reused
+3. Models with complete saved artifacts are **skipped** and their specs are reused
 4. Only new models are trained
 5. Results are merged and reported
+
+A reusable model needs `best_model.joblib` and `cv_results.csv` under
+`03_train/models/<name>/`. Probability-capable models also need
+`oof_probabilities.joblib` when probability optimization or rank confidence is
+enabled. Missing required artifacts cause retraining. Reuse assumes the same
+checked data, features, label mapping, and prepared split; changed inputs require
+a fresh run. Changing a search grid alone does not force retraining.
 
 ### Configuration
 
@@ -58,8 +65,7 @@ config = ClassificationPipelineConfig(
 )
 
 pipeline = GeospatialClassificationPipeline(config)
-pipeline.run_check(df)  # Note: run_check resets project directory by default
-pipeline.run_prepare()
+# Reuse the saved check/prepare artifacts; run_check would reset this run.
 pipeline.run_train()  # Skips random_forest, extra_trees, gradient_boosting; trains only keras_lstm
 ```
 
@@ -77,9 +83,8 @@ config = ClassificationPipelineConfig(
 )
 
 pipeline = GeospatialClassificationPipeline(config)
-pipeline.run_check(df)
-pipeline.run_prepare()
-pipeline.run_train()  # All models are retrained regardless of prior existence
+# Reuse the existing prepared split.
+pipeline.run_train()  # Retrains the selected models
 ```
 
 ### Console Output Example
@@ -140,7 +145,7 @@ config_eval = ClassificationPipelineConfig(
 
 # Reuse the same pipeline instance or create a new one with updated config
 pipeline = GeospatialClassificationPipeline(config_eval)
-# Skip run_check and run_prepare; they would reset the directory
+# Skip run_check (which resets by default) and reuse the prepared split
 # Instead, proceed directly to evaluation
 pipeline.run_evaluate()  # Evaluates only random_forest and gradient_boosting
 ```
@@ -273,7 +278,7 @@ pipeline_retrain.run_train()  # Only retrains keras_lstm
 
 - If `model_specs.json` does not exist (first run), all models are trained normally
 - If `selected_models=None`, all trained models are evaluated (default behavior unchanged)
-- Existing notebooks and configurations continue to work without modification
+- Resume requires compatible current configuration, imports, data, and saved artifacts
 
 ### Directory Structure
 
@@ -303,7 +308,7 @@ The `model_specs.json` is the key artifact. It tracks:
 ### When Artifacts are Skipped
 
 When a model is skipped (not retrained):
-- Its CV results are reused from the previous `best_model.joblib`
+- Its fitted model is loaded from `best_model.joblib`; CV metrics come from `cv_results.csv`
 - Its training summary and fold scores are preserved from the previous run
 - Its hyperparameters remain unchanged
 
@@ -318,7 +323,7 @@ When a model is newly trained:
 
 **A:** Check if it already exists in `model_specs.json`. Either:
 1. Set `force_retrain_models=True` to force retraining
-2. Delete the model's subdirectory in `03_train/` and the entry in `model_specs.json`
+2. Restrict `selected_models` to the models requiring retraining
 
 ### Q: Models are being skipped but I need to retrain them
 
@@ -392,7 +397,7 @@ config = ClassificationPipelineConfig(
 **Behavior Changes:**
 
 1. Loads existing `model_specs.json` if present (and `force_retrain_models=False`)
-2. Skips models already in `model_specs.json`
+2. Reuses models with complete required artifacts, recovering specs when possible
 3. Logs which models are skipped vs. newly trained
 4. Merges new results with existing specs before persisting
 
@@ -408,4 +413,4 @@ config = ClassificationPipelineConfig(
 
 - [ML Classification Pipeline README](README.md)
 - [Configuration Guide](../../src/ml_classification/shared/config/config.py)
-- Example notebooks: `4_kozani_ml_classification.ipynb`, `4_axios_ml_classification.ipynb`
+- [Neuro classification notebook](../../notebooks/projects/neuro/4_ml_classification.ipynb)

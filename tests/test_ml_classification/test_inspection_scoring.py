@@ -469,3 +469,72 @@ def test_report_data_bands_match_policy_boundaries():
     })
     table = _evidence_quality_table(frame, _config()).set_index("data_reliability_level")
     expect_equal(table["parcels"].to_dict(), {"LOW": 1, "MEDIUM": 2, "HIGH": 1})
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_optional_outlier_adjustment_covers_all_priority_bands(enabled):
+    """Escalation is opt-in, capped, and never converts Unknown to a scored priority."""
+    from ml_classification.step_05_predict.libraries.inspection_priority.scoring import _apply_outlier_adjustment
+
+    bands = ["VERY_LOW", "LOW", "LOW_MEDIUM", "MEDIUM", "MEDIUM_HIGH", "HIGH", "VERY_HIGH", "UNKNOWN"]
+    frame = pd.DataFrame({"inspection_need": bands, "is_outlier": True,
+                          "inspection_check_type": ["NONE", "NONE"] + ["INSUFFICIENT_EO_EVIDENCE"] * 6})
+    config = _config()
+    config.inspection_include_outlier = enabled
+    _apply_outlier_adjustment(frame, config)
+    expect_equal(frame["inspection_need"].tolist(), bands[1:7] + ["VERY_HIGH", "UNKNOWN"] if enabled else bands)
+    expect_equal(frame["inspection_need_before_outlier"].tolist(), bands)
+    expect_equal(frame["inspection_outlier_adjusted"].tolist(), [enabled] * 6 + [False, False])
+    expect_equal(frame.loc[1, "inspection_check_type"], "INSUFFICIENT_EO_EVIDENCE" if enabled else "NONE")
+
+
+@pytest.mark.parametrize("flag", [False, None, pd.NA, np.nan, "False", "invalid", 2])
+def test_non_outlier_or_unavailable_flag_does_not_raise_priority(flag):
+    """Only explicit true flags enable escalation; missing values cannot be truthy."""
+    config = _config()
+    config.inspection_include_outlier = True
+    parcels = _reliable_parcels()
+    baseline = calculate_inspection_metrics(parcels, config)
+    parcels["is_outlier"] = flag
+    result = calculate_inspection_metrics(parcels, config)
+    pd.testing.assert_series_equal(result["inspection_need"], baseline["inspection_need"])
+    expect_false(result["inspection_outlier_adjusted"].any())
+
+
+def test_outlier_escalation_preserves_evidence_rules_and_recalculates_once():
+    """Recalculation starts from the original matrix without accumulating increases."""
+    config = _config()
+    parcels = _reliable_parcels()
+    parcels["is_outlier"] = pd.array([True, True, True, pd.NA], dtype="boolean")
+    baseline = calculate_inspection_metrics(parcels, config)
+    config.inspection_include_outlier = True
+    result = calculate_inspection_metrics(parcels, config)
+    expect_equal(result["inspection_need"].tolist(), ["LOW", "VERY_HIGH", "LOW_MEDIUM", "HIGH"])
+    from ml_classification.step_05_predict.libraries.inspection_priority.diagnostics import _top_priority_parcels
+
+    config.id_column = "id"
+    result["id"] = [0, 1, 2, 3]
+    queue = _top_priority_parcels(result, config)
+    expect_equal(queue["id"].tolist(), [1, 3, 2])
+    expect_in("is_outlier", queue.columns)
+    expect_in("inspection_need_before_outlier", queue.columns)
+    expect_in("inspection_outlier_adjusted", queue.columns)
+    for column in ["inspection_rule", "inspection_score", "prediction_confidence_level"]:
+        pd.testing.assert_series_equal(result[column], baseline[column])
+    expect_in("OUTLIER_PRIORITY_INCREASE", result.loc[0, "inspection_reasons"])
+    repeated = calculate_inspection_metrics(result, config)
+    pd.testing.assert_frame_equal(result, repeated)
+    config.inspection_include_outlier = False
+    disabled = calculate_inspection_metrics(result, config)
+    pd.testing.assert_series_equal(disabled["inspection_need"], baseline["inspection_need"])
+
+
+def test_inspection_outlier_config_defaults_and_validation(tmp_path):
+    """The public switch defaults off and rejects non-Boolean values."""
+    from ml_classification import ClassificationPipelineConfig
+
+    arguments = {"project_dir": tmp_path, "target_column": "crop", "feature_columns": ["x"], "feature_importance_top_n": 1}
+    expect_false(ClassificationPipelineConfig(**arguments).inspection_include_outlier)
+    expect_true(ClassificationPipelineConfig(**arguments, inspection_include_outlier=True).inspection_include_outlier)
+    with pytest.raises(TypeError, match="inspection_include_outlier must be a bool"):
+        ClassificationPipelineConfig(**arguments, inspection_include_outlier="true")

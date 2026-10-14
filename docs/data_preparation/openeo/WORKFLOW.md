@@ -60,11 +60,9 @@ The standalone flowchart includes acquisition, local cleaning decisions, parcel
 aggregation, output writes, and restart shortcuts. Read its three columns from
 left to right using the matching A/B continuation connectors.
 
-[Open PNG](OPENEO_CLEANING_FLOWCHART.png) ·
-[Open SVG](OPENEO_CLEANING_FLOWCHART.svg) ·
-[Editable draw.io diagram](OPENEO_CLEANING_FLOWCHART.drawio)
+[Open PNG](OPENEO_CLEANING_FLOWCHART.png)
 
-![openEO acquisition, cleaning, and final GeoParquet flowchart](OPENEO_CLEANING_FLOWCHART.svg)
+![openEO acquisition, cleaning, and final GeoParquet flowchart](OPENEO_CLEANING_FLOWCHART.png)
 
 ```mermaid
 flowchart TD

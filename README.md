@@ -7,20 +7,18 @@ restartable geospatial classification.
 
 | Directory | Purpose |
 | --- | --- |
-| `src/data_preparation/sources/` | openEO cube acquisition, Planet delivery downloads, HUB catalog access |
+| `src/data_preparation/sources/` | openEO cube acquisition and HUB catalog utilities |
 | `src/data_preparation/parcel_stats/` | Shared local statistics engine and source-specific workflows |
 | `src/data_preparation/features/` | Temporal reduction, elevation, soil, and nearest-lake features |
 | `src/eda/` | EDA, feature-screening diagnostics, plots, and HTML reports |
 | `src/ml_classification/` | Check, prepare, train, evaluate, predict, and seed sensitivity |
-| `src/shared/` | Reusable I/O, logging, geometry, and data-cleaning utilities |
-| `notebooks/projects/volvi/` | Numbered project workflow notebooks |
+| `src/shared/` | Reusable I/O, geometry, database, and data-cleaning utilities |
+| `notebooks/projects/neuro/` | Numbered project workflow notebooks |
 | `notebooks/experiments/` | Exploratory ML and sensitivity notebooks |
 | `notebooks/maintenance/` | openEO job inspection and code-quality notebooks |
 | `tests/` | Tests grouped by source-code responsibility |
-| `configs/` | Example project configuration; machine-specific overrides stay local |
 | `docs/` | Architecture, pipeline guides, manuals, and diagrams |
 | `scripts/` | Development checks |
-| `data/reference/` | Reference data such as the Planet tile grid |
 | `outputs/` | Generated run artifacts and quality reports, ignored by Git |
 
 Classification source is organized into `step_01_check/` through `step_05_predict/`,
@@ -66,7 +64,6 @@ See [openEO account setup](docs/data_preparation/openeo/CREDENTIALS.md).
 from data_preparation.parcel_stats import (
     OpenEOZonalStats,
     OpenEOJobManagerZonalStats,
-    PlanetBasemapZonalStats,
 )
 from data_preparation.features import append_parcel_elevation
 from eda import EDAConfig, EDAPipeline
@@ -76,6 +73,9 @@ from ml_classification import (
 )
 from ml_classification.sensitivity import ClassificationSensitivityRunner
 ```
+
+The current parcel-statistics exports support openEO Sentinel acquisition; a
+Planet parcel-statistics adapter is not included in this checkout.
 
 The data flow is imagery acquisition → parcel statistics → environmental and
 temporal features → EDA → classification. EDA and ML also accept independently
@@ -101,7 +101,8 @@ outputs/<project>/<run>/
 
 The existing notebooks retain their external data and result paths to preserve
 their current runs. Large imagery can remain in your external work directory.
-The example in [configs](configs/README.md) shows how to configure new runs.
+Configure input paths and output directories in each notebook's configuration cells.
+See the [notebook guide](notebooks/README.md) for the maintained Neuro workflow.
 
 EDA and ML can reset their configured output directories; each pipeline should
 receive its own dedicated run subdirectory. They create output folders themselves.
@@ -115,5 +116,6 @@ scripts\run_quality_checks.bat
 ```
 
 Tests use `tests/`; generated reports go to `outputs/quality/`. The check scripts
-use the active environment. See the [documentation index](docs/README.md) and
+use the active environment. `run_code_checks.bat` runs Ruff with `--fix`, so it
+can modify Python source; `run_quality_checks.bat` writes Radon metrics. See the [documentation index](docs/README.md) and
 [migration notes](docs/repository_structure.md) for compatibility and validation details.

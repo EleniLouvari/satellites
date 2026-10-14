@@ -53,6 +53,42 @@ Geometry is favorable only **below** `inspection_medium_geometry_risk_threshold`
 less favorable geometry band. These existing configuration settings remain
 customizable; the comparison operators do not change.
 
+## Optional EDA outlier adjustment
+
+Set `inspection_include_outlier=True` in `ClassificationPipelineConfig` to apply
+`is_outlier` after the matrix. The default is `False`. Supply the Boolean EDA
+flag as metadata in the input table, joined by parcel ID; keep it out of
+`feature_columns`. Equivalent numeric 0/1 flags are accepted; strings are not.
+
+| Matrix priority | Final priority when enabled and `is_outlier=True` |
+|---|---|
+| Very Low | Low |
+| Low | Low–Medium |
+| Low–Medium | Medium |
+| Medium | Medium–High |
+| Medium–High | High |
+| High | Very High |
+| Very High | Very High |
+| Unknown | Unknown |
+
+False, missing, invalid, or absent flags leave the original matrix priority
+unchanged. This option never changes predictions, confidence, or the numeric
+inspection score. Outlier escalation alone does not establish a declaration
+conflict: the existing check type is preserved, except a previously `NONE`
+row raised to Low–Medium enters `INSUFFICIENT_EO_EVIDENCE` review.
+
+`inspection_rule` retains the original matrix rule. The output records
+`inspection_need_before_outlier`, `inspection_outlier_adjusted`, and reason
+`OUTLIER_PRIORITY_INCREASE` when a band actually increases. Very High and Unknown
+are not marked adjusted. The queue sorts on final priority using existing stable
+ties. Recalculation reapplies the matrix first, so increases never accumulate.
+The report and queue include the source flag and adjustment fields.
+
+The prediction summary records the enabled switch, whether the column exists,
+and the adjusted row count. Existing runs need `is_outlier` already present in
+saved predictions for `recalculate_prediction_quality()` to use it; changing
+configuration alone cannot add EDA metadata to an older run.
+
 ## Disabled and unavailable inputs
 
 - When class reliability is disabled, omit its condition: High rank + high data

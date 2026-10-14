@@ -11,7 +11,6 @@ src/
   data_preparation/
     sources/
       openeo/cubes.py             authentication, cube graphs, remote jobs
-      planet/delivery.py          delivery discovery, downloads, manifests
       hub/                       catalog queries, asset downloads and audits
     parcel_stats/
       core/base.py               shared construction, local execution, worker state
@@ -27,7 +26,6 @@ src/
         reshape.py               derived geometry features and ML reshaping
       core/crs.py                projected CRS selection
       openeo.py                  openEO acquisition plus local statistics
-      planet.py                  Planet input handling plus local statistics
       job_manager.py             restartable openEO tile workflow
       multiuser.py               multi-account orchestration
     features/
@@ -58,11 +56,11 @@ src/
     notebook.py                  explicit notebook setup
 ```
 
-`PlanetBasemapZonalStats` and `OpenEOZonalStats` share `ParcelStatsBase`.
-Planet no longer subclasses the openEO workflow. The base retains the historical
+`OpenEOZonalStats` uses `ParcelStatsBase` for local processing. The base retains
 sensor configuration names for constructor/cache compatibility, but imports no
-acquisition service. The public parcel-statistics package loads source classes
-lazily, so importing Planet does not require openEO.
+acquisition service. Public parcel-statistics exports are loaded lazily. HUB
+catalog utilities remain available; the former Planet delivery and statistics
+adapters are not included in this checkout.
 
 EDA and classification consume tables and shared helpers. They do not import
 acquisition code or each other. Shared cleaning stays below the pipelines;
@@ -87,8 +85,9 @@ Unused functions and their dedicated tests have been removed. Entirely unused
 modules (`shared.raster`, `shared.logging`, `shared.formatting`, `shared.tabular`,
 the other spatial-statistics modules, and `data_cleaning.tabular_imputation`)
 have also been removed. Database utilities retain connection management and
-table reads; outlier utilities retain the IQR, z-score, and Mahalanobis paths
-used by EDA and classification. These removals narrow the Python API; callers
+table reads; outlier utilities provide IQR and z-score summaries plus combined
+IQR, z-score, Isolation Forest, PCA/DBSCAN, and Mahalanobis row diagnostics.
+See the [EDA outlier contract](eda/README.md#combined-parcel-outliers). These removals narrow the Python API; callers
 outside this repository must update any imports of removed functions.
 
 ## Installation and imports
@@ -102,7 +101,8 @@ python -m pip install --no-deps --no-build-isolation -e .
 
 Restart the Python process or notebook kernel afterward. Import directly from
 `data_preparation`, `eda`, `ml_classification`, and `shared`; there is no enclosing
-Python namespace or compatibility package. See the [import guide](import_migration.md).
+Python namespace or compatibility package. Use the public imports in the
+[root README](../README.md#public-apis).
 The distribution name in package metadata remains unchanged.
 
 For source-tree development, `PYTHONPATH` needs only `src`. Pytest and VS Code
@@ -117,21 +117,18 @@ Python class import paths.
 
 ## Notebooks, reference data and artifacts
 
-- Volvi notebooks remain together in `notebooks/projects/volvi/`, in workflow order.
+- Neuro notebooks remain together in `notebooks/projects/neuro/`, in workflow order.
 - Experimental notebooks are in `notebooks/experiments/`; maintenance notebooks
   are in `notebooks/maintenance/`.
 - Imports use canonical paths. Notebook code no longer patches `sys.path` or
   imports the all-libraries module. Display and seed setup is explicit.
 - Existing external data/output paths and saved notebook outputs are retained.
   Historical outputs may still display the paths used when they were executed.
-- The Planet grid is in `data/reference/planet_basemap_quads.gpkg`, unchanged.
 - The ML output template is documented under
   `docs/ml_classification/output_template/`; it is not a source-code package.
 - New runs should use `outputs/<project>/<run>/` and dedicated pipeline
-  subfolders. The example in `configs/` documents external data roots.
-- Old coverage and quality reports were retained in `outputs/quality/previous/`.
-  Old source-folder remnants were retained in `tmp/reorganization-leftovers/`.
-  Generated results and scratch files are ignored by Git.
+  subfolders. Configure external data roots in notebook configuration cells.
+- Generated results and scratch files are ignored by Git.
 
 The original Word manuals are preserved unchanged in `docs/manuals/`. Markdown
 guides provide the updated paths. No remote data was downloaded, no production
@@ -142,10 +139,10 @@ pipeline was executed, and no external run directory was moved as part of this m
 Tests live under `tests/`, and VS Code is configured for pytest. Development
 scripts use the active Python environment, resolve the repository relative to
 their own location, and place reports in `outputs/quality/`. The code-check script
-reports failures through its exit code and does not automatically modify source.
+reports failures through its exit code and runs Ruff with `--fix`, which can
+modify source. The separate quality-check script writes Radon metrics.
 
 Layout tests in `tests/test_repository_layout.py` cover top-level package
 locations, fitted-model/configuration serialization with current module paths,
 Windows-style spawned-worker serialization, and import-side-effect isolation.
-The local Planet suite covers data discovery, downloaded-manifest processing,
-cleaning checkpoints and resume behavior.
+Parcel-statistics tests cover local cleaning, checkpoints, and resume behavior.

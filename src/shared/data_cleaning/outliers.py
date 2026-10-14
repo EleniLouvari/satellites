@@ -12,6 +12,9 @@ from collections.abc import Sequence
 import numpy as np
 import pandas as pd
 from scipy import stats
+from sklearn.cluster import DBSCAN
+from sklearn.decomposition import PCA
+from sklearn.ensemble import IsolationForest
 
 
 class OutlierAnalysis:
@@ -24,8 +27,7 @@ class OutlierAnalysis:
         iqr_multiplier: Number of IQRs used to extend each outlier boundary.
         z_score_threshold: Absolute z-score above which a value is an outlier.
         forest_contamination: Expected outlier proportion for Isolation Forest.
-        pca_components: Maximum component count for PCA- and PLS-based methods.
-        pca_threshold: Upper-tail probability used by the PLS detector.
+        pca_components: Maximum component count for the PCA/DBSCAN detector.
         random_seed: Seed used by stochastic detection methods.
         max_multivariate_features: Maximum number of columns included in
             multivariate calculations.
@@ -45,7 +47,6 @@ class OutlierAnalysis:
         z_score_threshold: float = 3.0,
         forest_contamination: float = 0.05,
         pca_components: int = 2,
-        pca_threshold: float = 0.05,
         random_seed: int = 42,
         max_multivariate_features: int = 8,
     ) -> None:
@@ -60,8 +61,6 @@ class OutlierAnalysis:
             raise ValueError("Error: forest_contamination must be in (0, 0.5].")
         if pca_components < 1 or max_multivariate_features < 2:
             raise ValueError("Error: PCA components must be >= 1 and max features >= 2.")
-        if not 0 < pca_threshold < 1:
-            raise ValueError("Error: pca_threshold must be in (0, 1).")
 
         # Work on copies so detection never adds flags to the caller's dataframe.
         self.df = df.copy()
@@ -72,11 +71,9 @@ class OutlierAnalysis:
         self.z_score_threshold = z_score_threshold
         self.forest_contamination = forest_contamination
         self.PCA_components = pca_components
-        self.PCA_threshold = pca_threshold
         self.random_seed = random_seed
         self.max_multivariate_features = max_multivariate_features
         self.numeric_columns = self._numeric_columns()
-        self.figsize = (20, 6)
 
         # Note: `self.df` and `self.results` intentionally keep the same index
         # as the caller's input so any boolean masks produced by methods can be
@@ -275,7 +272,7 @@ class OutlierAnalysis:
         # distances. The output includes p-values and a chi-square based
         # outlier flag for interpretability.
         numeric_df = self.prepared_numeric_matrix(columns)
-        output_columns = ["row_index", "mahalanobis_distance", "mahalanobis_distance_squared", "pvalue", "is_outlier_97_5pct"]
+        output_columns = ["row_index", "mahalanobis_distance", "mahalanobis_distance_squared", "pvalue", "is_outlier"]
         # Covariance needs at least two features and more rows than dimensions.
         if numeric_df.shape[1] < 2 or numeric_df.shape[0] < numeric_df.shape[1] + 2:
             return pd.DataFrame(columns=output_columns)
@@ -287,7 +284,7 @@ class OutlierAnalysis:
         inverse_covariance = np.linalg.pinv(covariance)
         difference = values - values.mean(axis=0)
         distances_squared = np.einsum("ij,jk,ik->i", difference, inverse_covariance, difference)
-        degrees_of_freedom = numeric_df.shape[1]
+        degrees_of_freedom = np.linalg.matrix_rank(covariance)
         threshold = stats.chi2.ppf(confidence, df=degrees_of_freedom)
         result = pd.DataFrame(
             {
@@ -295,14 +292,65 @@ class OutlierAnalysis:
                 # Guard against tiny negative values from floating-point error.
                 "mahalanobis_distance": np.sqrt(np.maximum(distances_squared, 0)),
                 "mahalanobis_distance_squared": distances_squared,
-                "pvalue": 1 - stats.chi2.cdf(distances_squared, df=degrees_of_freedom),
-                # Name retained for compatibility with the EDA artifact schema.
-                "is_outlier_97_5pct": distances_squared > threshold,
+                "pvalue": stats.chi2.sf(distances_squared, df=degrees_of_freedom),
+                "is_outlier": distances_squared > threshold,
             }
         ).sort_values("mahalanobis_distance_squared", ascending=False)
         if limit is not None:
             result = result.head(limit)
         return result.reset_index(drop=True)
+
+    def detect_all_outliers(self, *, plot: bool = False) -> pd.DataFrame:
+        """Combine five unsupervised methods with one vote per method per row.
+
+        IQR and z-score each vote if any usable feature is flagged. Isolation
+        Forest, PCA/DBSCAN and Mahalanobis each run once on the prepared matrix.
+        PLS requires a response and is deliberately excluded. Unavailable votes
+        are nullable, and a strict majority of at least two available methods
+        is required. ``is_outlier`` records the majority decision.
+        ``plot`` is retained for compatibility; this method only calculates.
+        """
+        matrix = self.prepared_numeric_matrix()
+        columns = matrix.columns.tolist()
+        votes = pd.DataFrame(index=pd.RangeIndex(len(self.df)))
+        for method in ("iqr", "zscore", "iforest", "pca_dbscan", "mahalanobis"):
+            votes[f"eda_outlier_{method}"] = pd.array([pd.NA] * len(self.df), dtype="boolean")
+        if columns and len(matrix) >= 3:
+            for method in ("iqr", "zscore"):
+                masks = [getattr(self, f"{method}_outlier_mask")(column).to_numpy() for column in columns]
+                votes[f"eda_outlier_{method}"] = np.any(masks, axis=0)
+            votes["eda_outlier_iforest"] = IsolationForest(
+                contamination=self.forest_contamination, random_state=self.random_seed
+            ).fit_predict(matrix) == -1
+            if len(matrix) >= 5:
+                components = min(self.PCA_components, matrix.shape[1], len(matrix))
+                transformed = PCA(n_components=components, svd_solver="full").fit_transform(matrix)
+                votes["eda_outlier_pca_dbscan"] = DBSCAN(eps=0.3, min_samples=5).fit_predict(transformed) == -1
+        # Use positions internally even when the caller has duplicate index labels.
+        positional = OutlierAnalysis(
+            self.df.reset_index(drop=True), max_multivariate_features=self.max_multivariate_features
+        )
+        distances = positional.detect_multivariate_mahalanobis(columns, limit=None).set_index("row_index")
+        votes["eda_outlier_mahalanobis"] = distances["is_outlier"].reindex(votes.index).astype("boolean")
+        votes = votes.astype("boolean")
+        if columns:
+            observed = self.df[columns].replace([np.inf, -np.inf], np.nan).notna().any(axis=1).to_numpy()
+            votes.loc[~observed, :] = pd.NA
+        votes = votes.astype("boolean")
+        result = self.df.copy()
+        for column in votes:
+            result[column] = votes[column].array
+        result["eda_outlier_votes"] = votes.sum(axis=1).to_numpy(dtype=int)
+        result["eda_outlier_methods_available"] = votes.notna().sum(axis=1).to_numpy(dtype=int)
+        available = result["eda_outlier_methods_available"]
+        result["is_outlier"] = pd.array(
+            result["eda_outlier_votes"].to_numpy() > available.to_numpy() / 2, dtype="boolean"
+        )
+        result.loc[available < 2, "is_outlier"] = pd.NA
+        result["mahalanobis_distance"] = distances["mahalanobis_distance"].reindex(votes.index).to_numpy()
+        result["mahalanobis_pvalue"] = distances["pvalue"].reindex(votes.index).to_numpy()
+        self.results = result
+        return result
 
     @staticmethod
     def _round(value: float, digits: int = 6) -> float:

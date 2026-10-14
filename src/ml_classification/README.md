@@ -93,7 +93,10 @@ For example, `step_04_evaluate/libraries/confidence.py` calls
 contract. `shared/class_reliability.py` owns `get_class_reliability()`, used by evaluation
 and prediction to attach frozen class evidence without modifying rank confidence.
 Prediction applies the [20-rule inspection policy](../../docs/ml_classification/INSPECTION_PRIORITY_DECISION_TABLE.md)
-to class evidence, label agreement, rank confidence, data reliability, and geometry. The contract method identifier also stays shared.
+to class evidence, label agreement, rank confidence, data reliability, and geometry.
+With `inspection_include_outlier=True`, prediction then raises flagged rows by one
+priority band, retaining `inspection_need_before_outlier` and
+`inspection_outlier_adjusted` for auditing. The contract method identifier stays shared.
 Cross-step data flow uses the artifacts below rather than imports between
 private step libraries.
 

@@ -73,6 +73,7 @@ class EDAPipeline:
             "datetime_summary": artifacts["datetime_summary"],
             "normality_tests": artifacts["normality_tests"],
             "outlier_summary": artifacts["outlier_summary"],
+            "outlier_method_summary": artifacts["outlier_method_summary"],
             "correlation_pairs": artifacts["strong_correlation_pairs"],
             "multicollinearity": artifacts["multicollinearity"],
             "missingness_summary": artifacts["missingness_summary"],

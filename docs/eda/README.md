@@ -31,7 +31,7 @@ The report, summary, and ML-ready data remain easy to find at the output root:
 
 - `report.html`
 - `eda_summary.json`
-- `eda_annotated_data.parquet`, preserving GeoParquet metadata and adding the multivariate outlier flag and scores
+- `eda_annotated_data.parquet`, preserving GeoParquet metadata and adding the combined outlier flag, per-method votes, vote counts and Mahalanobis scores
 
 CSV tables are grouped by analytical scope:
 
@@ -44,7 +44,7 @@ tables/
   correlation/        Pearson/Spearman matrices, strong pairs, and VIF
   target/             target summaries and feature-vs-target tests
   feature_selection/  ordered criteria, association ranking, proposal CSV, and printed-message text
-  multivariate/       PCA summary and every row flagged at the 97.5% Mahalanobis threshold
+  multivariate/       PCA summary and method counts and every row flagged by a strict majority of outlier methods
   geospatial/         geometry summary
 ```
 
@@ -84,8 +84,41 @@ false-discovery-rate control, redundancy, and a parsimonious initial shortlist. 
 `feature_selection_exclude_columns=(...)`. The final criterion remains train-only cross-validation and permutation importance, which belongs
 after the train/test split and is intentionally not treated as an EDA result.
 
-The multivariate outlier flag is diagnostic metadata, not a recommended model feature. Do not automatically delete flagged test rows. First
+The combined outlier flag is diagnostic metadata, not a recommended model feature. Do not automatically delete flagged test rows. First
 verify whether they are data errors; otherwise keep the test set representative and compare training with and without flagged training rows.
 Because this EDA flag is calculated from the complete supplied dataset, do not use it as a predictor in the ML pipeline.
 The target, configured ID, and prior EDA diagnostic columns are excluded from Mahalanobis scoring; `eda_summary.json` records the exact
 `multivariate_features_used` list.
+
+## Combined parcel outliers
+
+`OutlierAnalysis.detect_all_outliers()` now supplies `is_outlier` through
+one vote each from IQR, z-score, multivariate Isolation Forest, PCA/DBSCAN and
+Mahalanobis. A strict majority is required (normally 3 of 5); ties are false.
+Unavailable methods abstain, and fewer than two available votes produces a null
+flag. Rows with no finite selected features remain unscored. IQR and z-score
+vote if any selected feature exceeds their configured threshold.
+
+All five methods use the first `max_multivariate_features` numeric predictors
+in input order, excluding target, configured ID and prior EDA diagnostics.
+All-null and constant features are removed. Multivariate methods median-impute
+remaining gaps and standardize internally; original values are preserved.
+Isolation Forest uses 5% contamination and the configured random seed.
+PCA/DBSCAN uses up to two components, `eps=0.3` and `min_samples=5`; this density
+rule can flag many rows on sparse data, so inspect the method counts.
+Mahalanobis uses a 97.5% chi-square cutoff with covariance rank as degrees of
+freedom. PLS is excluded: it requires a meaningful response, not an all-zero target.
+
+The combined flag is named `is_outlier`. It does **not** express a
+combined 97.5% confidence level or force 2.5% of parcels to be flagged.
+`eda_outlier_*` columns retain individual nullable votes, `eda_outlier_votes`
+counts positive votes and `eda_outlier_methods_available` counts available votes.
+The report and `tables/multivariate/outlier_method_summary.csv` show method
+counts. `multivariate_outliers.csv` keeps its filename but now contains majority
+outliers. `mahalanobis_distance` and `mahalanobis_pvalue` remain separate diagnostics.
+
+The unused standalone methods `check_and_standardize_data`, `detect_iqr_outliers`,
+`detect_zscore_outliers`, `fill_nulls`, `detect_isolation_forest_outliers`,
+`detect_pca_outliers`, and `detect_outliers_pls` have been removed, along with the
+PLS-only `pca_threshold` constructor option. Use `detect_all_outliers()` for
+combined row flags and `summarize_univariate()` for per-feature summaries.

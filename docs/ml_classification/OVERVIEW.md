@@ -19,9 +19,9 @@ and a runner for measuring sensitivity to the random seed.
   fitting. Applying the independent reliability lookup remains shared. Prediction groups its
   inspection scoring, diagnostics, and plots in `libraries/inspection_priority/`.
 - `sensitivity/` contains the multi-seed runner and its own `libraries/`.
-- `to_delete/` holds the former `core/`, `steps/`, `reporting/`, and `visuals/`
-  wrappers and original source snapshots until testing is complete. The wrappers
-  still support existing imports and saved models during this transition.
+- Former `core/`, `steps/`, `reporting/`, and `visuals/` compatibility wrappers
+  are not present. Use current imports; serialized custom classes containing
+  obsolete module paths may require regeneration.
 - The [source guide](../../src/ml_classification/README.md) and
   [file usage index](../../src/ml_classification/FILE_USAGE.md)
   explain ownership, dependencies, and artifact consumers.
@@ -114,6 +114,10 @@ places for source data or code.
   in the [inspection decision table](INSPECTION_PRIORITY_DECISION_TABLE.md).
   Defaults are HIGH at `>=0.80`, MEDIUM at `>=0.60`, and at least 100 OOF
   predictions for that exact class. Prediction confidence remains rank-only.
+- `inspection_include_outlier=False`: opt in with `True` to raise a scored
+  `is_outlier=True` row by one inspection-priority band after the decision table.
+  `UNKNOWN` and `VERY_HIGH` remain unchanged; confidence and the numeric score
+  are unchanged. See the [policy and audit fields](INSPECTION_PRIORITY_DECISION_TABLE.md).
 - `open_html_report=True`: open generated HTML reports after writing them.
 
 Satellite zonal statistics already writes one ML-ready GeoParquet row per
@@ -206,5 +210,5 @@ For a staged workflow, use `run_seeds(...)` first and pass its dataframe to
 
 See the [classification guide](README.md)
 for pipeline-specific notes and
-[`ml_classification_project_template/README.md`](output_template/README.md)
+[output-directory reference](output_template/README.md)
 for the template contract.

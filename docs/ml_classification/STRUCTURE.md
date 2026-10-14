@@ -41,7 +41,6 @@ src/ml_classification/
     probabilities.py  apply saved adjustments in evaluation and prediction
     ...               other modules used across steps
   sensitivity/        runner.py + libraries/
-  to_delete/          previous wrappers and original source snapshots
 ```
 
 Each step owns its algorithms, report assembly, plots, and report regeneration.
@@ -59,10 +58,10 @@ Prediction owns `libraries/inspection_priority/`, containing `scoring.py`,
 - [Generated file responsibilities and direct importers](../../src/ml_classification/FILE_USAGE.md)
 - [Configuration](../../src/ml_classification/shared/config/config.py)
 
-The former `core/`, `steps/`, `reporting/`, and `visuals/` directories are held in
-`to_delete/` as compatibility wrappers until testing is complete. Original source
-snapshots are in `to_delete/_archive/`. Old imports and saved class paths still resolve;
-new code imports the defining numbered-step or `shared/` module directly.
+The former `core/`, `steps/`, `reporting/`, and `visuals/` compatibility wrappers
+are absent from this checkout. Import the defining numbered-step or `shared/`
+module directly. Serialized custom classes with old module paths may need
+regeneration; generated run-directory names remain unchanged.
 
 ## Dependency direction
 

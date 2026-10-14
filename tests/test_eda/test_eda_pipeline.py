@@ -21,7 +21,17 @@ def test_build_eda_artifacts_from_a_dataframe() -> None:
     )
     config = EDAConfig(output_dir="unused", include_html_report=False, include_plots=False, include_geospatial=False)
 
-    artifacts = build_eda_artifacts(data, config)
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=(
+                r"(?s).*Found Intel OpenMP \('libiomp'\).*LLVM OpenMP \('libomp'\).*"
+                r"loaded at\s+the same time\..*"
+            ),
+            category=RuntimeWarning,
+            module="threadpoolctl",
+        )
+        artifacts = build_eda_artifacts(data, config)
 
     expect_equal(artifacts["summary"]["rows"], 6)
     expect_in("ndvi", artifacts["numeric_summary"]["column"].tolist())
@@ -105,6 +115,7 @@ def test_normality_analysis_excludes_target_id_and_diagnostic_columns() -> None:
             "parcel_id": np.arange(30),
             "target": np.tile([0, 1], 15),
             "feature": np.linspace(-2, 2, 30),
+            "is_outlier": np.tile([0, 1], 15),
             "is_outlier_97_5pct": np.tile([0, 1], 15),
         }
     )
@@ -512,10 +523,10 @@ def test_multivariate_outlier_artifact_contains_all_flags_and_annotates_every_ro
     expect_equal(artifacts["summary"]["multivariate_rows_scored"], len(data))
     expect_equal(artifacts["summary"]["multivariate_outliers_found"], len(outliers))
     expect_equal(artifacts["summary"]["multivariate_features_used"], ["x", "y"])
-    expect_true(annotated["is_outlier_97_5pct"].notna().all())
-    expect_equal(int(annotated["is_outlier_97_5pct"].sum()), len(outliers))
+    expect_true(annotated["is_outlier"].notna().all())
+    expect_equal(int(annotated["is_outlier"].sum()), len(outliers))
     expect_false(outliers.empty)
-    expect_true(outliers["is_outlier_97_5pct"].all())
+    expect_true(outliers["is_outlier"].all())
 
 
 def test_feature_proposal_orders_evidence_and_removes_redundant_candidates() -> None:
@@ -571,7 +582,7 @@ def test_pipeline_preserves_geodataframe_and_writes_annotated_geoparquet(tmp_pat
         target_column="target",
         target_task="classification",
         id_column="parcel_id",
-        include_html_report=False,
+        include_html_report=True,
         include_plots=False,
     )
 
@@ -580,7 +591,11 @@ def test_pipeline_preserves_geodataframe_and_writes_annotated_geoparquet(tmp_pat
 
     expect_isinstance(result["annotated_data"], geopandas.GeoDataFrame)
     expect_equal(result["annotated_data"].crs, data.crs)
-    expect_in("is_outlier_97_5pct", reloaded.columns)
+    expect_in("is_outlier", reloaded.columns)
+    expect_false("is_outlier_97_5pct" in reloaded.columns)
+    report = result["report_path"].read_text(encoding="utf-8")
+    expect_in("is_outlier records this majority decision", report)
+    expect_false("is_outlier_97_5pct" in report)
     expect_equal(result["proposed_features"], ["x"])
     expect_equal(result["saved_paths"]["numeric_summary"].relative_to(tmp_path).as_posix(), "tables/numeric/numeric_summary.csv")
     expect_equal(result["saved_paths"]["feature_selection_proposal"].relative_to(tmp_path).as_posix(), "tables/feature_selection/feature_selection_proposal.csv")
@@ -622,3 +637,15 @@ def test_geometry_report_uses_target_heatmap_without_geometry_overview() -> None
     }
     expect_not_in("geometry_overview", report_image_keys)
     expect_in("geometry_target_heatmap", report_image_keys)
+
+
+def test_outlier_votes_are_excluded_when_annotated_data_is_reused() -> None:
+    """A second EDA pass must not use its previous diagnostic votes as features."""
+    random = np.random.default_rng(18)
+    data = pd.DataFrame(random.normal(size=(50, 2)), columns=["x", "y"])
+    config = EDAConfig(output_dir="unused", include_plots=False, print_feature_selection_summary=False)
+    first = build_eda_artifacts(data, config)
+    second = build_eda_artifacts(first["annotated_data"], config)
+    expect_equal(second["summary"]["multivariate_features_used"], ["x", "y"])
+    pd.testing.assert_series_equal(first["annotated_data"]["is_outlier"],
+                                   second["annotated_data"]["is_outlier"])

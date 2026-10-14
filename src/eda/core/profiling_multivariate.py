@@ -35,43 +35,24 @@ def _build_multivariate_outlier_scores(
     df: pd.DataFrame, numeric_columns: list[str], config: EDAConfig
 ) -> pd.DataFrame:
     """Score every usable row and retain both positional and original-index identifiers."""
-    output_columns = [
-        "row_position",
-        "source_index",
-        "mahalanobis_distance",
-        "mahalanobis_distance_squared",
-        "pvalue",
-        "is_outlier_97_5pct",
-    ]
     feature_columns = _multivariate_feature_columns(numeric_columns, config)
-    if len(feature_columns) < 2:
-        return pd.DataFrame(columns=output_columns)
+    positional_df = df[feature_columns].reset_index(drop=True)
+    combined = _outlier_analysis(positional_df, config).detect_all_outliers()
+    diagnostics = [column for column in combined if column not in feature_columns]
+    scores = combined[diagnostics].copy()
+    scores.insert(0, "row_position", np.arange(len(df)))
+    scores.insert(1, "source_index", pd.Series(list(df.index), dtype=object))
+    return scores
 
-    # A positional RangeIndex makes annotation safe even when the source index contains duplicate labels.
-    positional_df = df.reset_index(drop=True)
-    scores = _outlier_analysis(positional_df, config).detect_multivariate_mahalanobis(feature_columns, limit=None)
-    if scores.empty:
-        return pd.DataFrame(columns=output_columns)
-    scores = scores.rename(columns={"row_index": "row_position"})
-    source_index = np.asarray(df.index, dtype=object)
-    scores.insert(1, "source_index", source_index[scores["row_position"].astype(int).to_numpy()])
-    return scores[output_columns]
 
 def _annotate_multivariate_outliers(df: pd.DataFrame, scores: pd.DataFrame) -> pd.DataFrame:
-    """Return the source DataFrame or GeoDataFrame with row-aligned multivariate diagnostic columns."""
+    """Copy all combined diagnostics positionally, preserving geometry and duplicate indices."""
     annotated = df.copy()
-    flags = pd.array([pd.NA] * len(annotated), dtype="boolean")
-    distances = np.full(len(annotated), np.nan, dtype=float)
-    pvalues = np.full(len(annotated), np.nan, dtype=float)
-    if not scores.empty:
-        positions = scores["row_position"].astype(int).to_numpy()
-        flags[positions] = scores["is_outlier_97_5pct"].astype(bool).to_numpy()
-        distances[positions] = scores["mahalanobis_distance"].astype(float).to_numpy()
-        pvalues[positions] = scores["pvalue"].astype(float).to_numpy()
-    annotated["is_outlier_97_5pct"] = flags
-    annotated["mahalanobis_distance"] = distances
-    annotated["mahalanobis_pvalue"] = pvalues
+    for column in scores.columns:
+        if column not in {"row_position", "source_index"}:
+            annotated[column] = scores[column].array
     return annotated
+
 
 def _outlier_analysis(df: pd.DataFrame, config: EDAConfig) -> OutlierAnalysis:
     """Create an outlier calculator configured identically to the EDA run."""

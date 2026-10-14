@@ -11,7 +11,7 @@ agricultural parcels.
    - Extracts Sentinel-1/2 observations from Copernicus Data Space via openEO
    - Computes temporal statistics for parcel geometries
    - Outputs: one ML-ready row per parcel, dated feature columns (e.g., `NDVI_median__20240701`)
-   - Two implementations: `SatelliteZonalStats` (batch-grouped), `JobManagerSatelliteZonalStats` (tile-based)
+   - Two implementations: `OpenEOZonalStats` (batch-grouped), `OpenEOJobManagerZonalStats` (tile-based)
    - Processing: IQR cleaning → null filling (temporal, 3x3, 5x5) → index calculation → zonal masking → persistence as GeoParquet
 
 2. **ML Classification Pipeline** (`src/ml_classification/`)
@@ -36,10 +36,10 @@ Zonal stats pipeline output → ML classification pipeline input. Features must 
 
 ### Running Code Quality Checks
 ```bash
-# Windows: run_code_checks.bat
+# Windows: scripts\run_code_checks.bat
 # Includes: ruff (lint/fix), pydocstyle, bandit (security), pytest with coverage
 # Output: outputs/quality/ folder with junit.xml, pydocstyle.txt, bandit.txt
-# Coverage HTML: htmlcov/index.html
+# Coverage HTML: outputs/quality/htmlcov/index.html
 ```
 
 ### Notebook Environment Setup
@@ -48,7 +48,7 @@ Install the repository into the active kernel environment with `python -m pip in
 Use explicit imports from `data_preparation`, `eda`, `ml_classification`, and
 `shared`; do not add `sys.path` edits, compatibility aliases, or wildcard imports.
 
-### Pipeline Usage Pattern (See `notebooks/projects/volvi/4_ml_classification.ipynb`)
+### Pipeline Usage Pattern (See `notebooks/projects/neuro/4_ml_classification.ipynb`)
 ```python
 from ml_classification import (
     GeospatialClassificationPipeline, ClassificationPipelineConfig
@@ -113,12 +113,13 @@ pipeline.run_predict()  # Refit + predict all rows
 
 ## Common Libraries
 
-All reusable utilities live in `src/shared/`:
+General reusable utilities live in `src/shared/`; classification-specific helpers
+live in `src/ml_classification/shared/`:
 - `io.py`: read/write GeoParquet, CSV, NetCDF
 - `geometry.py`: geometry repair, CRS transforms
-- `raster.py`: IQR cleaning, spatial interpolation (nearest, IDW, kriging)
-- `logging.py`: formatted console/file logging
-- `tabular.py`: dataframe utilities, null value mapping
+- `data_cleaning/`: outlier analysis, spatial interpolation, and variograms
+- `postgress.py`: database connections and table reads
+- `notebook.py`: opt-in display and reproducibility setup
 
 ## Testing & Validation
 
@@ -154,7 +155,7 @@ Predictions + probabilities + review flags (confidence < threshold)
 
 - **Entry config**: `src/shared/constants.py` (seed, null lists, plot themes)
 - **Pipeline core**: `src/ml_classification/pipeline.py`
-- **Step implementations**: `src/ml_classification/steps/`
+- **Step implementations**: `src/ml_classification/step_01_check/` through `step_05_predict/`
 - **Zonal stats entry**: `src/data_preparation/parcel_stats/openeo.py`
 - **Common utilities**: `src/shared/`
 
@@ -186,4 +187,4 @@ Predictions + probabilities + review flags (confidence < threshold)
 
 ## Repository organization
 
-See `docs/repository_structure.md` for the source boundaries. Notebooks live in `notebooks/`, tests in `tests/`, reference data in `data/reference/`, and generated files in `outputs/`. Shared parcel-statistics code must not depend on an imagery acquisition service.
+See `docs/repository_structure.md` for the source boundaries. Notebooks live in `notebooks/`, tests in `tests/`, external input paths in notebook configuration cells, and generated files in `outputs/`. Shared parcel-statistics code must not depend on an imagery acquisition service.

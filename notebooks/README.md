@@ -7,12 +7,13 @@ the kernel after the source-layout change.
 
 | Folder | Contents |
 | --- | --- |
-| `projects/neuro/` | Download, parcel statistics (openEO or Planet), feature enrichment, EDA, and classification |
+| `projects/neuro/` | openEO parcel statistics, feature enrichment, EDA, and classification |
 | `experiments/` | ML inspection and multi-seed sensitivity experiments |
 | `maintenance/` | openEO job inspection and repository quality reports |
 
 The numbered neuro notebooks stay together so the full workflow is easy to
-follow. The two `1_` notebooks are alternative imagery-source workflows.
+follow: `1_parcel_stats_openEO_fill.ipynb` → `2_parcel_features.ipynb` →
+`3_eda_report.ipynb` → `4_ml_classification.ipynb`.
 Existing external input and output paths and saved notebook outputs are retained.
 Review the path/configuration cell before running a notebook against your data.
 

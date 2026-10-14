@@ -118,13 +118,21 @@ def build_eda_artifacts(df: pd.DataFrame, config: EDAConfig) -> dict[str, Any]:
     missingness_target_tests = _build_missingness_target_tests(dataset, config)
     pca_summary = _build_pca_summary(dataset, numeric_columns, config)
     multivariate_scores = _build_multivariate_outlier_scores(dataset, numeric_columns, config)
-    outlier_mask = multivariate_scores["is_outlier_97_5pct"].eq(True)
+    outlier_mask = multivariate_scores["is_outlier"].eq(True)
     # The outlier table contains flagged rows; annotated_data below retains the full input population.
     multivariate_outliers = multivariate_scores.loc[outlier_mask].reset_index(drop=True)
     annotated_data = _annotate_multivariate_outliers(dataset, multivariate_scores)
-    summary["multivariate_rows_scored"] = len(multivariate_scores)
+    summary["multivariate_rows_scored"] = int(multivariate_scores["is_outlier"].notna().sum())
     summary["multivariate_outliers_found"] = len(multivariate_outliers)
-    summary["multivariate_outlier_confidence"] = 0.975
+    summary["mahalanobis_confidence"] = 0.975
+    summary["outlier_voting_rule"] = "strict majority of available methods; minimum two methods"
+    method_columns = [column for column in multivariate_scores if column.startswith("eda_outlier_")
+                      and column not in {"eda_outlier_votes", "eda_outlier_methods_available"}]
+    outlier_method_summary = pd.DataFrame([
+        {"method": column.removeprefix("eda_outlier_"), "rows_scored": int(multivariate_scores[column].notna().sum()),
+         "outliers_found": int(multivariate_scores[column].sum())}
+        for column in method_columns
+    ])
     # Record the configured feature subset so consumers can interpret the multivariate diagnostic.
     summary["multivariate_features_used"] = _multivariate_feature_columns(numeric_columns, config)
     target_summary = _build_target_summary(dataset, config)
@@ -139,6 +147,7 @@ def build_eda_artifacts(df: pd.DataFrame, config: EDAConfig) -> dict[str, Any]:
         "datetime_summary": datetime_summary,
         "normality_tests": normality_tests,
         "outlier_summary": outlier_summary,
+        "outlier_method_summary": outlier_method_summary,
         "correlation_matrices": correlation_matrices,
         "strong_correlation_pairs": strong_pairs,
         "multicollinearity": multicollinearity,

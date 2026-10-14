@@ -326,6 +326,9 @@ def test_prediction_report_exports_confidence_graphs_tables_and_sankey(request):
     expect_in("Operational Inspection Priority by Predicted Crop", report)
     expect_in("Confidence Review versus Operational Inspection Need", report)
     expect_in("Top-Priority Parcel Inspection Queue", report)
+    expect_in("inspection_include_outlier", report)
+    expect_in("inspection_need_before_outlier", report)
+    expect_in("inspection_outlier_adjusted", report)
 
     expected_inspection_tables = {
         "inspection_need_summary.csv",

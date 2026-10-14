@@ -52,6 +52,7 @@ class EDAConfig:
             "datetime_summary": "tables/overview/datetime_summary.csv",
             "normality_tests": "tables/numeric/normality_tests.csv",
             "outlier_summary": "tables/numeric/outlier_summary.csv",
+            "outlier_method_summary": "tables/multivariate/outlier_method_summary.csv",
             "correlation_pairs": "tables/correlation/strong_correlation_pairs.csv",
             "multicollinearity": "tables/correlation/multicollinearity.csv",
             "missingness_summary": "tables/data_quality/missingness_summary.csv",

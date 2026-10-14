@@ -132,6 +132,7 @@ class ClassificationPipelineConfig:
     # Independent model, source-data, and geometry risks combined after prediction
     # ================================================================================
     inspection_scoring_enabled: bool = True
+    inspection_include_outlier: bool = False
     inspection_data_reliability_column: str = "data_reliability_score"
     inspection_geometry_complexity_column: str = "geom_shape_complexity_score"
     # Weights and score thresholds affect diagnostic outputs only, never rule-based priority.
@@ -312,6 +313,7 @@ class ClassificationPipelineConfig:
             "rank_confidence_enabled": "Error: rank_confidence_enabled must be a bool.",
             "class_reliability_enabled": "Error: class_reliability_enabled must be a bool.",
             "inspection_scoring_enabled": "Error: inspection_scoring_enabled must be a bool.",
+            "inspection_include_outlier": "Error: inspection_include_outlier must be a bool.",
         }
         for field_name, message in bool_validations.items():
             if not isinstance(getattr(self, field_name), bool):

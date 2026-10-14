@@ -59,6 +59,9 @@ def write_predict_report(config, final_df: pd.DataFrame, selection: dict[str, An
         "inspection_need",
         "inspection_priority_label",
         "inspection_rule",
+        "is_outlier",
+        "inspection_need_before_outlier",
+        "inspection_outlier_adjusted",
         "inspection_class_reliability_applied",
         "inspection_check_type",
         "label_prediction_status",
@@ -235,7 +238,11 @@ def _build_inspection_sections(
         "text": (
             "This matrix shows how agreement with the farmer declaration changes the operational priority. "
             "Seven ordered priority bands come from direct rules. The numeric uncertainty score does not "
-            "determine the category or queue order."
+            "determine the category or queue order. When inspection_include_outlier=True, is_outlier=True "
+            "raises the matrix priority by one band, capped at Very High; Unknown stays unscored. "
+            "False, missing, or unavailable outlier flags leave priority unchanged. The original matrix rule "
+            "and inspection_need_before_outlier remain available alongside inspection_outlier_adjusted. "
+            "Outlier escalation alone does not establish a declaration conflict."
         ),
         "table": inspection_artifacts.tables["inspection_need_summary"],
     }
@@ -513,6 +520,11 @@ def _build_prediction_summary(
             final_df[config.prediction_confidence_level_column].value_counts().to_dict()
             if config.prediction_confidence_level_column in final_df
             else {}
+        ),
+        "inspection_include_outlier": bool(getattr(config, "inspection_include_outlier", False)),
+        "inspection_outlier_column_available": "is_outlier" in final_df,
+        "inspection_outlier_adjusted_count": (
+            int(final_df["inspection_outlier_adjusted"].sum()) if "inspection_outlier_adjusted" in final_df else 0
         ),
         "inspection_need_counts": (
             final_df["inspection_need"].value_counts(dropna=False).to_dict() if "inspection_need" in final_df else {}

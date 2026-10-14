@@ -18,7 +18,11 @@ from .profiling_constants import _EDA_DIAGNOSTIC_COLUMNS
 
 def _numeric_columns(df: pd.DataFrame) -> list[str]:
     """Return numeric non-geometry columns."""
-    return [column for column in df.columns if column != "geometry" and ptypes.is_numeric_dtype(df[column])]
+    return [
+        column for column in df.columns
+        if column != "geometry" and column not in _EDA_DIAGNOSTIC_COLUMNS
+        and not column.startswith("eda_") and ptypes.is_numeric_dtype(df[column])
+    ]
 
 def _categorical_columns(df: pd.DataFrame) -> list[str]:
     """Return object-like categorical columns."""
@@ -108,7 +112,7 @@ def _prepared_numeric_matrix(
 def _numeric_feature_columns(numeric_columns: list[str], config: EDAConfig) -> list[str]:
     """Exclude target, identifier, and prior diagnostics from feature-only numeric analyses."""
     excluded = {config.target_column, config.id_column, *_EDA_DIAGNOSTIC_COLUMNS}
-    return [column for column in numeric_columns if column not in excluded]
+    return [column for column in numeric_columns if column not in excluded and not column.startswith("eda_")]
 
 def _multivariate_feature_columns(numeric_columns: list[str], config: EDAConfig) -> list[str]:
     """Return the ordered numeric feature subset used for multivariate outlier scoring."""

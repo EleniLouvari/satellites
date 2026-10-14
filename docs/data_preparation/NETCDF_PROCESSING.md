@@ -345,6 +345,5 @@ Paths are relative to the repository:
 - [parcel_stats/openeo.py](../../src/data_preparation/parcel_stats/openeo.py): final output assembly and partition completion.
 
 For account scheduling and cleanup timing, see [Scheduling](openeo/SCHEDULING.md).
-Planet also creates temporary NetCDFs and uses shared processing components,
-but its acquisition paths and scratch-file lifecycle differ; see
-[Planet processing](PLANET.md).
+The shared local engine remains independent of acquisition services; the
+maintained adapter in this checkout is openEO.
