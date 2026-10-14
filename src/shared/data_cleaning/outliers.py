@@ -12,12 +12,6 @@ from collections.abc import Sequence
 import numpy as np
 import pandas as pd
 from scipy import stats
-from sklearn.cluster import DBSCAN
-from sklearn.cross_decomposition import PLSRegression
-from sklearn.decomposition import PCA
-from sklearn.ensemble import IsolationForest
-from sklearn.impute import KNNImputer
-from sklearn.preprocessing import StandardScaler
 
 
 class OutlierAnalysis:
@@ -107,24 +101,6 @@ class OutlierAnalysis:
         # Remove NaN and infinite values since they cannot participate safely in
         # quantiles, standard deviation, or distance computations.
         return series[series.notna() & np.isfinite(series)]
-
-    def check_and_standardize_data(self) -> pd.DataFrame:
-        """Replace numeric infinities with missing values.
-
-        Returns:
-            A defensive dataframe copy with positive and negative infinity
-            replaced by ``NaN`` in numeric columns.
-        """
-        # Use a defensive copy and convert any infinite numeric values to NaN so
-        # subsequent detectors treat them as missing rather than producing
-        # arithmetic errors.
-        self.df = self.df.copy()
-        self.numeric_columns = self._numeric_columns()
-        self.df[self.numeric_columns] = self.df[self.numeric_columns].replace([np.inf, -np.inf], np.nan)
-        # Reset the results container because previous detection columns may
-        # be stale after standardization.
-        self.results = self.df.copy()
-        return self.df
 
     def calculate_iqr_bounds(self, column: str) -> tuple[float, float]:
         """Calculate lower and upper IQR fences for one numeric column.
@@ -327,134 +303,6 @@ class OutlierAnalysis:
         if limit is not None:
             result = result.head(limit)
         return result.reset_index(drop=True)
-
-    def detect_iqr_outliers(self, column: str) -> pd.Series:
-        """Calculate and store an aligned IQR flag column.
-
-        The generated column is named ``IQR_outliers_<column>``.
-        """
-        mask = self.iqr_outlier_mask(column)
-        self.results[f"IQR_outliers_{column}"] = mask
-        return mask
-
-    def detect_zscore_outliers(self, column: str) -> pd.Series:
-        """Calculate and store an aligned z-score flag column.
-
-        The generated column is named ``Zscore_outliers_<column>``.
-        """
-        mask = self.zscore_outlier_mask(column)
-        self.results[f"Zscore_outliers_{column}"] = mask
-        return mask
-
-    def fill_nulls(self, df: pd.DataFrame) -> pd.DataFrame:
-        """KNN-impute a numeric dataframe while retaining index and columns.
-
-        Up to three neighboring observations are used; smaller inputs
-        automatically reduce the neighbor count.
-        """
-        # Perform a simple KNN-imputation that preserves row/column labels.
-        if df.empty:
-            return df.copy()
-        values = KNNImputer(n_neighbors=min(3, len(df))).fit_transform(df)
-        return pd.DataFrame(values, columns=df.columns, index=df.index)
-
-    def detect_isolation_forest_outliers(self, column: str) -> pd.Series:
-        """Calculate and store univariate Isolation Forest outlier flags.
-
-        Finite values are standardized before fitting. Null and infinite rows
-        remain ``False`` in the aligned result.
-        """
-        # Isolation Forest is applied to the finite subset of values; rows
-        # that were missing remain False in the aligned mask.
-        clean = self._clean_numeric(column)
-        mask = pd.Series(False, index=self.df.index, dtype=bool)
-        if len(clean) >= 2:
-            scaled = StandardScaler().fit_transform(clean.to_numpy().reshape(-1, 1))
-            predictions = IsolationForest(contamination=self.forest_contamination, random_state=self.random_seed).fit_predict(
-                scaled
-            )
-            # Isolation Forest uses -1 for anomalies.
-            mask.loc[clean.index] = predictions == -1
-        self.results[f"IForest_outliers_{column}"] = mask
-        return mask
-
-    def detect_pca_outliers(self, column: str) -> pd.Series:
-        """Calculate and store PCA/DBSCAN multivariate outlier flags.
-
-        PCA reduces the prepared numeric matrix before DBSCAN labels sparse
-        observations. The same multivariate labels are stored for each analyzed
-        ``column`` to preserve the class's established result-column API.
-        """
-        # Reduce dimensionality with PCA and apply DBSCAN to identify points
-        # that do not belong to dense clusters. The same mask is stored for
-        # each requested `column` for compatibility with callers expecting
-        # per-column result columns.
-        matrix = self.prepared_numeric_matrix(self.numeric_columns)
-        mask = pd.Series(False, index=self.df.index, dtype=bool)
-        components = min(self.PCA_components, matrix.shape[0], matrix.shape[1])
-        if components and len(matrix) >= 5:
-            transformed = PCA(n_components=components).fit_transform(matrix)
-            labels = DBSCAN(eps=0.3, min_samples=5).fit_predict(transformed)
-            # DBSCAN labels noise as -1.
-            mask.loc[matrix.index] = labels == -1
-        self.results[f"PCA_outliers_{column}"] = mask
-        return mask
-
-    def detect_outliers_pls(self, column: str) -> pd.Series:
-        """Calculate and store PLS score and reconstruction outlier flags.
-
-        A row is flagged when its Hotelling-style score statistic, score
-        distance, or orthogonal reconstruction distance exceeds its configured
-        upper-tail cutoff.
-        """
-        # Use PLS to obtain score-space metrics and flag rows that exceed
-        # various upper-tail cutoffs. This combines Hotelling-style and
-        # reconstruction-distance criteria to detect multivariate anomalies.
-        matrix = self.prepared_numeric_matrix(self.numeric_columns)
-        mask = pd.Series(False, index=self.df.index, dtype=bool)
-        components = min(self.PCA_components, matrix.shape[1], max(len(matrix) - 1, 0))
-        if components and len(matrix) >= 3:
-            values = matrix.to_numpy()
-            pls = PLSRegression(n_components=components, scale=False)
-            scores, _ = pls.fit_transform(values, np.zeros(len(values)))
-            reconstructed = pls.inverse_transform(scores)
-
-            # Use robust fallbacks to avoid division by zero when a score
-            # component has no variation.
-            score_std = np.std(scores, axis=0)
-            score_std = np.where(score_std == 0, 1e-8, score_std)
-            t_squared = np.sum((scores / score_std) ** 2, axis=1)
-            score_distance = np.sqrt(np.sum(scores**2, axis=1))
-            orthogonal_distance = np.sqrt(np.sum((values - reconstructed) ** 2, axis=1))
-            percentile = 100 * (1 - self.PCA_threshold)
-            combined = (
-                (t_squared > stats.chi2.ppf(1 - self.PCA_threshold, df=components))
-                | (score_distance > np.percentile(score_distance, percentile))
-                | (orthogonal_distance > np.percentile(orthogonal_distance, percentile))
-            )
-            mask.loc[matrix.index] = combined
-        self.results[f"PLS_outliers_{column}"] = mask
-        return mask
-
-    def detect_all_outliers(self, *, plot: bool = False) -> pd.DataFrame:
-        """Run every detector for every numeric column.
-
-        Args:
-            plot: Reserved for backward compatibility. Detection is calculation
-                only; plotting is handled separately by the EDA visual layer.
-
-        Returns:
-            A copy of the input dataframe with one boolean result column per
-            detector and numeric source column.
-        """
-        self.check_and_standardize_data()
-        for column in self.numeric_columns:
-            self.detect_iqr_outliers(column)
-            self.detect_zscore_outliers(column)
-            self.detect_isolation_forest_outliers(column)
-            self.detect_pca_outliers(column)
-            self.detect_outliers_pls(column)
-        return self.results
 
     @staticmethod
     def _round(value: float, digits: int = 6) -> float:

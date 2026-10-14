@@ -104,7 +104,8 @@ def prepare_confidence_diagnostics(predictions: pd.DataFrame, target_column: str
         diagnostics["predicted_label"]
     )
 
-    # Consensus and correctness are independent axes: models can agree on an incorrect prediction.
+    # Consensus and correctness are independent axes: models can agree on an incorrect prediction, and this
+    # split is what drives the follow-up need-to-check audit used in the report and operational review.
     conditions = [
         diagnostics["borda_agrees_prediction"] & diagnostics["prediction_correct"],
         diagnostics["borda_agrees_prediction"] & ~diagnostics["prediction_correct"],

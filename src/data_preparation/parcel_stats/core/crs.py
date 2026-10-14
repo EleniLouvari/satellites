@@ -25,7 +25,9 @@ def estimate_utm_epsg_from_parcels(parcels: gpd.GeoDataFrame) -> int:
     if parcels.crs is None:
         raise ValueError("Error: parcels must have a CRS before estimating a UTM zone.")
 
-    usable = parcels.loc[parcels.geometry.notna() & ~parcels.geometry.is_empty, ["geometry"]].copy()
+    geometry = parcels.geometry
+    usable_mask = geometry.apply(lambda geom: geom is not None and not geom.is_empty)
+    usable = parcels.loc[usable_mask, ["geometry"]].copy()
     if usable.empty:
         raise ValueError("Error: parcels must contain at least one non-empty geometry.")
 

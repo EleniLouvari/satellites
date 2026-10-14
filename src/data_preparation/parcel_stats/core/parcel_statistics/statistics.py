@@ -15,6 +15,8 @@ from shapely.geometry import mapping
 class ParcelStatisticsReducerMixin:
     """Methods for parcel masking and reducer operations."""
 
+    # The reduction kernel collapses each parcel-window from many pixels into a single summary per statistic,
+    # while preserving NaN handling so empty or partially masked windows do not create false values.
     def _reduce_local_pixels(self, pixel_values: np.ndarray) -> dict[str, np.ndarray]:
         """Calculate requested statistics across the final pixel axis."""
         pixel_values = np.where(np.isfinite(pixel_values), pixel_values, np.nan)
@@ -51,6 +53,8 @@ class ParcelStatisticsReducerMixin:
                 reduced[statistic] = values
         return reduced
 
+    # Period pooling is done after local per-window reductions, which keeps the aggregation logic stable even
+    # when multiple acquisitions or spatial samples fall inside the same reporting interval.
     def _reduce_period_pixels(self, pixel_values: np.ndarray, period_groups: list[np.ndarray]) -> dict[str, np.ndarray]:
         """Pool acquisition and spatial samples within each period, separately per variable."""
         reductions = []
@@ -60,6 +64,10 @@ class ParcelStatisticsReducerMixin:
             reductions.append(self._reduce_local_pixels(pooled))
         return {statistic: np.stack([result[statistic] for result in reductions]) for statistic in self.spatial_statistics}
 
+    # Fill provenance separates three sources of values: originally observed data, temporal interpolation,
+    # and spatial repair. This summary is the audit trail used later to score data reliability.
+    # The ratios here are intentionally reported against the full expected parcel footprint so downstream
+    # filters can compare a single reliability score across batches with different numbers of valid pixels.
     @staticmethod
     def _summarize_parcel_filling(
         observed: np.ndarray, temporal_filled_mask: np.ndarray, final: np.ndarray, intersected_pixel_count: int
@@ -81,6 +89,8 @@ class ParcelStatisticsReducerMixin:
             "data_reliability_score": observed_count / expected_pixel_count if expected_pixel_count else np.nan,
         }
 
+    # Cropping to the bounding box of the parcel mask keeps raster operations local and avoids processing the
+    # full scene for every parcel when only a small sub-window is needed.
     def _crop_values_to_parcel_mask(
         self, values: np.ndarray, parcel_mask: np.ndarray, transform
     ) -> tuple[np.ndarray, np.ndarray, object]:

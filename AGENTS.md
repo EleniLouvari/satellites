@@ -8,7 +8,7 @@ relative to the repository root.
 
 Before starting repository work, read and follow:
 
-- [.github/copilot-instructions.md](.github/copilot-instructions.md)
+- [.github/instructions/instructions.md](.github/instructions/instructions.md)
 - [.copilot/behavioral-guidelines/SKILL.md](.copilot/behavioral-guidelines/SKILL.md)
 
 ## Instructions for specific files

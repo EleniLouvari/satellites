@@ -14,6 +14,10 @@ from ..core.io import ensure_dir
 
 def write_eda_html_report(artifacts: dict[str, Any], plot_paths: dict[str, Path], config: EDAConfig) -> Path:
     """Render a complete tabbed HTML EDA report."""
+    # The report assembles a single narrative from the summary cards, data-quality panels, and per-feature tabs.
+    # Keeping the static HTML structure here makes it easy to reuse the same artifact layout across different runs.
+    # The rendered tables and images are intentionally kept in a single pass so the browser view remains consistent
+    # with the saved artifacts on disk and the tabbed narrative used in notebooks.
     ensure_dir(config.output_dir)
     tabs = _build_report_tabs(artifacts, plot_paths)
     body = [

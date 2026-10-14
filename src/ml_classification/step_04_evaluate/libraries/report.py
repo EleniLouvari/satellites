@@ -147,6 +147,8 @@ def _ranking_rows(ranking_metrics_df: pd.DataFrame | None, columns: pd.Index) ->
     return rank_rows.reindex(columns=columns)
 
 
+# Model selection is summarized as a small metadata bundle so the HTML report can describe why one strategy
+# was chosen without redoing the entire evaluation stack when the user opens the artifact later.
 def _model_selection_strategy(config, selection: dict[str, Any], cv_table: pd.DataFrame) -> dict[str, Any]:
     """Combine configuration and frozen selection metadata for evaluation reporting."""
     scoring_primary = getattr(config, "scoring_primary", "unknown")

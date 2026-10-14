@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 from shapely.geometry import Point
 
-from shared.data_cleaning import OutlierAnalysis, fill_categorical_with_KNN, fill_null_values_using_interpolation
+from shared.data_cleaning import OutlierAnalysis, fill_null_values_using_interpolation
 from tests.utils import expect_equal, expect_true
 
 
@@ -24,14 +24,6 @@ def test_idw_respects_the_maximum_distance() -> None:
     result = fill_null_values_using_interpolation(data, "idw", "value", max_distance_in_meters=50)
 
     expect_true(np.isnan(result.loc[1, "value"]))
-
-
-def test_categorical_knn_uses_the_target_labels() -> None:
-    data = pd.DataFrame({"class": ["A", "A", "B", "B", None], "x": [0.0, 0.2, 9.8, 10.0, 9.9]})
-
-    result = fill_categorical_with_KNN(data, "class", ["x"], n_neighbors=1)
-
-    expect_equal(result.loc[4, "class"], "B")
 
 
 def test_iqr_mask_is_index_aligned() -> None:

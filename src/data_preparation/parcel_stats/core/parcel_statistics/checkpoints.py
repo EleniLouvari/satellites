@@ -16,6 +16,8 @@ from shared.io import read_data, write_data
 class ParcelStatisticsCheckpointMixin:
     """Methods for checkpoint signatures and checkpoint persistence."""
 
+    # The cleaning pipeline persists a compact hash so repeated runs can reuse the same raw data
+    # while still invalidating cached outputs when the fill logic or spectral settings change.
     def _cleaning_checkpoint_signature(self) -> str:
         """Fingerprint local operations without invalidating reusable raw downloads."""
         configuration = {
@@ -39,6 +41,8 @@ class ParcelStatisticsCheckpointMixin:
         payload = json.dumps(configuration, sort_keys=True).encode("utf-8")
         return hashlib.sha256(payload).hexdigest()[:16]
 
+    # Many vegetation and water indices have division-by-zero or invalid-pixel edge cases; keeping
+    # those as NaN preserves mask semantics instead of letting a single bad pixel poison the whole cube.
     def _safe_ratio(self, numerator: np.ndarray, denominator: np.ndarray) -> np.ndarray:
         """Divide arrays while representing zero or invalid denominators as nulls."""
         result = np.full(numerator.shape, np.nan, dtype="float32")
@@ -48,12 +52,16 @@ class ParcelStatisticsCheckpointMixin:
 
     def _calculate_local_optical_index(self, values_by_band, index_name):
         """Translate source band identifiers to spectral roles before shared algebra."""
+        # Index math is defined against canonical spectral roles, not raw product band names, so the same
+        # formula can be reused across Sentinel-2 and mixed-cube sources without drift.
         values_by_role = {role: values_by_band[name] for role, name in self.OPTICAL_BAND_ROLES.items() if name in values_by_band}
         return self._calculate_optical_index(values_by_role, index_name)
 
     def _calculate_optical_index(self, values_by_role: dict[str, np.ndarray], index_name: str) -> np.ndarray:
         """Calculate an optical index from cleaned reflectance arrays keyed by spectral role."""
         band = values_by_role.__getitem__
+        # Each spectral index has a small domain-specific formula; keeping that mapping local makes it clear
+        # which numerator/denominator bands are expected and which invalid pixels should stay null.
         index_calculators = {
             "NDVI": lambda: self._safe_ratio(band("nir") - band("red"), band("nir") + band("red")),
             "NDWI": lambda: self._safe_ratio(band("green") - band("nir"), band("green") + band("nir")),
@@ -94,6 +102,8 @@ class ParcelStatisticsCheckpointMixin:
         """Calculate one Sentinel-1 index per pixel from linear-power sigma0."""
         vv = values_by_band["VV"]
         vh = values_by_band["VH"]
+        # Sentinel-1 linear-power bands should stay non-negative; values below zero usually point to a
+        # scale mismatch or an invalid source cube rather than a legitimate parcel signal.
         finite_negative = (np.isfinite(vv) & (vv < 0)) | (np.isfinite(vh) & (vh < 0))
         if np.any(finite_negative):
             raise ValueError(
@@ -105,6 +115,8 @@ class ParcelStatisticsCheckpointMixin:
             return self._safe_ratio(4.0 * vh, vv + vh)
         raise ValueError(f"Error: Unsupported Sentinel-1 index: {index_name}")
 
+    # The cleaned cube keeps a fixed band order, then appends derived optical and radar indices so the
+    # downstream parcel statistics use one consistent variable schema regardless of the source product.
     def _build_local_output_cube(self, values: np.ndarray, cube_variables: list[str]) -> np.ndarray:
         """Select requested bands and append indices derived from cleaned source bands."""
         values_by_band = {name: values[:, index] for index, name in enumerate(cube_variables)}
@@ -114,6 +126,8 @@ class ParcelStatisticsCheckpointMixin:
         output_layers.extend(self._calculate_local_sentinel1_index(values_by_band, name) for name in self.sentinel1_indices)
         return np.stack(output_layers, axis=1).astype("float32", copy=False)
 
+    # A checkpoint is scoped to the cleaning configuration, so the code can skip redundant recomputation
+    # while still recognizing when a parameter change requires a fresh raster cache.
     def _cleaning_checkpoint_paths(self, netcdf_path) -> tuple[Path, Path]:
         """Return deterministic cleaned-raster and audit paths for one raw cube."""
         source = Path(netcdf_path)

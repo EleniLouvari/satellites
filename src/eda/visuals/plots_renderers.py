@@ -33,6 +33,8 @@ from .plots_common import (
 )
 
 
+# The data-quality bar chart gives a quick read on which checks are firing most often before the
+# per-column diagnostics drill into the underlying rows and feature distributions.
 def _plot_data_quality_flags(flags: pd.DataFrame, output_path: Path) -> None:
     """Plot counts of data-quality flags by issue type."""
     counts = flags["issue_type"].value_counts().sort_values()
@@ -91,7 +93,8 @@ def _plot_numeric_distributions(df: pd.DataFrame, columns: list[str], output_pat
     """Plot histogram and boxplot pairs for numeric columns."""
     rows = len(columns)
     fig, axes = plt.subplots(rows, 2, figsize=(12, max(3, 3 * rows)))
-    # Ensure axes is two-dimensional for consistent iteration when rows == 1
+    # Ensure axes is two-dimensional for consistent iteration when rows == 1; this keeps each numeric feature
+    # paired with the same histogram/boxplot layout regardless of a one-column subplot grid.
     axes = np.atleast_2d(axes)
     for axes_row, column in zip(axes, columns):
         values = pd.to_numeric(df[column], errors="coerce").dropna()

@@ -17,6 +17,8 @@ from ..streamed_raster import LOCAL_RASTER_LOCK
 class ParcelStatisticsStreamingMixin:
     """Methods for streaming cube checkpointing and parcel-stat row assembly."""
 
+    # The local worker serializes access to raster data so only one cube is processed at a time while
+    # still allowing each parcel batch to run independently once it has acquired the lock.
     def _calculate_local_statistics(self, netcdf_path, parcels, batch_number):
         """Bound local concurrency and release resources after successful or failed cubes."""
         with LOCAL_RASTER_LOCK:
@@ -58,6 +60,9 @@ class ParcelStatisticsStreamingMixin:
         )
         return result, raster_report
 
+    # The stream context is the reusable metadata bundle that keeps parcel windows, timestamps, and CRS
+    # aligned across the checkpoint-writing and final row-building stages. It is intentionally small but
+    # complete enough that each parcel batch can be reproduced without re-reading the source NetCDF.
     def _build_stream_statistics_context(self, dataset, parcels):
         """Prepare temporal/raster context required for streamed parcel statistics."""
         time_dimension = self._find_cube_dimension(dataset, ("t", "time", "temporal"), "temporal")
@@ -101,6 +106,8 @@ class ParcelStatisticsStreamingMixin:
         monthly_values = monthly_values.rio.write_crs(cube_crs, inplace=False)
         return cube_crs, monthly_values.rio.transform(recalc=False)
 
+    # Period resolution decides whether acquisitions are pooled into reporting intervals or kept as single
+    # time steps, which changes both the checkpoint layout and the parcel statistics that are returned.
     def _resolve_stream_periods(self, dataset, time_dimension):
         """Resolve checkpoint periods and parcel aggregation groups."""
         pool_acquisitions = getattr(self, "temporal_reducer", "median") == "none"
@@ -140,6 +147,8 @@ class ParcelStatisticsStreamingMixin:
             "period_end_lookup": period_end_lookup,
         }
 
+    # Each parcel is processed one at a time with its own local raster window, then its rows are appended to
+    # the final tabular output for downstream reshape and modeling.
     def _build_streamed_stat_rows(self, final_checkpoint, parcels, stream_context):
         """Build parcel-period statistics rows from a streamed checkpoint."""
         rows = []

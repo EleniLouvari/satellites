@@ -169,6 +169,8 @@ class TemporalTensorBuilder:
             "n_features_per_timestep": len(self.schema_.base_features),
         }
 
+    # The temporal schema is intentionally strict: each feature must map to a valid ledger date and a
+    # monthly cadence so the downstream LSTM sees a predictable sequence rather than a ragged time axis.
     def _validate_temporal_dates(self, ordered_dates: list[str]) -> None:
         """Validate date strings and, when requested, enforce one consecutive timestep per month."""
         try:

@@ -124,6 +124,8 @@ def write_predict_report(config, final_df: pd.DataFrame, selection: dict[str, An
     )
 
 
+# Confidence and operational inspection are reported in separate tabs because they answer different questions:
+# one explains model agreement and error risk, while the other ranks which parcels should be reviewed for follow-up.
 def _build_prediction_diagnostics_section(
     config, confidence_artifacts, inspection_artifacts, data_reliability_column: str, geometry_complexity_column: str
 ) -> dict[str, Any]:

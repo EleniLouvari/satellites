@@ -1,8 +1,6 @@
-"""Nearest, IDW, and neighborhood filling for GeoDataFrames."""
+"""Nearest, IDW, and kriging filling for GeoDataFrames."""
 
 from __future__ import annotations
-
-from collections.abc import Callable
 
 import geopandas as gpd
 import numpy as np
@@ -47,68 +45,6 @@ def fill_nulls_inverse_distance_weighting(
     result = np.full(len(nulls), np.nan, dtype=float)
     # Use numpy.divide with `where` to leave NaN where no donors contribute.
     np.divide(numerator, denominator, out=result, where=denominator > 0)
-    return result
-
-
-def _aggregate_neighbors(values: pd.Series, method: str):
-    """Apply one supported neighborhood reducer."""
-    reducers: dict[str, Callable] = {
-        "min": pd.Series.min,
-        "max": pd.Series.max,
-        "median": pd.Series.median,
-        "mean": pd.Series.mean,
-        "sum": pd.Series.sum,
-        "mode": lambda series: series.mode().iloc[0] if not series.mode().empty else np.nan,
-    }
-    if method not in reducers:
-        raise ValueError(f"Error: Unsupported neighborhood method {method!r}; choose from {sorted(reducers)}.")
-    return reducers[method](values)
-
-
-def fill_nulls_using_neighborhood_values(
-    gdf: gpd.GeoDataFrame,
-    field_name: str,
-    allow_zeros: bool = False,
-    method: str = "median",
-    distance_in_feet: float = 500,
-    min_neighbors: int = 5,
-    expand: bool = True,
-    select_closest: bool = False,
-) -> gpd.GeoDataFrame:
-    """Fill missing values from nearby valid geometries without mutating the input."""
-    # Validate inputs and prepare a working copy with valid geometries.
-    require_columns(gdf, [field_name, "geometry"])
-    if min_neighbors < 1:
-        raise ValueError("Error: min_neighbors must be at least 1.")
-    result = gdf.loc[gdf.geometry.notna() & ~gdf.geometry.is_empty].copy()
-    result.geometry = result.geometry.make_valid()
-    distance = projected_distance_units(result, float(distance_in_feet) * 0.3048)
-    missing = result[field_name].isna() | (~allow_zeros & result[field_name].eq(0))
-    donors = result.loc[~missing].copy()
-    if not missing.any() or donors.empty:
-        return result
-
-    # Use a spatial index to efficiently find candidate donors within an
-    # expanding search radius. The loop doubles the search distance until
-    # either enough neighbors are found or all donors have been reached.
-    spatial_index = donors.sindex
-    for index, geometry in result.loc[missing].geometry.items():
-        search_distance = distance
-        while True:
-            search_area = geometry.buffer(search_distance)
-            candidates = donors.iloc[list(spatial_index.intersection(search_area.bounds))]
-            neighbors = candidates.loc[candidates.intersects(search_area)].copy()
-            all_donors_reached = len(neighbors) == len(donors)
-            if len(neighbors) >= min_neighbors or (all_donors_reached and not neighbors.empty):
-                if select_closest:
-                    # Optionally trim to the closest N neighbors by geometric distance.
-                    neighbors["_distance"] = neighbors.geometry.distance(geometry)
-                    neighbors = neighbors.nsmallest(min_neighbors, "_distance")
-                result.at[index, field_name] = _aggregate_neighbors(neighbors[field_name], method)
-                break
-            if not expand or all_donors_reached:
-                break
-            search_distance *= 2
     return result
 
 

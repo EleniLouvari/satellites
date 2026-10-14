@@ -152,6 +152,8 @@ def _read_parcels(paths: DashboardPaths, modelled_labels: set[str]) -> gpd.GeoDa
     return frame.loc[frame[_MODELLED_LABEL_COLUMN].isin(modelled_labels)].copy()
 
 
+# Dashboard displays are easier to read when each class code resolves to a concise label; this mapping keeps
+# the UI stable even when the raw label names contain noisy source text or integer-like codes.
 def _build_class_lookup(parcels: pd.DataFrame) -> dict[str, str]:
     """Create a stable class-code to class-name mapping."""
     if _MODELLED_LABEL_NAME_COLUMN not in parcels.columns:

@@ -165,6 +165,8 @@ def _save_monthly_index_boxplots(distribution: pd.DataFrame, output_path: Path) 
     plt.close(fig)
 
 
+# The range-line plot complements the boxplots by showing monthly min-to-max envelopes for each class, which
+# helps distinguish stable seasonal shifts from isolated parcel outliers within the same modeled label.
 def _save_monthly_index_range_lines(phenology: pd.DataFrame, index: str, output_path: Path) -> None:
     """Save monthly highest/lowest parcel lines faceted by modeled class."""
     plot = phenology.loc[phenology["index"] == index].copy()

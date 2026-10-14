@@ -50,16 +50,11 @@ src/
       reports/                   common report rendering, viewer, diagnostics and dashboard
     sensitivity/runner.py        sensitivity helpers live in libraries/
   shared/
-    io.py logging.py constants.py formatting.py
-    geometry.py raster.py s3.py
-    tabular/
-      __init__.py               stable public tabular API re-export
-      core.py                   generic helpers (formatting, notebook/runtime helpers)
-      transforms.py             dataframe normalization and type/categorical transforms
-      analysis.py               plotting, outlier utilities, and confidence/stat helpers
-      io.py                     model persistence and GIS/ZIP extraction helpers
-    spatial_statistics/           clustering, weights, hotspots, and exploratory diagnostics
-    data_cleaning/
+    io.py constants.py assertions.py
+    geometry.py                  geometry validation and distance units
+    postgress.py                 database connections and table reads
+    spatial_statistics/          buffer-based parcel clustering
+    data_cleaning/               outlier analysis, interpolation, and variograms
     notebook.py                  explicit notebook setup
 ```
 
@@ -75,26 +70,26 @@ temporal reduction and environmental enrichment belong to data preparation.
 
 ### Shared spatial statistics
 
-`shared.spatial_statistics` is a package. Existing function imports remain valid,
-including `from shared.spatial_statistics import spatial_clustering_using_buffer`.
-Implementations are grouped by responsibility:
+`shared.spatial_statistics` is a package. Buffer clustering remains available as
+`from shared.spatial_statistics import spatial_clustering_using_buffer`.
+The retained implementation is `clustering.py:spatial_clustering_using_buffer`,
+used by the parcel acquisition notebook. Its geometry and distance-unit helpers
+remain in `shared.geometry`.
 
-| Module | Responsibility |
-| --- | --- |
-| `clustering.py` | K-means, DBSCAN, buffer/network clusters, and Voronoi polygons |
-| `weights.py` | Distance-based and Queen-contiguity neighborhoods |
-| `hotspots.py` | Attribute z-scores, local/global Moran statistics, and hotspot plots |
-| `scale_selection.py` | Neighborhood-distance sweeps and their multiprocessing worker |
-| `distributions.py` | Distribution comparisons, normality checks, and transformations |
-| `trends.py` | Directional regressions against spatial coordinates |
-| `similarity.py` | Buffered extent and rowwise overlap comparisons |
-| `time_series.py` | CUSUM and PELT change-point diagnostics |
+### Shared utility cleanup
 
-Submodules import their dependencies directly: hotspots uses weights, and distance
-selection uses hotspots. The package initializer exports the existing functions.
-This split preserves calculations and return values. Inline comments explain
-assumptions and existing limitations, including legacy normality decisions,
-row-count-based overlap, unit conversions, and sorting of paired samples.
+The shared-library usage audit follows calls and function references from
+repository source code and notebook code cells, including callbacks and the
+internal helpers they require. Tests, package exports, documentation examples,
+and saved notebook outputs do not by themselves establish runtime usage.
+
+Unused functions and their dedicated tests have been removed. Entirely unused
+modules (`shared.raster`, `shared.logging`, `shared.formatting`, `shared.tabular`,
+the other spatial-statistics modules, and `data_cleaning.tabular_imputation`)
+have also been removed. Database utilities retain connection management and
+table reads; outlier utilities retain the IQR, z-score, and Mahalanobis paths
+used by EDA and classification. These removals narrow the Python API; callers
+outside this repository must update any imports of removed functions.
 
 ## Installation and imports
 

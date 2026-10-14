@@ -34,6 +34,8 @@ class ParcelStatisticsReshapeMixin:
         "geom_shape_complexity_score",
     )
 
+    # This stage enriches each parcel-period row with geometry and distribution summaries computed once
+    # from the parcel geometries and then merged back into the wider statistics table.
     def _add_derived_stats(self, data: pd.DataFrame) -> pd.DataFrame:
         """Append deterministic parcel features in one non-fragmenting operation."""
         metric_parcels = self.parcels.to_crs(epsg=self.working_epsg)
@@ -113,6 +115,8 @@ class ParcelStatisticsReshapeMixin:
             return np.nan
         return float(max(positive_lengths) / min(positive_lengths))
 
+    # The score is intentionally a blend of raster agreement and shape penalties so highly fragmented
+    # parcels are penalized without discarding otherwise valid observations.
     @staticmethod
     def _calculate_geometry_complexity_score(data: pd.DataFrame) -> pd.Series:
         """Combine raster agreement, boundary irregularity, and elongation."""
@@ -137,6 +141,10 @@ class ParcelStatisticsReshapeMixin:
         )
         return pd.concat([raster_agreement_penalty, boundary_penalty, elongation_penalty], axis=1).mean(axis=1, skipna=False)
 
+    # The reshape step expects a clean parcel-period grain, so the data are coerced to a single string ID
+    # and a canonical period label before any time-series expansion happens.
+    # The reshape pipeline needs a stable parcel key and a parsed period label before any wide-table
+    # expansion or feature alignment can happen; this converts raw inputs into the canonical grain used downstream.
     def _normalize_reshape_inputs(self, data: pd.DataFrame) -> pd.DataFrame:
         """Normalize parcel IDs and period labels for temporal reshaping."""
         required = {self.PARCEL_ID_FIELD, "period_start"}
