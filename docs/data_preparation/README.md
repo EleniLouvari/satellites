@@ -31,6 +31,10 @@ missing spectral coverage must not be replaced with an unrelated band.
 
 ## Implementation
 
+For JSON configuration, command-line execution and restart, see the
+[CLI and dictionary runner](openeo/CLI.md). The `prepare_run`, `run_parcel_stats`
+and `resume_parcel_stats` public functions wrap the existing openEO engine.
+
 `OpenEOZonalStats` and `OpenEOJobManagerZonalStats` are the canonical class names.
 Only the current class names are exported. Implementations live in
 `data_preparation.parcel_stats`, with service-independent processing

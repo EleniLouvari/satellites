@@ -17,6 +17,8 @@ dependencies = [
 [project.optional-dependencies]
 acquisition = ["openeo", "boto3", "pystac-client", "h5netcdf", "netCDF4", "dask[array]", "openpyxl"]
 database = ["psycopg2-binary", "sqlalchemy"]
+credentials = ["cryptography>=43"]
+web = ["fastapi>=0.115,<1", "uvicorn>=0.30,<1", "argon2-cffi>=23.1", "httpx>=0.27,<1"]
 ml = ["xgboost", "lightgbm", "imbalanced-learn", "shap"]
 neural = ["tensorflow"]
 interpolation = ["pykrige"]
@@ -24,13 +26,19 @@ notebooks = ["jupyterlab", "ipykernel"]
 gis-utilities = ["ipython", "networkx", "dill", "fiona", "skimpy", "libpysal", "esda", "splot", "statsmodels", "ruptures"]
 dev = ["pytest", "pytest-cov", "ruff", "radon", "pydocstyle", "bandit"]
 
+[project.scripts]
+satellites = "data_preparation.cli:main"
+
 [tool.setuptools.package-dir]
 "" = "src"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["data_preparation*", "eda*", "ml_classification*", "shared*"]
+include = ["data_preparation*", "eda*", "ml_classification*", "shared*", "parcel_app*"]
 namespaces = false
+
+[tool.setuptools.package-data]
+parcel_app = ["schema.sql"]
 
 [tool.coverage.run]
 source = ["data_preparation", "eda", "ml_classification", "shared"]

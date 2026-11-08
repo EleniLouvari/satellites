@@ -1,8 +1,11 @@
 # Documentation
 
+- [Web application design and interactive preview](web_app/DESIGN.md)
 - [Repository structure and migration](repository_structure.md)
 - [Parcel statistics public API](data_preparation/README.md)
 - [openEO pipeline](data_preparation/openeo/README.md)
+- [Parcel statistics CLI and dictionary runner](data_preparation/openeo/CLI.md)
+- [Parcel statistics Docker image](data_preparation/openeo/DOCKER.md)
 - [openEO database account setup](data_preparation/openeo/CREDENTIALS.md)
 - [Parcel grouping with buffers or tiles](data_preparation/openeo/PARCEL_GROUPING.md)
 - [Detailed openEO parcel_stats workflow](data_preparation/openeo/WORKFLOW.md)

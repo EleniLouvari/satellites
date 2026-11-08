@@ -33,3 +33,6 @@ data/raw/
 data/interim/
 data/processed/
 configs/*.local.toml
+web/node_modules/
+web/dist/
+web/*.tsbuildinfo

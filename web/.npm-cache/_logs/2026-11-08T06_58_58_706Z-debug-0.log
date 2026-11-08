@@ -1,0 +1,100 @@
+0 verbose cli C:\Program Files\nodejs\node.exe C:\Program Files\nodejs\node_modules\npm\bin\npm-cli.js
+1 info using npm@10.8.2
+2 info using node@v20.17.0
+3 silly config load:file:C:\Program Files\nodejs\node_modules\npm\npmrc
+4 silly config load:file:E:\Eleni\git_repo\satellites\web\.npmrc
+5 silly config load:file:C:\Users\Administrator\.npmrc
+6 silly config load:file:C:\Users\Administrator\AppData\Roaming\npm\etc\npmrc
+7 verbose title npm install
+8 verbose argv "install" "--offline" "false" "--prefer-online" "--no-audit" "--no-fund" "--cache" ".npm-cache"
+9 verbose logfile logs-max:10 dir:E:\Eleni\git_repo\satellites\web\.npm-cache\_logs\2026-11-08T06_58_58_706Z-
+10 verbose logfile E:\Eleni\git_repo\satellites\web\.npm-cache\_logs\2026-11-08T06_58_58_706Z-debug-0.log
+11 silly packumentCache heap:4345298944 maxSize:1086324736 maxEntrySize:543162368
+12 silly logfile done cleaning log files
+13 silly idealTree buildDeps
+14 silly fetch manifest react@^19.0.0
+15 silly packumentCache full:https://registry.npmjs.org/react cache-miss
+16 http fetch GET https://registry.npmjs.org/react attempt 1 failed with ECONNREFUSED
+17 http fetch GET https://registry.npmjs.org/react attempt 2 failed with ECONNREFUSED
+18 http fetch GET https://registry.npmjs.org/react attempt 3 failed with ECONNREFUSED
+19 silly fetch manifest react-dom@^19.0.0
+20 silly packumentCache full:https://registry.npmjs.org/react-dom cache-miss
+21 http fetch GET https://registry.npmjs.org/react-dom attempt 1 failed with ECONNREFUSED
+22 http fetch GET https://registry.npmjs.org/react-dom attempt 2 failed with ECONNREFUSED
+23 http fetch GET https://registry.npmjs.org/react-dom attempt 3 failed with ECONNREFUSED
+24 silly fetch manifest @types/react@^19.0.0
+25 silly packumentCache full:https://registry.npmjs.org/@types%2freact cache-miss
+26 http fetch GET https://registry.npmjs.org/@types%2freact attempt 1 failed with ECONNREFUSED
+27 http fetch GET https://registry.npmjs.org/@types%2freact attempt 2 failed with ECONNREFUSED
+28 http fetch GET https://registry.npmjs.org/@types%2freact attempt 3 failed with ECONNREFUSED
+29 silly fetch manifest @types/react-dom@^19.0.0
+30 silly packumentCache full:https://registry.npmjs.org/@types%2freact-dom cache-miss
+31 http fetch GET https://registry.npmjs.org/@types%2freact-dom attempt 1 failed with ECONNREFUSED
+32 http fetch GET https://registry.npmjs.org/@types%2freact-dom attempt 2 failed with ECONNREFUSED
+33 http fetch GET https://registry.npmjs.org/@types%2freact-dom attempt 3 failed with ECONNREFUSED
+34 silly fetch manifest @vitejs/plugin-react@^4.3.4
+35 silly packumentCache full:https://registry.npmjs.org/@vitejs%2fplugin-react cache-miss
+36 http fetch GET https://registry.npmjs.org/@vitejs%2fplugin-react attempt 1 failed with ECONNREFUSED
+37 http fetch GET https://registry.npmjs.org/@vitejs%2fplugin-react attempt 2 failed with ECONNREFUSED
+38 http fetch GET https://registry.npmjs.org/@vitejs%2fplugin-react attempt 3 failed with ECONNREFUSED
+39 silly fetch manifest typescript@^5.7.3
+40 silly packumentCache full:https://registry.npmjs.org/typescript cache-miss
+41 http fetch GET https://registry.npmjs.org/typescript attempt 1 failed with ECONNREFUSED
+42 http fetch GET https://registry.npmjs.org/typescript attempt 2 failed with ECONNREFUSED
+43 http fetch GET https://registry.npmjs.org/typescript attempt 3 failed with ECONNREFUSED
+44 silly fetch manifest vite@^6.1.0
+45 silly packumentCache full:https://registry.npmjs.org/vite cache-miss
+46 http fetch GET https://registry.npmjs.org/vite attempt 1 failed with ECONNREFUSED
+47 http fetch GET https://registry.npmjs.org/vite attempt 2 failed with ECONNREFUSED
+48 http fetch GET https://registry.npmjs.org/vite attempt 3 failed with ECONNREFUSED
+49 silly fetch manifest vitest@^3.0.5
+50 silly packumentCache full:https://registry.npmjs.org/vitest cache-miss
+51 http fetch GET https://registry.npmjs.org/vitest attempt 1 failed with ECONNREFUSED
+52 http fetch GET https://registry.npmjs.org/vitest attempt 2 failed with ECONNREFUSED
+53 http fetch GET https://registry.npmjs.org/vitest attempt 3 failed with ECONNREFUSED
+54 silly placeDep ROOT @types/react@ OK for: parcel-studio@1.0.0 want: ^19.0.0
+55 silly placeDep ROOT @types/react-dom@ OK for: parcel-studio@1.0.0 want: ^19.0.0
+56 silly placeDep ROOT @vitejs/plugin-react@ OK for: parcel-studio@1.0.0 want: ^4.3.4
+57 silly placeDep ROOT react@ OK for: parcel-studio@1.0.0 want: ^19.0.0
+58 silly placeDep ROOT react-dom@ OK for: parcel-studio@1.0.0 want: ^19.0.0
+59 silly placeDep ROOT typescript@ OK for: parcel-studio@1.0.0 want: ^5.7.3
+60 silly placeDep ROOT vite@ OK for: parcel-studio@1.0.0 want: ^6.1.0
+61 silly placeDep ROOT vitest@ OK for: parcel-studio@1.0.0 want: ^3.0.5
+62 verbose type system
+63 verbose stack FetchError: request to https://registry.npmjs.org/@types%2freact failed, reason: connect ECONNREFUSED 127.0.0.1:9
+63 verbose stack     at ClientRequest.<anonymous> (C:\Program Files\nodejs\node_modules\npm\node_modules\minipass-fetch\lib\index.js:130:14)
+63 verbose stack     at ClientRequest.emit (node:events:519:28)
+63 verbose stack     at emitErrorEvent (node:_http_client:108:11)
+63 verbose stack     at _destroy (node:_http_client:891:9)
+63 verbose stack     at onSocketNT (node:_http_client:911:5)
+63 verbose stack     at process.processTicksAndRejections (node:internal/process/task_queues:83:21)
+64 error code ECONNREFUSED
+65 error syscall connect
+66 error errno ECONNREFUSED
+67 error FetchError: request to https://registry.npmjs.org/@types%2freact failed, reason: connect ECONNREFUSED 127.0.0.1:9
+67 error     at ClientRequest.<anonymous> (C:\Program Files\nodejs\node_modules\npm\node_modules\minipass-fetch\lib\index.js:130:14)
+67 error     at ClientRequest.emit (node:events:519:28)
+67 error     at emitErrorEvent (node:_http_client:108:11)
+67 error     at _destroy (node:_http_client:891:9)
+67 error     at onSocketNT (node:_http_client:911:5)
+67 error     at process.processTicksAndRejections (node:internal/process/task_queues:83:21) {
+67 error   code: 'ECONNREFUSED',
+67 error   errno: 'ECONNREFUSED',
+67 error   syscall: 'connect',
+67 error   address: '127.0.0.1',
+67 error   port: 9,
+67 error   type: 'system',
+67 error   requiredBy: '.'
+67 error }
+68 error
+68 error If you are behind a proxy, please make sure that the
+68 error 'proxy' config is set properly.  See: 'npm help config'
+69 silly unfinished npm timer reify 1794121138968
+70 silly unfinished npm timer reify:loadTrees 1794121138969
+71 verbose cwd E:\Eleni\git_repo\satellites\web
+72 verbose os Windows_NT 10.0.26300
+73 verbose node v20.17.0
+74 verbose npm  v10.8.2
+75 verbose exit 1
+76 verbose code 1
+77 error A complete log of this run can be found in: E:\Eleni\git_repo\satellites\web\.npm-cache\_logs\2026-11-08T06_58_58_706Z-debug-0.log

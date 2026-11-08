@@ -60,6 +60,22 @@ See [openEO account setup](docs/data_preparation/openeo/CREDENTIALS.md).
 
 ## Public APIs
 
+Build the parcel-statistics CLI image with `docker build -t satellites-parcel-stats:local .`.
+See [Docker usage](docs/data_preparation/openeo/DOCKER.md) for mounted inputs,
+persistent results and PostgreSQL credentials.
+
+The parcel pipeline also provides a [CLI and dictionary runner](docs/data_preparation/openeo/CLI.md):
+
+```powershell
+satellites parcel-stats validate --config config.json
+satellites parcel-stats run --config config.json --app-user-id 42
+satellites parcel-stats resume --run-dir outputs/my-run --app-user-id 42
+```
+
+Install the `acquisition,database,credentials` extras for application-owned
+PostgreSQL accounts. The command requires explicit account scope; it does not
+authenticate application logins or modify database tables.
+
 ```python
 from data_preparation.parcel_stats import (
     OpenEOZonalStats,

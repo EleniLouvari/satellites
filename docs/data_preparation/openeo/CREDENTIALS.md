@@ -1,5 +1,9 @@
 # Database-backed openEO accounts
 
+For the new application-user model (`app_users` and linked `eo_users`), encrypted
+passwords and user-scoped CLI loading, see [CLI database setup](CLI.md#postgresql-users-and-copernicus-accounts).
+The loader below remains the unchanged legacy notebook interface.
+
 The Neuro `1_parcel_stats_openEO_fill.ipynb` notebook calls
 `data_preparation.parcel_stats.multiuser.load_openeo_users_from_db()` before
 planning extraction. It reads CDSE account credentials from PostgreSQL using

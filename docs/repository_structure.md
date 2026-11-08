@@ -9,10 +9,14 @@ tests, documentation, and generated results live outside these packages.
 ```text
 src/
   data_preparation/
+    cli.py                       satellites parcel-stats validate/run/resume
     sources/
       openeo/cubes.py             authentication, cube graphs, remote jobs
       hub/                       catalog queries, asset downloads and audits
     parcel_stats/
+      run_config.py              offline dictionary/JSON preflight and partitioning
+      runner.py                  run locking, state, resume and verified publication
+      accounts.py                application-user-scoped PostgreSQL credentials
       core/base.py               shared construction, local execution, worker state
       core/configuration.py      validators and unchanged cache signatures
       core/parcel_batches.py     parcel geometry preparation and batching

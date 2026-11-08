@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "input": {
+    "path": "parcels.geoparquet",
+    "parcel_id_field": "parcel_id"
+  },
+  "output_dir": "run",
+  "run_identifier": "parcel-statistics",
+  "scheduling": "batches",
+  "processing": {
+    "start_date": "2024-01-01",
+    "end_date": "2024-12-31",
+    "working_epsg": 32634,
+    "sentinel2_bands": ["B04", "B08"],
+    "sentinel2_indices": ["NDVI"],
+    "sentinel1_bands": [],
+    "sentinel1_indices": [],
+    "spatial_statistics": ["mean", "median", "sd"],
+    "temporal_period": "1M",
+    "temporal_reducer": "median",
+    "remove_outliers": false,
+    "fill_nulls": true,
+    "fit_tiles_to_parcels": true,
+    "tile_size_metres": 20000,
+    "tile_buffer_metres": 500,
+    "openeo_parallel_jobs": 2,
+    "batch_workers": 1,
+    "remove_nc_after_completion": true
+  }
+}

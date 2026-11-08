@@ -1,0 +1,14 @@
+# Only package metadata and Python sources are sent to the Docker builder.
+# Inputs, outputs, notebooks, .git, local environments and secrets stay on the host.
+**
+!Dockerfile
+!.dockerignore
+!pyproject.toml
+!README.md
+!src/
+!src/**/
+!src/**/*.py
+
+# Do not include cached/packaged source copies underneath src either.
+**/__pycache__/
+**/*.egg-info/
