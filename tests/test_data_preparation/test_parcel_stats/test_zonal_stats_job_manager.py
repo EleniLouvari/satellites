@@ -159,6 +159,13 @@ def test_default_job_retry_limit_is_three() -> None:
     expect_equal(OpenEOJobManagerZonalStats.DEFAULT_MAX_JOB_RETRIES, 3)
 
 
+@pytest.mark.parametrize("slots", [3, 99])
+def test_direct_job_manager_rejects_more_than_two_remote_jobs(slots):
+    """Direct callers must hit the same account cap before setup or remote work."""
+    with pytest.raises(ValueError, match="openeo_parallel_jobs.*2"):
+        OpenEOJobManagerZonalStats(openeo_parallel_jobs=slots)
+
+
 def test_run_identifier_rejects_empty_labels() -> None:
     planner = object.__new__(OpenEOJobManagerZonalStats)
     with pytest.raises(ValueError, match="must not be empty"):

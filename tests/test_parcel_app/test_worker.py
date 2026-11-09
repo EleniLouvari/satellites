@@ -32,6 +32,24 @@ def test_preview_has_no_attributes_and_is_bounded():
     assert len(json.dumps(metadata["preview"]).encode()) <= 1024 * 1024
 
 
+@pytest.mark.parametrize("extension", [".geojson", ".gpkg", ".parquet"])
+def test_inspection_rejects_disguised_virtual_datasets(tmp_path, monkeypatch, extension):
+    """Do not pass a disguised external-reference dataset to the native reader."""
+    import geopandas as gpd
+    from parcel_app.inspection import inspect_upload
+
+    path = tmp_path / f"source{extension}"
+    path.write_text('<OGRVRTDataSource><OGRVRTLayer name="external" /></OGRVRTDataSource>')
+
+    def unexpected_reader(*args, **kwargs):
+        pytest.fail("Untrusted format reached a native reader")
+
+    monkeypatch.setattr(gpd, "read_file", unexpected_reader)
+    monkeypatch.setattr(gpd, "read_parquet", unexpected_reader)
+    with pytest.raises(ValueError):
+        inspect_upload(path)
+
+
 def test_process_lock_excludes_second_holder(tmp_path):
     from parcel_app.worker import process_lock
 

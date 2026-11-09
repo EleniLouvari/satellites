@@ -2,11 +2,37 @@
 
 For the new application-user model (`app_users` and linked `eo_users`), encrypted
 passwords and user-scoped CLI loading, see [CLI database setup](CLI.md#postgresql-users-and-copernicus-accounts).
-The loader below remains the unchanged legacy notebook interface.
+The notebook loader supports both models. For the application tables, pass an
+explicit owner ID; do not point the legacy loader at the whole `eo_users` table.
 
-The Neuro `1_parcel_stats_openEO_fill.ipynb` notebook calls
-`data_preparation.parcel_stats.multiuser.load_openeo_users_from_db()` before
-planning extraction. It reads CDSE account credentials from PostgreSQL using
+## Application accounts in notebooks
+
+```python
+from data_preparation.parcel_stats.multiuser import load_openeo_users_from_db
+
+APP_USER_ID = 3  # Replace with the app_users.app_user_id you are authorized to use.
+users_list = load_openeo_users_from_db(app_user_id=APP_USER_ID)
+print(f"Loaded {len(users_list)} account(s).")
+```
+
+Provide `DB_NAME`, `POSTGRES_*`, and the same `SATELLITES_CREDENTIAL_KEY` used by
+the web app in the notebook kernel environment. `TBL_APP_USERS` and `TBL_EO_USERS`
+default to `public.app_users` and `public.eo_users`; `TBL_USERS` is ignored when
+an owner is supplied. Install the `credentials` extra as well as `database`.
+Only the active owner's rows are selected, and passwords are decrypted in memory.
+An invalid owner, missing key or decryption failure never falls back to all users.
+The owner ID selects accounts; it does not authenticate a notebook operator.
+
+The loader does not read `.env` automatically. If you use `python-dotenv`, load
+your private configuration file explicitly before calling it. A Windows kernel
+must use a database hostname reachable from Windows (often `localhost`), which
+may differ from the Docker setting `host.docker.internal`.
+
+## Legacy plaintext accounts
+
+The no-argument call
+`data_preparation.parcel_stats.multiuser.load_openeo_users_from_db()` reads
+legacy CDSE account credentials from PostgreSQL using
 `shared.postgress.create_db_handler`, then returns a list of `(username, password)`
 tuples for `run_parallel_extractions`. The former `load_openeo_users_from_env`
 function and semicolon-separated `OPENEO_USERS` setting are no longer used.
@@ -113,7 +139,10 @@ row order. Keep partition order and scheduling mode unchanged as described in
 - Missing `DB_NAME` or `TBL_USERS`: set both in the kernel environment.
 - Connection failure: check `POSTGRES_*`, database availability and login access.
 - Table read failure: check the table/schema name and read permissions.
-- Empty table, missing columns, blank/non-text credentials, or duplicate usernames:
+- Duplicate usernames with application-linked accounts: pass `app_user_id` to
+  select one owner's `eo_users`; do not deduplicate rows across owners or use
+  encrypted tokens as CDSE passwords.
+- Empty legacy table, missing columns, blank/non-text credentials, or duplicate usernames:
   correct the account records; the loader rejects the whole list before submission.
 - Missing `psycopg2` or `sqlalchemy`: install the `database` extra in the active kernel.
 - CDSE authentication failure after loading: database access only retrieves values;

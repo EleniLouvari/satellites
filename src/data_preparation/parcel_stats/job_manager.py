@@ -302,6 +302,8 @@ class OpenEOJobManagerZonalStats(OpenEOZonalStats):
         if fit_tiles_to_parcels and 2 * self.tile_buffer_metres >= self.tile_size_metres:
             raise ValueError("Error: tile_size_metres must exceed twice tile_buffer_metres when fitting tiles to parcels.")
         self.openeo_parallel_jobs = self._positive_integer(openeo_parallel_jobs, "openeo_parallel_jobs")
+        if self.openeo_parallel_jobs > 2:
+            raise ValueError("Error: openeo_parallel_jobs cannot exceed 2 per account.")
         self.job_poll_seconds = self._positive_integer(job_poll_seconds, "job_poll_seconds")
         self.max_job_retries = self._non_negative_integer(max_job_retries, "max_job_retries")
         self.job_retry_delay_seconds = self._non_negative_integer(job_retry_delay_seconds, "job_retry_delay_seconds")

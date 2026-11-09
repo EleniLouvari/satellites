@@ -102,3 +102,27 @@ def test_read_failure_closes_connection(database):
     with pytest.raises(ValueError, match="check TBL_USERS and SELECT permissions"):
         load_openeo_users_from_db()
     handler.close_connection.assert_called_once_with()
+
+
+def test_notebook_loader_delegates_explicit_owner_without_reading_legacy_table(database, monkeypatch):
+    """The notebook entry point must use the same scoped decryptor as the CLI."""
+    from data_preparation.parcel_stats import accounts
+
+    factory, _ = database
+    loader = Mock(return_value=[("owned-user", "decrypted-password")])
+    monkeypatch.setattr(accounts, "load_app_openeo_accounts", loader)
+    monkeypatch.delenv("TBL_USERS")
+    assert load_openeo_users_from_db(app_user_id=7) == [("owned-user", "decrypted-password")]
+    loader.assert_called_once_with(7)
+    factory.assert_not_called()
+
+
+def test_application_accounts_require_explicit_owner(database):
+    """Never pass encrypted EO tokens or application login hashes to openEO."""
+    _, handler = database
+    handler.get_df_from_db.return_value = pd.DataFrame({
+        "app_user_id": [1, 2], "username": ["same", "same"], "password": ["token1", "token2"],
+    })
+    with pytest.raises(ValueError, match="app_user_id"):
+        load_openeo_users_from_db()
+    handler.close_connection.assert_called_once_with()

@@ -1,4 +1,5 @@
 """FastAPI application factory without startup database side effects."""
+
 from importlib import import_module
 
 from fastapi import FastAPI, Request
@@ -13,7 +14,7 @@ def create_app() -> FastAPI:
     application = FastAPI(title="Parcel Studio")
     application.include_router(auth.router, prefix="/api")
     application.include_router(accounts.router, prefix="/api")
-    for name in ("uploads", "runs", "files", "config"):
+    for name in ("uploads", "runs", "files", "config", "eda_api", "deletion"):
         try:
             module = import_module(f"parcel_app.{name}")
         except ModuleNotFoundError as exc:

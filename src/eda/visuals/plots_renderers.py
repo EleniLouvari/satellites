@@ -131,12 +131,19 @@ def _plot_qq_plots(df: pd.DataFrame, columns: list[str], output_path: Path, conf
     fig.savefig(output_path, dpi=140)
     plt.close(fig)
 
-def _plot_scatter_matrix(df: pd.DataFrame, columns: list[str], output_path: Path) -> None:
-    """Plot a compact numeric scatter matrix."""
-    numeric_df = df[columns].apply(pd.to_numeric, errors="coerce").dropna()
+def _plot_scatter_matrix(df: pd.DataFrame, columns: list[str], output_path: Path) -> bool:
+    """Plot finite, varying features; skip matrices without enough complete observations."""
+    numeric_df = df[columns].apply(pd.to_numeric, errors="coerce").replace([np.inf, -np.inf], np.nan)
+    # Empty/constant features remain in diagnostic tables, but cannot support a scatter matrix.
+    numeric_df = numeric_df.loc[:, numeric_df.nunique() > 1].dropna()
     if len(numeric_df) > 1000:
         numeric_df = numeric_df.sample(1000, random_state=42)
-    axes = scatter_matrix(numeric_df, figsize=(3 * len(columns), 3 * len(columns)), diagonal="kde", alpha=0.45)
+    numeric_df = numeric_df.loc[:, numeric_df.nunique() > 1]
+    count = len(numeric_df.columns)
+    if len(numeric_df) < 2 or count < 2:
+        return False
+    # Histograms also work for discrete and nearly constant data, where KDE can be singular.
+    axes = scatter_matrix(numeric_df, figsize=(3 * count, 3 * count), diagonal="hist", alpha=0.45)
     for ax in np.ravel(axes):
         ax.tick_params(axis="x", labelrotation=90)
         ax.tick_params(axis="y", labelrotation=0)
@@ -144,6 +151,7 @@ def _plot_scatter_matrix(df: pd.DataFrame, columns: list[str], output_path: Path
     plt.tight_layout()
     plt.savefig(output_path, dpi=140, bbox_inches="tight")
     plt.close()
+    return True
 
 def _plot_categorical_distributions(df: pd.DataFrame, columns: list[str], max_categories: int, output_path: Path) -> None:
     """Plot top categorical value counts."""

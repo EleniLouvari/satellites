@@ -2,12 +2,14 @@
 # Inputs, outputs, notebooks, .git, local environments and secrets stay on the host.
 **
 !Dockerfile
+!Dockerfile.web
 !.dockerignore
 !pyproject.toml
 !README.md
 !src/
 !src/**/
 !src/**/*.py
+!src/parcel_app/schema.sql
 
 # Do not include cached/packaged source copies underneath src either.
 **/__pycache__/

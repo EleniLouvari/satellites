@@ -22,7 +22,7 @@ web = ["fastapi>=0.115,<1", "uvicorn>=0.30,<1", "argon2-cffi>=23.1", "httpx>=0.2
 ml = ["xgboost", "lightgbm", "imbalanced-learn", "shap"]
 neural = ["tensorflow"]
 interpolation = ["pykrige"]
-notebooks = ["jupyterlab", "ipykernel"]
+notebooks = ["jupyterlab", "ipykernel", "python-dotenv"]
 gis-utilities = ["ipython", "networkx", "dill", "fiona", "skimpy", "libpysal", "esda", "splot", "statsmodels", "ruptures"]
 dev = ["pytest", "pytest-cov", "ruff", "radon", "pydocstyle", "bandit"]
 

@@ -25,6 +25,11 @@ result["proposed_features"]
 ml_ready_gdf = result["annotated_data"]
 ```
 
+`EDAPipeline.run(df, progress=callback)` optionally reports `(completed, stage)`
+at stage boundaries, with completed values 0 through 4 for profiling, charts,
+table persistence and report generation. This counts stages, not elapsed time.
+The web application adds ZIP/publication as its fifth stage.
+
 ## Outputs
 
 The report, summary, and ML-ready data remain easy to find at the output root:
@@ -50,6 +55,11 @@ tables/
 
 Plots remain under `plots/`. Numeric QQ plots exclude the target, configured ID, and prior EDA diagnostics and show at most
 `max_features_per_plot` variables under `plots/qq_plots/`.
+
+Scatter matrices omit constant/all-missing features, treat infinite values as
+missing, and require at least two varying features and two complete observations.
+Their diagonals use histograms to avoid singular density estimates. Omitted
+features remain in diagnostic tables; an unavailable scatter plot does not fail EDA.
 
 `max_features_per_plot` is the single display limit for feature-based charts, including numeric/categorical distributions, scatter matrices,
 VIF, target comparisons, association rankings, and QQ plots. VIF calculation and display exclude the target and configured ID columns.

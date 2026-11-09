@@ -1,4 +1,5 @@
 """Explicit database migration and interactive operator password reset."""
+
 import argparse
 from getpass import getpass
 from importlib.resources import files
@@ -23,8 +24,11 @@ def set_password(username: str):
     if password != getpass("Confirm new password: "):
         raise ValueError("Error: Passwords do not match")
     with db.connection() as conn:
-        user = db.one("UPDATE app_users SET password=%s WHERE lower(username)=lower(%s) RETURNING app_user_id",
-                      (hash_password(password), username), conn=conn)
+        user = db.one(
+            "UPDATE app_users SET password=%s WHERE lower(username)=lower(%s) RETURNING app_user_id",
+            (hash_password(password), username),
+            conn=conn,
+        )
         if user is None:
             raise ValueError("Error: User not found")
         db.execute("DELETE FROM app_sessions WHERE app_user_id=%s", (user["app_user_id"],), conn=conn)

@@ -1,4 +1,5 @@
 """Password hashing, encrypted credentials and server-side session checks."""
+
 import hashlib
 import secrets
 from functools import lru_cache
@@ -52,9 +53,12 @@ def current_user(request: Request) -> dict:
     token = request.cookies.get(COOKIE_NAME)
     if not token:
         raise HTTPException(401, "Error: Sign in required")
-    user = db.one("""SELECT u.app_user_id, u.username, s.csrf_token FROM app_sessions s
+    user = db.one(
+        """SELECT u.app_user_id, u.username, s.csrf_token FROM app_sessions s
                      JOIN app_users u USING(app_user_id)
-                     WHERE s.token_hash=%s AND s.expires_at > now() AND u.is_active""", (token_hash(token),))
+                     WHERE s.token_hash=%s AND s.expires_at > now() AND u.is_active""",
+        (token_hash(token),),
+    )
     if not user:
         raise HTTPException(401, "Error: Sign in required")
     if request.method not in {"GET", "HEAD", "OPTIONS"}:

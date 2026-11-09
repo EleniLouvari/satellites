@@ -23,7 +23,7 @@ class EDAPipeline:
         """Initialize the pipeline with a validated EDA configuration."""
         self.config = config
 
-    def run(self, df: pd.DataFrame) -> dict[str, Any]:
+    def run(self, df: pd.DataFrame, *, progress=None) -> dict[str, Any]:
         """Run the EDA pipeline and write artifacts to disk."""
         if not isinstance(df, pd.DataFrame):
             raise TypeError("Error: EDAPipeline.run expects a pandas DataFrame or GeoPandas GeoDataFrame.")
@@ -35,17 +35,27 @@ class EDAPipeline:
         ensure_dir(self.config.plots_dir)
 
         # Build statistical evidence once so saved tables, plot priorities, and HTML use the same results.
+        if progress:
+            progress(0, "Profiling data")
         artifacts = build_eda_artifacts(df, self.config)
         if self.config.print_feature_selection_summary and self.config.target_column:
             print(artifacts["feature_selection_message"])
+        if progress:
+            progress(1, "Generating charts")
         plot_paths = create_eda_plots(df, artifacts, self.config)
+        if progress:
+            progress(2, "Saving diagnostic tables")
         saved_paths = self._save_artifacts(artifacts)
 
         # Tabular artifacts remain available even when HTML generation is disabled.
         report_path: Path | None = None
+        if progress:
+            progress(3, "Writing HTML report")
         if self.config.include_html_report:
             report_path = write_eda_html_report(artifacts, plot_paths, self.config)
             saved_paths["html_report"] = report_path
+        if progress:
+            progress(4, "Report generated")
 
         return {
             "summary": artifacts["summary"],

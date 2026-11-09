@@ -52,7 +52,7 @@ default '{}', error text nullable, created_at timestamptz default now())`.
 
 `analysis_runs(run_id uuid PK, app_user_id bigint FK, name text, upload_id uuid FK,
 layer text nullable, parcel_id_field text, partition_field text nullable,
-processing jsonb, account_ids jsonb, revision int default 1,
+processing jsonb, scheduling text default 'batches', account_ids jsonb, revision int default 1,
 validated_revision int nullable, status text default 'draft',
 summary jsonb default '{}', config jsonb default '{}', output_dir text,
 error text nullable, created_at timestamptz default now(),
@@ -91,6 +91,9 @@ custom legacy table names are not a web v1 feature.
 - POST `/accounts/{id}/test`: `{job_id}` queue authentication only.
 - GET `/config`: `{defaults: object, fields: [{name,type,default,...}], limits: {max_batch_workers,upload_limit_bytes}}`.
   Derive names/defaults from runner constructor; explicit choices metadata.
+  Also returns `groups: [{id,label,description}]`; fields include `group` and
+  `enabled_when` (parent field -> allowed values, combined with AND). Inactive
+  fields are omitted during draft normalization; unknown fields are still rejected.
 - POST `/uploads?filename=...`: **raw file body**, Content-Type application/octet-stream,
   streams size-bounded, returns owned upload row (202), queues inspection.
 - GET `/uploads`: list own rows (latest 100).
@@ -99,10 +102,13 @@ custom legacy table names are not a web v1 feature.
   geometry_invalid_count, geometry_empty_count}`. Preview max 500 features / 1 MiB.
   Metadata GeoJSON does not contain original parcel attributes.
 - POST `/runs`: `{name,upload_id,layer:null|string,parcel_id_field,partition_field:null|string,
-  processing: object,account_ids:number[]}` -> owned run row.
+  processing: object,scheduling:"batches"|"partitions",account_ids:number[]}` -> owned run row.
 - PATCH `/runs/{id}` same body, only draft/ready/failed-preflight; increment revision,
   clear validated_revision and summary, status=draft. No edits after submit.
 - GET `/runs`: list own newest 100; GET `/runs/{id}` owned row.
+  Include `started_at`, `finished_at`, and `duration_seconds` based on recorded
+  processing start and terminal update time. Unknown timings are null. Elapsed
+  duration includes gaps between resumed attempts, excluding the initial queue.
 - POST `/runs/{id}/validate`: queue preflight, status validating, return run (202).
   Job payload `{revision}`; normalized `config` and `summary` on successful ready.
 - POST `/runs/{id}/submit`: `{revision}`; require ready validated_revision==revision;
@@ -116,13 +122,58 @@ custom legacy table names are not a web v1 feature.
 - POST `/runs/{id}/duplicate`: new draft copying input/account/settings.
 - GET `/runs/{id}/events?after=0`: latest/next 200 safe events.
 - GET `/runs/{id}/artifacts`: safe artifact rows (no storage_path).
-- POST `/runs/{id}/bundle`: queue ZIP of registered artifacts; `{job_id}`.
+- POST `/runs/{id}/bundle`: queue ZIP of registered artifacts; `{job_id,status}`;
+  an already published bundle returns `{status:"ready",artifact_id}`.
+- GET `/runs/{id}/bundle`: owned readiness (`unavailable`, `unrequested`, `pending`,
+  `running`, `failed`, or `ready`), plus `artifact_id` when ready or safe failure.
 - GET `/artifacts/{id}/download`: authorize owner then safe contained FileResponse.
   No arbitrary filename/path arguments accepted.
 
 Run JSON excludes absolute `output_dir`, upload excludes storage_path. `config`
 returned to browser strips absolute paths. Worker uses full config from DB.
 Errors never include raw exceptions or query strings with credentials.
+
+## EDA contract
+
+- GET `/runs/{run_id}/eda/options`: owned completed run only; returns actual result
+  `columns` (name, dtype, numeric, geometry), `default_columns`, and grouped
+  `schema` including `managed` output settings.
+- POST `/runs/{run_id}/eda`: `{request_id: UUID, columns: string[], config: object}`.
+  Saves an immutable snapshot and queues `eda` on the heavy lane. A repeated ID
+  with identical settings returns the same analysis; changed settings return 409.
+- GET `/runs/{run_id}/eda`: owner-scoped EDA history with configuration, selected
+  columns, status, timing, safe error and published artifact metadata.
+- GET `/eda/{eda_id}/files/{artifact_id}`: owner-checked, contained attachment
+  download after completion.
+- GET `/eda/{eda_id}/report`: owner-checked completed HTML report with registered
+  PNG plots embedded. CSP `sandbox allow-scripts` without `allow-same-origin`
+  isolates report scripts; external resources and navigation are blocked.
+  nginx preserves this route's CSP instead of adding the application's CSP.
+- GET `/eda/{eda_id}/log`: owner-checked, redacted diagnostic attachment for
+  complete/failed/interrupted analyses when a log exists.
+
+`eda_runs` stores the EDA UUID, parent run/user foreign keys, selected columns,
+config JSON, source checksum, server output directory, status, timestamps, error
+and artifact JSON. Statuses: queued/running/complete/failed/interrupted. The worker
+checks the source checksum, reads selected columns, runs `EDAPipeline` with resets
+disabled, and publishes a ZIP preserving report/plot relative paths. Each new
+analysis gets a fresh output directory. An interrupted EDA is rerun as a new ID.
+
+## Deletion and progress contracts
+
+- DELETE `/runs/{run_id}`: owner/CSRF checked, refuses active related jobs.
+  Persists a remote manifest and `deleting` state, deletes tracked openEO jobs,
+  then owned run/EDA directories and unshared uploads, then dependent rows.
+- DELETE `/eda/{eda_id}`: owner/CSRF checked, deletes only an idle EDA analysis.
+- Concurrent parent/child deletions use a PostgreSQL session advisory lock.
+  Upload reference checks and draft creation use incompatible row locks.
+  Cleanup failures return 503 with a fixed retry message and retain the deleting
+  record. Known-missing remote tracking or unsafe paths return 409 before cleanup.
+- Public run `progress` exposes a stage, nullable percent, measured completed/total
+  counts and optional `remote`, `local` (committed batch pairs), and `partitions`
+  (assembled partition outputs) breakdown. `deletion_manifest` stays private.
+- EDA `progress` is persisted after processing stages; final publication sets 100%.
+  Progress is counted work, not elapsed-time or remaining-time prediction.
 
 ## Worker contract
 

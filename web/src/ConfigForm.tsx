@@ -1,8 +1,252 @@
-import {useState} from "react";
-import {downloadJson,sanitizeConfig,type Schema} from "./api";
-import {Button,Notice} from "./ui";
-export default function ConfigForm({schema,value,onChange}:{schema:Schema;value:Record<string,unknown>;onChange:(v:Record<string,unknown>)=>void}){
- const [error,setError]=useState("");const fields=schema.fields;const featured=fields.filter(f=>/^(start_date|end_date|date_start|date_end|temporal_extent|s2_bands|s2_indices|s1_bands|s1_indices|temporal_period|temporal_reducer|statistics|stats|bands|indices)$/.test(f.name));
- function field(f:Schema["fields"][number]){const current=value[f.name]??f.default;const isComplex=Array.isArray(current)||(current!==null&&typeof current==="object")||/list|tuple|dict|array/i.test(f.type);return <label key={f.name}>{f.name.replaceAll("_"," ")}{f.choices?<select value={String(current??"")} onChange={e=>{const choice=f.choices!.find(c=>String(c)===e.target.value);onChange({...value,[f.name]:choice});}}>{f.choices.map((c,i)=><option key={i} value={String(c)}>{String(c)}</option>)}</select>:typeof current==="boolean"?<select value={String(current)} onChange={e=>onChange({...value,[f.name]:e.target.value==="true"})}><option value="true">Enabled</option><option value="false">Disabled</option></select>:isComplex?<textarea key={JSON.stringify(current)} defaultValue={JSON.stringify(current)} rows={2} onBlur={e=>{try{onChange({...value,[f.name]:JSON.parse(e.target.value)});setError("");}catch{setError(`Error: ${f.name} must contain valid JSON.`);}}}/>:<input type={typeof current==="number"?"number":/date/.test(f.name)?"date":"text"} step="any" value={current===null?"":String(current??"")} onChange={e=>onChange({...value,[f.name]:typeof current==="number"?(e.target.value===""?null:Number(e.target.value)):e.target.value||null})}/>}<small className="fieldhelp">{f.description||f.type}</small></label>;}
- return <><Notice message={error}/><div className="formgrid sectiongap">{featured.map(field)}</div><details open={!featured.length}><summary>Advanced processing settings · {fields.length-featured.length} fields</summary><p className="muted">Defaults and supported options come from the processing service. Validation checks scientific dependencies before submission.</p><div className="formgrid sectiongap">{fields.filter(f=>!featured.includes(f)).map(field)}</div></details><div className="actions sectiongap"><Button onClick={()=>downloadJson(sanitizeConfig(value,schema),"parcel-settings.json")}>Export settings</Button><label className="btn file-button">Import settings<input type="file" accept=".json,application/json" onChange={async e=>{const file=e.target.files?.[0];if(!file)return;try{onChange({...schema.defaults,...sanitizeConfig(JSON.parse(await file.text()),schema)});setError("");}catch(err){setError((err as Error).message);}e.target.value="";}}/></label></div></>;
+import { useEffect, useState } from "react";
+
+import { downloadJson, sanitizeConfig, type Schema } from "./api";
+
+import { Button, Notice } from "./ui";
+import { activeArrayErrors, fieldDisabledReason } from "./configControls";
+
+export default function ConfigForm({
+  schema,
+  value,
+  onChange,
+  onValidityChange,
+}: {
+  schema: Schema;
+  value: Record<string, unknown>;
+  onChange: (v: Record<string, unknown>) => void;
+  onValidityChange?: (valid: boolean) => void;
+}) {
+  const [error, setError] = useState("");
+  const [arrayDrafts, setArrayDrafts] = useState<Record<string, string>>({});
+  const fields = schema.fields;
+  const effective = { ...schema.defaults, ...value };
+  const arrayErrorNames = activeArrayErrors(
+    fields,
+    arrayDrafts,
+    effective,
+  ).join(", ");
+  useEffect(() => {
+    onValidityChange?.(!arrayErrorNames);
+  }, [arrayErrorNames, onValidityChange]);
+  const groups = schema.groups ?? [
+    {
+      id: "basic",
+      label: "Processing settings",
+      description: "Configure your analysis.",
+    },
+  ];
+
+  function field(f: Schema["fields"][number]) {
+    const current = Object.prototype.hasOwnProperty.call(value, f.name)
+      ? value[f.name]
+      : f.default;
+
+    const array = f.type === "array";
+    const disabledReason = fieldDisabledReason(f, effective);
+
+    // Re-enabled controls must submit the defaults displayed in the form too.
+    const set = (v: unknown) => onChange({ ...effective, [f.name]: v });
+
+    let control;
+
+    if (array && f.choices) {
+      const selected = Array.isArray(current) ? current : [];
+
+      control = (
+        <div className="chips">
+          {f.choices.map((choice, i) => (
+            <label className="chip" key={i}>
+              <input
+                type="checkbox"
+                checked={selected.includes(choice)}
+                onChange={(e) =>
+                  set(
+                    e.target.checked
+                      ? [...selected, choice]
+                      : selected.filter((v) => v !== choice),
+                  )
+                }
+              />
+              {String(choice)}
+            </label>
+          ))}
+        </div>
+      );
+    } else if (f.choices) {
+      control = (
+        <select
+          value={String(current ?? "")}
+          onChange={(e) =>
+            set(f.choices!.find((c) => String(c ?? "") === e.target.value))
+          }
+        >
+          {f.choices.map((c, i) => (
+            <option key={i} value={String(c ?? "")}>
+              {c == null ? "None" : String(c)}
+            </option>
+          ))}
+        </select>
+      );
+    } else if (f.type === "boolean") {
+      control = (
+        <select
+          value={String(current)}
+          onChange={(e) => set(e.target.value === "true")}
+        >
+          <option value="true">Enabled</option>
+          <option value="false">Disabled</option>
+        </select>
+      );
+    } else if (array) {
+      control = (
+        <textarea
+          value={
+            arrayDrafts[f.name] ??
+            (current == null ? "" : JSON.stringify(current))
+          }
+          placeholder="e.g. [3, 5, 7]"
+          rows={2}
+          onChange={(e) => {
+            setArrayDrafts({ ...arrayDrafts, [f.name]: e.target.value });
+            try {
+              const parsed = e.target.value.trim()
+                ? JSON.parse(e.target.value)
+                : null;
+              if (parsed !== null && !Array.isArray(parsed)) throw new Error();
+              set(parsed);
+            } catch {
+              // Keep unfinished text locally until it is valid JSON.
+            }
+          }}
+        />
+      );
+    } else {
+      control = (
+        <input
+          type={
+            f.type === "number" ? "number" : f.type === "date" ? "date" : "text"
+          }
+          step="any"
+          value={current == null ? "" : String(current)}
+          onChange={(e) =>
+            set(
+              e.target.value === ""
+                ? null
+                : f.type === "number"
+                  ? Number(e.target.value)
+                  : e.target.value,
+            )
+          }
+        />
+      );
+    }
+
+    return (
+      <div
+        key={f.name}
+        className={`config-field ${disabledReason ? "is-disabled" : ""}`}
+      >
+        <fieldset
+          className="config-fieldset"
+          disabled={!!disabledReason}
+          aria-describedby={`help-${f.name}`}
+        >
+          <legend>{f.name.replaceAll("_", " ")}</legend>
+          {control}
+        </fieldset>
+        <small className="fieldhelp" id={`help-${f.name}`}>
+          {disabledReason ||
+            f.description ||
+            (array ? "Select values or enter a JSON array." : f.type)}
+        </small>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <Notice message={error} />
+      <Notice
+        message={
+          arrayErrorNames
+            ? `Error: Enter JSON arrays for ${arrayErrorNames}.`
+            : ""
+        }
+      />
+      <div className="config-groups">
+        {groups.map((group, index) => {
+          const members = fields.filter(
+            (f) => (f.group ?? "basic") === group.id,
+          );
+          if (!members.length) return null;
+          const active = members.filter(
+            (f) => !fieldDisabledReason(f, effective),
+          ).length;
+          return (
+            <details key={group.id} className="config-group" open>
+              <summary>
+                <span className="config-group-number">
+                  {String(index + 1).padStart(2, "0")}
+                </span>
+                <span className="config-group-heading">
+                  <strong>{group.label}</strong>
+                  <small>{group.description}</small>
+                </span>
+                <span className="config-group-count">
+                  {active} / {members.length} active
+                </span>
+              </summary>
+              <div className="formgrid config-group-fields">
+                {members.map(field)}
+              </div>
+              {group.id === "interpolation" &&
+                effective.fill_nulls === true &&
+                effective.interpolation_method === "nearest" && (
+                  <p className="config-group-note">
+                    Nearest uses the closest valid raster cell. No distance or
+                    variogram settings are needed.
+                  </p>
+                )}
+            </details>
+          );
+        })}
+      </div>
+      <div className="actions sectiongap">
+        <Button
+          onClick={() =>
+            downloadJson(
+              sanitizeConfig(effective, schema),
+              "parcel-settings.json",
+            )
+          }
+        >
+          Export settings
+        </Button>
+        <label className="btn file-button">
+          Import settings
+          <input
+            type="file"
+            accept=".json,application/json"
+            onChange={async (e) => {
+              const file = e.target.files?.[0];
+              if (!file) return;
+              try {
+                const raw = JSON.parse(await file.text());
+                onChange({
+                  ...schema.defaults,
+                  ...sanitizeConfig(raw.processing ?? raw, schema),
+                });
+                setArrayDrafts({});
+                onValidityChange?.(true);
+                setError("");
+              } catch (err) {
+                setError((err as Error).message);
+              }
+              e.target.value = "";
+            }}
+          />
+        </label>
+      </div>
+    </>
+  );
 }

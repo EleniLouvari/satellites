@@ -1,10 +1,12 @@
 """Share planned tile jobs across accounts while retaining partition checkpoints."""
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from contextlib import ExitStack
 from dataclasses import dataclass
+from multiprocessing import get_context
 from pathlib import Path
 from queue import Empty, Queue
-from threading import RLock
+from threading import BoundedSemaphore, RLock
 
 import openeo
 import pandas as pd
@@ -139,12 +141,12 @@ def _run_batch(task, username, connection):
         )
 
 
-def _drain_batches(shared, pinned, users_list, jobs_per_user):
+def _drain_batches(shared, pinned, users_list, jobs_per_user, batch_workers=1):
     """Drain cached, account-owned and shared batches through account slots.
 
-    Prioritize existing cubes when cleanup is enabled. Each slot authenticates
-    only when a download is needed and checkpoints its batch before taking more
-    work. Local processing and memory cleanup share one raster lock.
+    Prioritize existing cubes when cleanup is enabled. Download slots feed a
+    run-wide local process pool bounded by batch_workers. Single-worker cleanup
+    remains synchronous. Every checkpoint finishes before partition assembly.
     """
     cached = Queue()
     # Free already-downloaded rasters before recovering missing remote assets.
@@ -155,6 +157,26 @@ def _drain_batches(shared, pinned, users_list, jobs_per_user):
             cached.put(task)
         else:
             shared.put(task)
+
+    local_futures = []
+    local_slots = BoundedSemaphore(batch_workers)
+
+    def checkpoint(task):
+        """Bound pending local work independently of the remote account slots."""
+        arguments = (Path(task.plan["target_path"]), task.plan["parcels"], task.plan["batch_number"])
+        if local_executor is None:
+            task.extractor._checkpoint_zonal_stats_batch(*arguments)
+            return
+        local_slots.acquire()
+        try:
+            future = local_executor.submit(task.extractor._checkpoint_zonal_stats_batch, *arguments)
+        except BaseException:
+            local_slots.release()
+            raise
+        # Release capacity on success or failure. Futures retain only batch IDs,
+        # never raster arrays or statistics tables.
+        future.add_done_callback(lambda _future: local_slots.release())
+        local_futures.append(future)
 
     def worker(username, password):
         """Consume available batches for one account slot until its queues empty."""
@@ -181,15 +203,19 @@ def _drain_batches(shared, pinned, users_list, jobs_per_user):
                     )
                 _run_batch(task, username, connection)
             if process_immediately:
-                # Hold the local lock through saving, deletion and collection.
-                # Only a batch number returns; no tables survive in the worker.
-                task.extractor._checkpoint_zonal_stats_batch(
-                    Path(task.plan["target_path"]), task.plan["parcels"], task.plan["batch_number"],
-                )
+                checkpoint(task)
 
-    with ThreadPoolExecutor(max_workers=len(users_list) * jobs_per_user) as executor:
+    with ExitStack() as stack:
+        # Spawn isolates NetCDF/HDF5 state even when called by the web worker or
+        # when the first submission comes from an acquisition thread.
+        local_executor = stack.enter_context(ProcessPoolExecutor(
+            max_workers=batch_workers, mp_context=get_context("spawn"),
+        )) if batch_workers > 1 else None
+        executor = stack.enter_context(ThreadPoolExecutor(max_workers=len(users_list) * jobs_per_user))
         futures = [executor.submit(worker, user, password) for user, password in users_list for _ in range(jobs_per_user)]
         for future in as_completed(futures):
+            future.result()
+        for future in as_completed(local_futures):
             future.result()
 
 
@@ -286,7 +312,8 @@ def run_shared_batches(spatial_parts, users_list, config, jobs_per_user):
     print(f"Shared queue: {shared.qsize()} unsubmitted batches; {sum(q.qsize() for q in pinned.values())} owned jobs to resume.")
     if not partitions:
         return
-    _drain_batches(shared, pinned, users_list, jobs_per_user)
+    # Constructors normalize integer-like values accepted by direct Python callers.
+    _drain_batches(shared, pinned, users_list, jobs_per_user, batch_workers=partitions[0][1].batch_workers)
     # Match the legacy upper bound on local workers: one partition per account,
     # each with its own configured batch_workers. Remote slots do not multiply it.
     with ThreadPoolExecutor(max_workers=min(len(users_list), len(partitions))) as executor:

@@ -1,0 +1,18 @@
+# syntax=docker/dockerfile:1
+ARG PIPELINE_IMAGE=satellites-parcel-stats:local
+FROM ${PIPELINE_IMAGE} AS runtime
+USER root
+WORKDIR /build
+COPY pyproject.toml README.md ./
+COPY src/ ./src/
+RUN python -m pip install --no-cache-dir --no-deps . \
+    && python -m pip install --no-cache-dir "fastapi==0.162.2" "uvicorn==0.54.0" "argon2-cffi==25.1.0" \
+    && python -m pip check \
+    && python -c "from eda import EDAConfig, EDAPipeline; from parcel_app.eda_task import run_eda_files" \
+    && mkdir -p /data/parcel-studio /tmp/matplotlib \
+    && chown -R satellites:satellites /data/parcel-studio /tmp/matplotlib
+USER satellites:satellites
+WORKDIR /data/parcel-studio
+ENV PARCEL_STORAGE_ROOT=/data/parcel-studio
+ENTRYPOINT ["python"]
+CMD ["-m", "uvicorn", "parcel_app.app:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]

@@ -1,4 +1,5 @@
 """Environment-backed web service settings."""
+
 import os
 from dataclasses import dataclass
 from functools import lru_cache
@@ -8,6 +9,7 @@ from pathlib import Path
 @dataclass(frozen=True)
 class Settings:
     """Operator-controlled service limits and secrets."""
+
     storage_root: Path
     credential_key: str
     cookie_secure: bool

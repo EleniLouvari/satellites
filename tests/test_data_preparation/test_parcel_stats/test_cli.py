@@ -337,7 +337,7 @@ def test_runner_executes_real_local_pipeline_from_synthetic_download(config, mon
 
     monkeypatch.setattr(openeo, "connect", lambda *a, **k: pytest.fail("Unexpected live connection"))
 
-    def download(shared, pinned, users, jobs_per_user):
+    def download(shared, pinned, users, jobs_per_user, batch_workers=1):
         """Supply a deterministic physical-band cube for each scheduled batch."""
         assert users == [("first", "secret")]
         assert jobs_per_user == 2

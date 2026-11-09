@@ -13,6 +13,7 @@ import logging
 import os
 import traceback
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from multiprocessing import get_context
 from pathlib import Path
 from typing import ClassVar
 
@@ -142,6 +143,7 @@ class ParcelStatsBase(
     batch_workers:
         Maximum number of openEO jobs run concurrently and worker processes used
         for local batch statistics. A value of 1 keeps sequential behaviour.
+        Local concurrency also applies when completed NetCDF cleanup is enabled.
     openeo_username, openeo_password:
         Optional CDSE credentials used with the OIDC resource-owner-password
         flow. Both values must be supplied together. When omitted, the normal
@@ -473,23 +475,34 @@ class ParcelStatsBase(
     def _run_batch_statistics(self, batches):
         """Return ordered lists of batch statistics and cleaning reports.
 
-        Accept ``(number, parcels, path)`` tuples. With cleanup enabled, process
-        and release each batch sequentially before loading saved tables for
-        final assembly. Otherwise use the configured local worker count.
+        Accept ``(number, parcels, path)`` tuples. Cleanup workers return only
+        batch IDs after saving tables and releasing their rasters. Both storage
+        modes honor the configured worker count; cleanup tables load afterwards.
         """
+        results, reports = {}, {}
+        for expected, completed in self._iter_batch_results(batches):
+            number = completed if self.remove_nc_after_completion else completed[0]
+            if number != expected:
+                raise RuntimeError(f"Error: Worker returned batch {number}; expected {expected}.")
+            if not self.remove_nc_after_completion:
+                _, result, report = completed
+                results[number], reports[number] = result, report
         if self.remove_nc_after_completion:
-            # No batch tables accumulate while any NetCDF still needs work.
-            # The shared scheduler normally completed these checkpoints already;
-            # direct/partition callers use the same bounded-memory lifecycle.
-            for number, batch, path in batches:
-                self._checkpoint_zonal_stats_batch(path, batch, number)
+            # Keep tables out of worker results/Futures while raster work is active.
             completed = [self._cached_batch_statistics(path) for _, _, path in sorted(batches, key=lambda b: b[0])]
             return [result for result, _ in completed], [report for _, report in completed]
-        results, reports = {}, {}
-        if self.batch_workers == 1 or len(batches) == 1:
+        numbers = sorted(results)
+        return [results[n] for n in numbers], [reports[n] for n in numbers]
+
+    def _iter_batch_results(self, batches):
+        """Execute local batches with the configured pool and yield their results."""
+        process = self._checkpoint_zonal_stats_batch if self.remove_nc_after_completion else self._process_zonal_stats_batch
+        cached_cleanup = self.remove_nc_after_completion and all(self._has_batch_statistics(path) for _, _, path in batches)
+        # Shared cleanup already processed these files. Avoid starting new pools
+        # just to read saved tables, but still validate caches before any deletion.
+        if self.batch_workers == 1 or len(batches) <= 1 or cached_cleanup:
             for number, batch, path in batches:
-                returned, result, report = self._process_zonal_stats_batch(path, batch, number)
-                results[returned], reports[returned] = result, report
+                yield number, process(path, batch, number)
         else:
             self.filling_logger.info(
                 "Parallel raster filling uses %s.worker-<pid>%s files in %s.",
@@ -504,16 +517,12 @@ class ParcelStatsBase(
                 self.output_dir,
             )
             workers = min(self.batch_workers, len(batches))
-            with ProcessPoolExecutor(max_workers=workers) as executor:
+            # Partition scheduling can invoke this from a thread. Spawn avoids
+            # inheriting locked NetCDF/HDF5 state from the parent process.
+            with ProcessPoolExecutor(max_workers=workers, mp_context=get_context("spawn")) as executor:
                 futures = {
-                    executor.submit(self._process_zonal_stats_batch, path, batch, number): number
+                    executor.submit(process, path, batch, number): number
                     for number, batch, path in batches
                 }
                 for future in as_completed(futures):
-                    expected = futures[future]
-                    number, result, report = future.result()
-                    if number != expected:
-                        raise RuntimeError(f"Error: Worker returned batch {number}; expected {expected}.")
-                    results[number], reports[number] = result, report
-        numbers = sorted(results)
-        return [results[n] for n in numbers], [reports[n] for n in numbers]
+                    yield futures[future], future.result()

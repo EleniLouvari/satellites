@@ -166,12 +166,17 @@ def split_geodataframe_by_grid(
     return _build_non_empty_grid_parts(gdf, rows, cols, cell_parcels)
 
 
-def load_openeo_users_from_db() -> list[tuple[str, str]]:
-    """Load openEO accounts from the PostgreSQL table configured by ``TBL_USERS``.
+def load_openeo_users_from_db(*, app_user_id: int | None = None) -> list[tuple[str, str]]:
+    """Load an owner's encrypted EO accounts, or an explicitly configured legacy table.
 
-    ``DB_NAME`` and ``TBL_USERS`` must be set in the process environment.
+    Pass ``app_user_id`` for ``app_users``/``eo_users``. This delegates to
+    ``load_app_openeo_accounts`` for owner filtering and in-memory decryption
+    using ``SATELLITES_CREDENTIAL_KEY``. ``TBL_USERS`` is ignored in this mode.
+    The caller must be authorized to use the supplied owner's accounts.
+
+    With no owner, ``DB_NAME`` and ``TBL_USERS`` must be set in the process environment.
     Connection settings are read from ``POSTGRES_*`` by ``create_db_handler``.
-    The table must contain non-empty text ``username`` and ``password`` columns.
+    The legacy table must contain non-empty plaintext ``username`` and ``password`` columns.
     Usernames are stripped and must be unique ignoring case. Passwords are
     preserved exactly. Accounts are sorted by case-insensitive username; callers
     resuming legacy jobs without saved owners must restore the original order.
@@ -187,6 +192,12 @@ def load_openeo_users_from_db() -> list[tuple[str, str]]:
     ValueError
         If configuration is missing, database access fails, or accounts are invalid.
     """
+    if app_user_id is not None:
+        from .accounts import load_app_openeo_accounts
+
+        credentials = load_app_openeo_accounts(app_user_id)
+        print(f"Loaded {len(credentials)} openEO user(s) for the application user.")
+        return credentials
     db_name = os.getenv("DB_NAME", "").strip()
     table_name = os.getenv("TBL_USERS", "").strip()
     if not db_name or not table_name:
@@ -205,6 +216,11 @@ def load_openeo_users_from_db() -> list[tuple[str, str]]:
     finally:
         db_handler.close_connection()
 
+    if "app_user_id" in df_users.columns:
+        raise ValueError(
+            "Error: Application-linked accounts require load_openeo_users_from_db(app_user_id=...). "
+            "Set TBL_APP_USERS, TBL_EO_USERS and SATELLITES_CREDENTIAL_KEY for the encrypted account tables."
+        )
     credentials = _validate_openeo_accounts(df_users)
     print(f"Loaded {len(credentials)} openEO user(s) from the database.")
     return credentials

@@ -108,7 +108,7 @@ def test_plans_before_acquisition_preserves_caches_and_job_owners(tmp_path, monk
     create_job_db(cube_dir / "tile_jobs.parquet", df=pd.DataFrame([row]))
     acquired, finalized = [], []
 
-    def drain(shared, pinned, users, jobs):
+    def drain(shared, pinned, users, jobs, **kwargs):
         expect_equal(shared.qsize(), 1)
         expect_equal(pinned["second"].qsize(), 1)
         expect_true(pinned["first"].empty())
@@ -143,7 +143,7 @@ def test_legacy_jobs_are_pinned_and_missing_owner_is_rejected(tmp_path, monkeypa
     row.update(id="legacy-job", status="finished", backend_name="cdse")
     db = create_job_db(cube_dir / "tile_jobs.parquet", df=pd.DataFrame([row]))
 
-    def drain(shared, pinned, users, jobs):
+    def drain(shared, pinned, users, jobs, **kwargs):
         expect_equal(pinned["first"].get_nowait().database.df.iloc[0]["id"], "legacy-job")
         expect_equal(shared.qsize(), 2)
 
@@ -232,7 +232,7 @@ def test_cached_only_run_never_authenticates(tmp_path, monkeypatch):
 
 
 def test_failed_acquisition_prevents_incomplete_partition_results(tmp_path, monkeypatch):
-    def fail(*args):
+    def fail(*args, **kwargs):
         raise RuntimeError("download failed")
 
     def unexpected_finalize(*args):

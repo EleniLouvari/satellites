@@ -61,9 +61,9 @@ def claim(lane="all"):
     """Atomically claim one pending task with a fresh fencing token."""
     from . import db
 
-    kinds = ["run", "resume", "bundle"] if lane == "run" else ["inspect", "validate", "test_account"]
+    kinds = ["run", "resume", "bundle", "eda"] if lane == "run" else ["inspect", "validate", "test_account"]
     if lane == "all":
-        kinds += ["run", "resume", "bundle"]
+        kinds += ["run", "resume", "bundle", "eda"]
     return db.one(
         """UPDATE web_jobs SET status='running',claim_token=%s,heartbeat_at=now(),updated_at=now()
         WHERE job_id=(SELECT job_id FROM web_jobs WHERE status='pending' AND kind=ANY(%s)
@@ -76,10 +76,18 @@ def reconcile(lane="all"):
     """Mark abandoned work interrupted only while the caller holds both worker locks."""
     from . import db
 
-    kinds = ["run", "resume", "bundle"] if lane == "run" else ["inspect", "validate", "test_account"]
+    kinds = ["run", "resume", "bundle", "eda"] if lane == "run" else ["inspect", "validate", "test_account"]
     if lane == "all":
-        kinds += ["run", "resume", "bundle"]
+        kinds += ["run", "resume", "bundle", "eda"]
     with db.connection() as conn:
+        db.execute(
+            """UPDATE eda_runs SET status='interrupted',finished_at=now(),
+            error='Error: EDA worker interrupted; create a new analysis with these settings.'
+            WHERE eda_id::text IN (SELECT target_id FROM web_jobs WHERE status='running' AND kind='eda' AND kind=ANY(%s))
+            AND status IN ('queued','running')""",
+            (kinds,),
+            conn=conn,
+        )
         db.execute(
             """UPDATE analysis_runs SET status='interrupted',error='Error: Worker interrupted; resume explicitly.',
             updated_at=now() WHERE run_id::text IN

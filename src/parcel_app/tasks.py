@@ -71,6 +71,7 @@ def _validate(job):
         "processing": run["processing"],
         "output_dir": run["output_dir"],
         "run_identifier": f"web-{run['run_id']}",
+        "scheduling": run.get("scheduling", "batches"),
     }
     prepared = prepare_run(config)
     summary = prepared.summary()
@@ -136,15 +137,8 @@ def _execute_run(job):
         run["output_dir"],
         run["config"]["input"]["path"],
     ]
-    previous = logging.getLogRecordFactory()
-    redactor = _SecretFilter(secrets)
+    from .progress import event_logging
 
-    def factory(*args, **kwargs):
-        record = previous(*args, **kwargs)
-        redactor.filter(record)
-        return record
-
-    logging.setLogRecordFactory(factory)
     with db.connection() as conn:
         _owned(job, conn)
         db.execute(
@@ -162,8 +156,8 @@ def _execute_run(job):
     with open(os.devnull, "w") as sink:
         import contextlib
 
-        with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
-            if job["kind"] == "resume":
+        with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink), event_logging(job, secrets):
+            if job["kind"] == "resume" and (Path(run["output_dir"]) / "run.json").is_file():
                 resume_parcel_stats(run["output_dir"], accounts=accounts, app_user_id=run["app_user_id"])
             else:
                 run_parcel_stats(run["config"], accounts=accounts, app_user_id=run["app_user_id"])
@@ -211,20 +205,32 @@ def _test_account(job):
         )
 
 
-def _failure(job):
+def _failure(job, error=None):
     """Expose actionable fixed messages without embedding raw third-party errors."""
     messages = {
         "inspect": "Error: File inspection failed; verify supported format, geometry and CRS.",
         "validate": "Error: Preflight failed; check parcel IDs, geometry, date range and processing settings.",
         "test_account": "Error: Connection test failed; check credentials and backend availability.",
         "bundle": "Error: Bundle creation failed; verified artifacts may be unavailable.",
+        "eda": "Error: EDA failed; check the selected columns and configuration, then create a new EDA analysis.",
     }
     message = messages.get(job["kind"], "Error: Analysis failed; inspect sanitized logs and resume when ready.")
+    if job["kind"] == "eda" and error is not None:
+        message = (
+            f"Error: EDA failed ({type(error).__name__}). Check the EDA log if available, "
+            "then create a new EDA analysis."
+        )
     with db.connection() as conn:
         _owned(job, conn)
         if job["kind"] == "inspect":
             db.execute(
                 "UPDATE parcel_uploads SET status='failed',error=%s WHERE upload_id=%s", (message, job["target_id"]), conn=conn
+            )
+        elif job["kind"] == "eda":
+            db.execute(
+                "UPDATE eda_runs SET status='failed',error=%s,finished_at=now() WHERE eda_id=%s",
+                (message, job["target_id"]),
+                conn=conn,
             )
         elif job["kind"] in {"validate", "run", "resume"}:
             db.execute(
@@ -252,6 +258,8 @@ def _failure(job):
 
 def execute_task(job):
     """Dispatch a claimed task and safely persist its terminal status."""
+    from .eda_task import execute_eda
+
     try:
         with db.connection() as conn:
             _owned(job, conn)
@@ -262,17 +270,20 @@ def execute_task(job):
             "resume": _execute_run,
             "test_account": _test_account,
             "bundle": lambda task: _bundle(task),
+            "eda": execute_eda,
         }
         handlers[job["kind"]](job)
         with db.connection() as conn:
             _owned(job, conn)
             db.execute("UPDATE web_jobs SET status='done',updated_at=now() WHERE job_id=%s", (str(job["job_id"]),), conn=conn)
-    except Exception:
+    except Exception as error:
         try:
             if job["kind"] in {"run", "resume"}:
                 from .artifacts import register_diagnostics
 
                 run = _run(job)
+                if not (Path(run["output_dir"]) / "run.json").is_file():
+                    raise ValueError("No initialized run; diagnostics must not occupy the fresh run directory.")
                 credentials = _credentials(run)
                 secrets = [item for pair in credentials for item in pair]
                 with db.connection() as conn:
@@ -281,7 +292,7 @@ def execute_task(job):
         except Exception:
             pass
         try:
-            _failure(job)
+            _failure(job, error)
         except Exception:
             # Connection loss or fencing: parent reconciliation is authoritative.
             pass

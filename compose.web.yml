@@ -1,0 +1,61 @@
+name: parcel-studio
+
+x-service: &service
+  image: satellites-parcel-web:local
+  build:
+    context: .
+    dockerfile: Dockerfile.web
+  env_file:
+    - ${PARCEL_ENV_FILE:-./scripts/.env_docker}
+  environment:
+    PARCEL_STORAGE_ROOT: /data/parcel-studio
+    PARCEL_COOKIE_SECURE: ${PARCEL_COOKIE_SECURE:-false}
+    PARCEL_ALLOWED_ORIGIN: ${PARCEL_ALLOWED_ORIGIN:-http://localhost:8080}
+    PARCEL_MAX_BATCH_WORKERS: ${PARCEL_MAX_BATCH_WORKERS:-4}
+    PARCEL_UPLOAD_LIMIT_MB: ${PARCEL_UPLOAD_LIMIT_MB:-250}
+    PARCEL_STORAGE_LIMIT_GB: ${PARCEL_STORAGE_LIMIT_GB:-300}
+  volumes:
+    - "${PARCEL_HOST_STORAGE:-parcel_storage}:/data/parcel-studio"
+  extra_hosts:
+    - host.docker.internal:host-gateway
+  init: true
+  stop_grace_period: 60s
+  restart: unless-stopped
+
+services:
+  api:
+    <<: *service
+    cpus: 2
+    mem_limit: 2g
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5)"]
+      interval: 15s
+      timeout: 8s
+      retries: 5
+  worker:
+    <<: *service
+    command: [-m, parcel_app.worker, --lane, run]
+    cpus: ${PARCEL_WORKER_CPUS:-4}
+    mem_limit: ${PARCEL_WORKER_MEMORY:-16g}
+  inspector:
+    <<: *service
+    command: [-m, parcel_app.worker, --lane, small]
+    cpus: 2
+    mem_limit: 4g
+  web:
+    image: satellites-parcel-ui:local
+    build: ./web
+    ports:
+      - "127.0.0.1:${PARCEL_WEB_PORT:-8080}:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+  manage:
+    <<: *service
+    profiles: [tools]
+    command: [-m, parcel_app.manage, migrate]
+    restart: "no"
+
+volumes:
+  parcel_storage:

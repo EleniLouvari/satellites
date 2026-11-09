@@ -1,9 +1,8 @@
 # Parcel Studio: web application design
 
-Status: proposed design, 8 November 2026. Working title and visual direction are
-design proposals. Registration with immediate access is the user's confirmed
-choice. This document describes future work; the CLI and Docker worker already
-exist, but the web application does not yet exist.
+Status: approved design, implemented 8 November 2026. Registration with immediate
+access is the user's confirmed choice. This document records the design; see
+[the operation guide](README.md) for implemented behavior, setup and limitations.
 
 Open [the interactive screen preview](design-preview.html) in a browser. It uses
 fictional data, performs no authentication or processing, and sends no data.

@@ -1,13 +1,14 @@
 # Repository structure and migration
 
-The installable distribution contains four top-level packages directly under
-`src/`: `data_preparation`, `eda`, `ml_classification`, and `shared`. Notebooks,
+The installable distribution contains five top-level packages directly under
+`src/`: `data_preparation`, `eda`, `ml_classification`, `shared`, and `parcel_app`. Notebooks,
 tests, documentation, and generated results live outside these packages.
 
 ## Source boundaries
 
 ```text
 src/
+  parcel_app/                    FastAPI application, PostgreSQL jobs and web worker
   data_preparation/
     cli.py                       satellites parcel-stats validate/run/resume
     sources/

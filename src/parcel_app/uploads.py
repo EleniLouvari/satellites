@@ -20,9 +20,10 @@ def public_upload(row: dict) -> dict:
     return {k: v for k, v in row.items() if k not in {"storage_path", "app_user_id"}}
 
 
-def owned_upload(upload_id, user_id, *, conn=None) -> dict:
+def owned_upload(upload_id, user_id, *, conn=None, lock=False) -> dict:
     """Resolve only an authenticated user's upload."""
-    row = db.one("SELECT * FROM parcel_uploads WHERE upload_id=%s AND app_user_id=%s", (str(upload_id), user_id), conn=conn)
+    row = db.one("SELECT * FROM parcel_uploads WHERE upload_id=%s AND app_user_id=%s" + (" FOR SHARE" if lock else ""),
+                 (str(upload_id), user_id), conn=conn)
     if row is None:
         raise HTTPException(404, "Error: Upload not found.")
     return row
@@ -33,7 +34,9 @@ def enqueue(kind, target_id, user_id, payload=None, *, conn=None):
     return db.one(
         "INSERT INTO web_jobs(job_id,app_user_id,kind,target_id,payload) VALUES(%s,%s,%s,%s,%s) "
         "ON CONFLICT (kind,target_id) WHERE status IN ('pending','running') DO UPDATE SET target_id=EXCLUDED.target_id RETURNING *",
-        (str(uuid4()), user_id, kind, str(target_id), Json(payload or {})), conn=conn)
+        (str(uuid4()), user_id, kind, str(target_id), Json(payload or {})),
+        conn=conn,
+    )
 
 
 def storage_available(reserve: int = 0) -> bool:
@@ -61,11 +64,17 @@ async def upload_file(request: Request, filename: str, user: dict = Depends(curr
     destination = get_settings().storage_root / "users" / str(user["app_user_id"]) / "uploads" / upload_id / f"source{suffix}"
     with db.connection() as conn:
         db.one("SELECT pg_advisory_xact_lock(84123301)", conn=conn)
-        outstanding = db.one("SELECT COALESCE(sum(size_bytes),0) AS n FROM parcel_uploads WHERE status='uploading'", conn=conn)["n"]
+        outstanding = db.one("SELECT COALESCE(sum(size_bytes),0) AS n FROM parcel_uploads WHERE status='uploading'", conn=conn)[
+            "n"
+        ]
         if not storage_available(reserve + outstanding):
             raise HTTPException(507, "Error: Server storage limit reached. Contact the operator.")
-        db.execute("INSERT INTO parcel_uploads(upload_id,app_user_id,filename,storage_path,sha256,size_bytes,status) "
-                   "VALUES(%s,%s,%s,%s,'',%s,'uploading')", (upload_id, user["app_user_id"], filename, str(destination), reserve), conn=conn)
+        db.execute(
+            "INSERT INTO parcel_uploads(upload_id,app_user_id,filename,storage_path,sha256,size_bytes,status) "
+            "VALUES(%s,%s,%s,%s,'',%s,'uploading')",
+            (upload_id, user["app_user_id"], filename, str(destination), reserve),
+            conn=conn,
+        )
     total, digest = 0, hashlib.sha256()
     try:
         destination.parent.mkdir(parents=True)
@@ -79,8 +88,11 @@ async def upload_file(request: Request, filename: str, user: dict = Depends(curr
         if total == 0:
             raise HTTPException(422, "Error: Uploaded file is empty.")
         with db.connection() as conn:
-            db.execute("UPDATE parcel_uploads SET sha256=%s,size_bytes=%s,status='pending' WHERE upload_id=%s",
-                       (digest.hexdigest(), total, upload_id), conn=conn)
+            db.execute(
+                "UPDATE parcel_uploads SET sha256=%s,size_bytes=%s,status='pending' WHERE upload_id=%s",
+                (digest.hexdigest(), total, upload_id),
+                conn=conn,
+            )
             enqueue("inspect", upload_id, user["app_user_id"], conn=conn)
             return public_upload(owned_upload(upload_id, user["app_user_id"], conn=conn))
     except BaseException:
@@ -93,7 +105,12 @@ async def upload_file(request: Request, filename: str, user: dict = Depends(curr
 @router.get("/uploads")
 def list_uploads(user: dict = Depends(current_user)):
     """List the most recent one hundred owned uploads."""
-    return [public_upload(row) for row in db.all_rows("SELECT * FROM parcel_uploads WHERE app_user_id=%s ORDER BY created_at DESC LIMIT 100", (user["app_user_id"],))]
+    return [
+        public_upload(row)
+        for row in db.all_rows(
+            "SELECT * FROM parcel_uploads WHERE app_user_id=%s ORDER BY created_at DESC LIMIT 100", (user["app_user_id"],)
+        )
+    ]
 
 
 @router.get("/uploads/{upload_id}")

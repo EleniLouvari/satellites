@@ -26,9 +26,15 @@ sort the inspection queue by final priority. See the
 [inspection decision table](../docs/ml_classification/INSPECTION_PRIORITY_DECISION_TABLE.md).
 
 `projects/neuro/1_parcel_stats_openEO_fill.ipynb` loads CDSE accounts from PostgreSQL
-with `load_openeo_users_from_db()`. Install the `database` extra and provide
-`DB_NAME`, `TBL_USERS`, and `POSTGRES_*` in the kernel environment. `.env` is not
-loaded automatically. See [account setup and legacy resume ordering](../docs/data_preparation/openeo/CREDENTIALS.md).
+with `load_openeo_users_from_db(app_user_id=APP_USER_ID)` for the web app's
+encrypted `eo_users`. Install the `database` and `credentials` extras and provide
+`DB_NAME`, `POSTGRES_*`, and `SATELLITES_CREDENTIAL_KEY` in the kernel environment.
+The no-argument form supports legacy plaintext tables configured by `TBL_USERS`.
+The Neuro account cell explicitly reads only `SATELLITES_CREDENTIAL_KEY` from
+the nearest `.env` in the working directory or its parents. It preserves existing
+database settings; rerun the cell after changing the key. `python-dotenv` is
+included in the `notebooks` extra. The underlying loader does not read `.env`. See
+[account setup and legacy resume ordering](../docs/data_preparation/openeo/CREDENTIALS.md).
 
 New code uses explicit imports. `shared.notebook.configure_notebook`
 provides opt-in display/reproducibility settings. Only notebooks requesting

@@ -276,8 +276,18 @@ Raster checkpoints are chunked and are not compressed by this writer.
 Raw, cleaned, and final files can coexist while processing. Within one process,
 `LOCAL_RASTER_LOCK` serializes local raster work across threads. Separate worker
 processes have separate memory requirements. With
-`remove_nc_after_completion=True`, the direct batch-processing path finishes,
-saves, and releases batches sequentially before loading tables for assembly.
+`remove_nc_after_completion=True`, each worker saves both batch tables, removes
+its completed rasters and releases memory before accepting another batch.
+`batch_workers` still controls concurrency: four workers can process four
+NetCDFs at once with cleanup enabled. Worker futures return only batch IDs;
+tables are loaded for assembly after raster processing finishes.
+
+Direct and partition execution use up to `batch_workers` processes per active
+partition. Shared `scheduling="batches"` with cleanup uses one run-wide pool of
+`batch_workers` processes, independent of account/remote-slot counts. Downloads
+can overlap local processing; submissions are bounded to the pool size. Each
+remote slot may also hold a newly downloaded file while waiting for local
+capacity. More local workers increase peak RAM and concurrent disk activity.
 
 ## 6. How to read the progress messages
 

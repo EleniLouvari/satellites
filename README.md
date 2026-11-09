@@ -3,6 +3,24 @@
 Satellite imagery acquisition, parcel statistics, exploratory analysis, and
 restartable geospatial classification.
 
+## Parcel Studio web application
+
+Parcel Studio provides immediate registration, login, private Copernicus accounts,
+parcel uploads, the full processing configuration form, persistent per-user run
+history in PostgreSQL, background execution, and downloadable results and logs.
+Completed runs can launch EDA with selected columns and configurable reports;
+each EDA analysis keeps its own history and downloadable report bundle.
+
+```powershell
+.\scripts\run_web_app.bat build
+.\scripts\run_web_app.bat migrate
+.\scripts\run_web_app.bat start
+```
+
+Open http://localhost:8080. Configure the existing database and credential key
+first; see the [setup and operation guide](docs/web_app/README.md), including
+password setup for existing application users and HTTPS deployment for a team.
+
 ## Repository layout
 
 | Directory | Purpose |
@@ -13,6 +31,8 @@ restartable geospatial classification.
 | `src/eda/` | EDA, feature-screening diagnostics, plots, and HTML reports |
 | `src/ml_classification/` | Check, prepare, train, evaluate, predict, and seed sensitivity |
 | `src/shared/` | Reusable I/O, geometry, database, and data-cleaning utilities |
+| `src/parcel_app/` | Web API, authentication, PostgreSQL history and background worker |
+| `web/` | React interface and nginx container |
 | `notebooks/projects/neuro/` | Numbered project workflow notebooks |
 | `notebooks/experiments/` | Exploratory ML and sensitivity notebooks |
 | `notebooks/maintenance/` | openEO job inspection and code-quality notebooks |

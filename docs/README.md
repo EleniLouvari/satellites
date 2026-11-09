@@ -1,6 +1,7 @@
 # Documentation
 
 - [Web application design and interactive preview](web_app/DESIGN.md)
+- [Run the Parcel Studio web application](web_app/README.md)
 - [Repository structure and migration](repository_structure.md)
 - [Parcel statistics public API](data_preparation/README.md)
 - [openEO pipeline](data_preparation/openeo/README.md)

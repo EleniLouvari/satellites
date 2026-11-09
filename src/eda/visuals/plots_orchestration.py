@@ -134,8 +134,8 @@ def _create_distribution_plots(
     # A scatter matrix needs a pair of numeric features, unlike the univariate charts above.
     if len(selected_numeric) >= 2:
         scatter_path = plots_dir / "numeric_scatter_matrix.png"
-        _plot_scatter_matrix(df, selected_numeric, scatter_path)
-        plot_paths["numeric_scatter_matrix"] = scatter_path
+        if _plot_scatter_matrix(df, selected_numeric, scatter_path):
+            plot_paths["numeric_scatter_matrix"] = scatter_path
 
     if selected_categorical:
         categorical_path = plots_dir / "categorical_distributions.png"
@@ -383,4 +383,3 @@ def _create_geospatial_plots(
             target_heatmap_path,
         ):
             plot_paths["geometry_target_heatmap"] = target_heatmap_path
-

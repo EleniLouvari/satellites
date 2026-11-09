@@ -57,7 +57,9 @@ when resuming legacy jobs that do not yet record their owning username.
   one remote openEO job; retries may create replacement jobs.
 - **Account:** one unique username/password pair in `users_list`.
 - **Remote slot:** capacity to process one batch remotely. Set
-  `config["openeo_parallel_jobs"]` to 1 or 2 per account in this multi-user API.
+  `config["openeo_parallel_jobs"]` to 1 or 2 per account (default 2). The web
+  form offers only these values. The API, multi-user runner and direct
+  `OpenEOJobManagerZonalStats` constructor reject values above 2.
 - **Local worker:** a process for raster cleaning and parcel statistics. Set
   `config["batch_workers"]`; this does not increase remote account slots.
 
@@ -106,6 +108,10 @@ below apply to both modes.
 
 ## Workflow A: `scheduling="batches"`
 
+The phase-separated flow below describes `remove_nc_after_completion=False`.
+With cleanup enabled (the web UI default), downloaded and cached cubes enter
+local processing during queue execution, as described after the numbered steps.
+
 Implemented by `run_shared_batches` and `_drain_batches` in
 [batch_scheduler.py](../../../src/data_preparation/parcel_stats/batch_scheduler.py).
 
@@ -128,6 +134,21 @@ Implemented by `run_shared_batches` and `_drain_batches` in
    Each extractor uses its configured `batch_workers` for local batch processes.
 8. Save each partition's outputs. Return from `run_parallel_extractions`;
    the caller can then merge the saved time-statistics files.
+
+With `remove_nc_after_completion=True`, existing raw files are prioritized and
+need no authentication. Each completed download is handed to local checkpoint
+processing. When `batch_workers > 1`, one run-wide spawned process pool handles
+up to that many batches concurrently, even with only one remote account slot.
+Pending local submissions are bounded to the pool size; a remote slot waits
+when that capacity is full. With `batch_workers=1`, the slot processes its batch
+synchronously before taking another task, under the shared raster lock.
+
+Each local worker commits the statistics/report pair before deleting that
+batch's raster files and releasing its arrays and tables. Futures return batch
+IDs, not DataFrames. Partition assembly waits for all remote and local work to
+succeed, then reads the cached tables. A calculation/write failure propagates,
+preserves the failed batch's rasters and prevents final partition publication;
+successful batches remain reusable on resume.
 
 ```mermaid
 flowchart TD
@@ -238,9 +259,13 @@ output_dir/
 
 `LOCAL_RASTER_LOCK` serializes local raster work inside each process. Setting
 `batch_workers=1` therefore does not mean that each concurrent partition thread
-cleans rasters simultaneously. With multiple batch workers, each active partition
-can create its own process pool, bounded by its batch count. More remote slots
-do not directly create more local processes.
+cleans rasters simultaneously. Separate processes have independent locks.
+Cleanup does not disable parallelism: direct/partition execution uses up to
+`batch_workers` processes per active partition, bounded by its batch count.
+Shared batch scheduling with cleanup uses a single run-wide pool capped at
+`batch_workers`; with cleanup disabled, each active partition can create its own
+pool after downloads finish. More remote slots do not increase the shared local
+pool limit. More local workers increase peak memory and disk activity.
 
 Both paths use the manager's retry/download helpers. In batches mode, a task's
 worker stays occupied through retry waits and download. If acquisition raises,

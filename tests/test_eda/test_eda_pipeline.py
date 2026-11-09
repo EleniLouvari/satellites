@@ -15,6 +15,22 @@ from eda.visuals import plots as plots_module
 from tests.utils import expect_equal, expect_false, expect_in, expect_isinstance, expect_not_in, expect_subset, expect_true
 
 
+@pytest.mark.parametrize("values,expected", [
+    ({"constant": [0] * 4, "a": [1, 2, 3, 4], "b": [4, 3, 1, 2]}, True),
+    ({"constant": [0] * 4, "missing": [np.nan] * 4}, False),
+    ({"a": [1, 2, np.nan, np.nan], "b": [np.nan, np.nan, 3, 4]}, False),
+    ({"a": [1, 2, np.inf, 4], "b": [2, 4, 6, 8]}, True),
+])
+def test_scatter_matrix_handles_constant_and_incomplete_features(tmp_path, values, expected):
+    """Degenerate chart inputs must not abort EDA or register a missing image."""
+    from eda.visuals.plots_renderers import _plot_scatter_matrix
+
+    frame = pd.DataFrame(values)
+    path = tmp_path / "scatter.png"
+    assert _plot_scatter_matrix(frame, list(frame.columns), path) is expected
+    assert path.is_file() is expected
+
+
 def test_build_eda_artifacts_from_a_dataframe() -> None:
     data = pd.DataFrame(
         {"parcel_id": [1, 2, 3, 4, 5, 6], "ndvi": [0.1, 0.2, 0.3, 0.4, 0.5, 2.0], "crop": ["A", "A", "B", "B", "B", "A"]}
