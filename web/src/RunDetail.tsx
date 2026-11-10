@@ -11,6 +11,7 @@ import {
 } from "./api";
 import { Button, Empty, Heading, Notice, Status } from "./ui";
 import DeleteAction from "./DeleteAction";
+import RenameAction from "./RenameAction";
 import Progress from "./Progress";
 type Bundle = { status: string; artifact_id?: string; error?: string };
 export default function RunDetail({
@@ -155,6 +156,7 @@ export default function RunDetail({
     <>
       <Heading title={run.name} subtitle={`Created ${date(run.created_at)}`}>
         <div className="actions">
+          <RenameAction run={run} onRenamed={setRun} />
           <Button
             disabled={run.status !== "complete"}
             onClick={() => onEda(run)}

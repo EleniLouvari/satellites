@@ -132,7 +132,8 @@ def _execute_run(job):
     accounts = _credentials(run)
     if checksum(Path(run["config"]["input"]["path"])) != run["summary"]["input_sha256"]:
         raise ValueError("Error: Uploaded file changed; restore the original file before resuming.")
-    secrets = [item for pair in accounts for item in pair] + [
+    secrets = [item for pair in accounts for item in pair]
+    private_paths = [
         str(get_settings().storage_root),
         run["output_dir"],
         run["config"]["input"]["path"],
@@ -156,7 +157,11 @@ def _execute_run(job):
     with open(os.devnull, "w") as sink:
         import contextlib
 
-        with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink), event_logging(job, secrets):
+        with (
+            contextlib.redirect_stdout(sink),
+            contextlib.redirect_stderr(sink),
+            event_logging(job, secrets, private_paths=private_paths),
+        ):
             if job["kind"] == "resume" and (Path(run["output_dir"]) / "run.json").is_file():
                 resume_parcel_stats(run["output_dir"], accounts=accounts, app_user_id=run["app_user_id"])
             else:

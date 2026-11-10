@@ -1977,7 +1977,16 @@ details summary {
 .eda-report iframe { width: 100%; height: 70vh; border: 1px solid #dce3e4; border-radius: 12px; margin-top: 16px; background: white; }
 .btn.danger { color: #a53333; background: #fff7f5; border-color: #eac6c0; }
 .btn.danger:hover:not(:disabled) { background: #fbe6e2; border-color: #c9786c; }
-.confirm-dialog { width: min(540px, calc(100vw - 32px)); border: 1px solid #dce3e4; border-radius: 20px; padding: 28px; color: #203c39; box-shadow: 0 24px 80px #102e3840; }
+.confirm-dialog {
+  width: min(540px, calc(100vw - 32px));
+  border: 1px solid #dce3e4;
+  border-radius: 20px;
+  padding: 28px;
+  color: #203c39;
+  box-shadow: 0 24px 80px #102e3840;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 .confirm-dialog::backdrop { background: #142d3980; }
 .confirm-dialog p { margin-top: 16px; line-height: 1.6; }
 .completion { display: grid; gap: 14px; margin: 18px 0; }

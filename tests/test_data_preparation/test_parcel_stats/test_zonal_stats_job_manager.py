@@ -306,7 +306,7 @@ def test_sentinel1_only_tile_graph_does_not_load_sentinel2(temporal_reducer) -> 
     orbit_filter = sentinel1_options["properties"]["sat:orbit_state"]
     expect_true(orbit_filter("ASCENDING") is True)
     expect_true(orbit_filter("DESCENDING") is False)
-    expect_true(any(call[0] == "resample_spatial" and call[1]["projection"] == "EPSG:32634" for call in calls))
+    expect_true(any(call[0] == "resample_spatial" and call[1].get("projection") is None for call in calls))
     expect_equal(any(call[0] == "aggregate_temporal_period" for call in calls), (temporal_reducer == "median"))
     if temporal_reducer == "none":
         expect_equal(sentinel1_options["temporal_extent"], ["2024-01-01", "2024-04-01"])

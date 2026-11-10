@@ -128,6 +128,19 @@ failure, and updates while running. Initial queue time is excluded; pauses betwe
 resume attempts are included. Runs without a recorded start show a dash. Existing
 run events provide this timing, so this change requires no new database columns.
 
+To change an existing analysis name, open its details and select **Rename**,
+enter a name (up to 120 characters), and select **Save name**. Running and completed
+analyses can also be renamed. This changes only the display name; validation,
+processing settings, results and recorded duration are preserved. Renaming is
+unavailable while an analysis is being deleted.
+
+Log redaction recognizes credential fields (including quoted passwords, tokens,
+usernames and authorization headers) and URLs containing authentication data.
+Ordinary values such as `B11`, `1.5` and `1M` remain readable even when they contain
+the same text as a credential. Public backend URLs remain readable; private server
+paths are masked separately. Previously saved redacted log text cannot be restored
+by this change.
+
 Server paths, credential keys and owner IDs are intentionally not configurable
 from the form. The server generates paths and uses the authenticated user ID.
 The submitted run keeps its normalized configuration and account order. Adding

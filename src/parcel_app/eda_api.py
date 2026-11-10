@@ -209,7 +209,7 @@ def download_log(eda_id: UUID, user: dict = Depends(current_user)):
     if not path.is_file():
         raise HTTPException(404, "Error: No EDA log is available.")
     return PlainTextResponse(
-        sanitize_text(path.read_text(encoding="utf-8", errors="replace"), [str(root)]),
+        sanitize_text(path.read_text(encoding="utf-8", errors="replace"), private_paths=[str(root)]),
         headers={"Content-Disposition": 'attachment; filename="eda.log"', "Cache-Control": "private, no-store",
                  "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "sandbox"},
     )

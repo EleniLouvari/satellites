@@ -43,6 +43,13 @@ class Submission(BaseModel):
     revision: int = Field(ge=1)
 
 
+class RunName(BaseModel):
+    """Accept only the display name for an existing analysis."""
+
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=120)
+
+
 def portable_config(config: dict) -> dict:
     """Remove private storage paths from any configuration representation."""
     clean = dict(config or {})
@@ -175,6 +182,21 @@ def edit_run(run_id: UUID, draft: RunDraft, user: dict = Depends(current_user)):
             conn=conn,
         )
         return public_run(row)
+
+
+@router.patch("/runs/{run_id}/name")
+def rename_run(run_id: UUID, body: RunName, user: dict = Depends(current_user)):
+    """Rename an owned run without invalidating validation or changing its timing."""
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(422, "Error: Give the analysis a name.")
+    with db.connection() as conn:
+        run = owned_run(run_id, user["app_user_id"], conn=conn, lock=True)
+        if run["status"] == "deleting":
+            raise HTTPException(409, "Error: This analysis is being deleted.")
+        # updated_at also records terminal timing; a label edit must not change it.
+        db.execute("UPDATE analysis_runs SET name=%s WHERE run_id=%s", (name, str(run_id)), conn=conn)
+        return public_run(dict(run, name=name))
 
 
 @router.get("/runs")

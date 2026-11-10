@@ -149,5 +149,6 @@ def test_failed_eda_log_is_downloadable_and_redacted(tmp_path, monkeypatch):
     monkeypatch.setattr(eda_api, "owned_eda", lambda *a: {"status": "failed", "output_dir": str(tmp_path)})
     response = eda_api.download_log("id", {"app_user_id": 1})
     assert b"ValueError" in response.body
-    assert b"secret" not in response.body and b"https://" not in response.body
+    assert b"secret" not in response.body
+    assert b"https://example.invalid/token" in response.body
     assert "attachment" in response.headers["content-disposition"]

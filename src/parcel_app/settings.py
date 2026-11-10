@@ -17,7 +17,7 @@ class Settings:
     upload_limit_bytes: int = 250 * 1024**2
     max_batch_workers: int = 4
     storage_limit_bytes: int = 100 * 1024**3
-    session_hours: int = 12
+    session_hours: int = 24
 
 
 @lru_cache

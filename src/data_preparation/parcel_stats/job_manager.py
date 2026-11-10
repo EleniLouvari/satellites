@@ -638,8 +638,9 @@ class OpenEOJobManagerZonalStats(OpenEOZonalStats):
                 bands=[*required_sentinel2_bands, self.SENTINEL2_SCENE_CLASSIFICATION_BAND],
                 max_cloud_cover=self.SENTINEL2_MAX_SCENE_CLOUD_COVER,
             )
+            # The planning/output CRS must not override the source raster projection.
             reflectance = sentinel2.filter_bands(list(required_sentinel2_bands)).resample_spatial(
-                resolution=self.TARGET_RESOLUTION_METRES, projection=f"EPSG:{self.working_epsg}", method="bilinear"
+                resolution=self.TARGET_RESOLUTION_METRES, method="bilinear"
             )
             reflectance = reflectance * self.SENTINEL2_REFLECTANCE_SCALE_FACTOR
             scl = sentinel2.band(self.SENTINEL2_SCENE_CLASSIFICATION_BAND).resample_cube_spatial(reflectance, method="near")
@@ -670,7 +671,7 @@ class OpenEOJobManagerZonalStats(OpenEOZonalStats):
         if sentinel2_temporal is None:
             # Sentinel-1-only jobs no longer depend on a Sentinel-2 target cube.
             return sentinel1_temporal.resample_spatial(
-                resolution=self.TARGET_RESOLUTION_METRES, projection=f"EPSG:{self.working_epsg}", method="bilinear"
+                resolution=self.TARGET_RESOLUTION_METRES, method="bilinear"
             )
         sentinel1_temporal = sentinel1_temporal.resample_cube_spatial(sentinel2_temporal, method="bilinear")
         return sentinel2_temporal.merge_cubes(sentinel1_temporal)

@@ -401,8 +401,8 @@ class ZonalStatsConfiguration:
         """Create a cache key from processing options, parcel IDs and geometry."""
         configuration = {
             # Any option capable of changing downloaded or cleaned pixels must invalidate this cache namespace.
-            # Retain the established raw-cube namespace so compatible downloaded NetCDF files remain reusable.
-            "processing_strategy": "sentinel1_sentinel2_temporal_local_v3",
+            # Native-grid acquisition must not reuse rasters or completed results from forced-CRS jobs.
+            "processing_strategy": "sentinel1_sentinel2_temporal_local_v4_native_crs",
             "start_date": self.start_date.strftime("%Y-%m-%d"),
             "end_date": self.end_date.strftime("%Y-%m-%d"),
             "temporal_period": self.temporal_period,

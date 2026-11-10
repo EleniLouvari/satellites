@@ -14,7 +14,7 @@ def test_containment_rejects_escape(tmp_path):
 def test_redaction_removes_credentials_and_urls():
     from parcel_app.artifacts import sanitize_text
 
-    value = sanitize_text("password=hunter2 https://user:secret@host?token=abcd hunter2", ["hunter2"])
+    value = sanitize_text("password=hunter2 https://user:secret@host?token=abcd", ["hunter2"])
     assert "hunter2" not in value
     assert "secret" not in value
     assert "abcd" not in value

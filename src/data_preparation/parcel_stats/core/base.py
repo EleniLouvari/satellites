@@ -43,9 +43,9 @@ class ParcelStatsBase(
     output_dir:
         Directory for cached monthly NetCDF cubes and the final ML-ready GeoParquet.
     working_epsg:
-        Projected CRS used for spatial batching, parcel metrics and final
-        interpolation. The openEO graph requests its raster grid in this CRS;
-        local processing verifies the actual CRS in the downloaded cube.
+        Projected CRS used for spatial batching, parcel metrics and final output
+        geometry. Acquisition retains the source raster projection; local parcel
+        masking and interpolation use the actual CRS in the downloaded cube.
     parcel_id_field:
         Name of the column containing unique parcel identifiers. If the column
         is absent, stable string identifiers are created from the input index.

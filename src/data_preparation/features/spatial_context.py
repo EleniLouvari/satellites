@@ -265,7 +265,9 @@ def append_soil_feature(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = output_path.with_name(f".{output_path.stem}.tmp{output_path.suffix}")
     try:
-        write_data(result, str(temporary_path))
+        # Use the final name: the temporary stem contains dots rejected by the GeoPackage writer.
+        output_layer = output_path.stem if output_path.suffix == ".gpkg" else None
+        write_data(result, str(temporary_path), layer=output_layer)
         temporary_path.replace(output_path)
     finally:
         if temporary_path.exists():

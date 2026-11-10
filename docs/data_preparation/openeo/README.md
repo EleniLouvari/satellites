@@ -56,12 +56,13 @@ For spatial grouping, see [buffer clusters versus grid partitions and tiles](PAR
 3. Build spatial batches or tiles.
 4. Connect and authenticate to `https://openeo.dataspace.copernicus.eu`.
 5. Load Sentinel collections for the requested date range.
-6. For Sentinel-2, resample reflectance to 10 m, apply the `0.0001` scale factor,
-   mask invalid/cloud SCL classes, and retain all physical bands required by the
-   requested outputs and indices.
+6. For Sentinel-2, resample reflectance to 10 m in its source projection, apply
+   the `0.0001` scale factor, mask invalid/cloud SCL classes, and retain all
+   physical bands required by the requested outputs and indices.
 7. For Sentinel-1, calculate linear-power `sigma0-ellipsoid` backscatter using the
-   `COPERNICUS_30` elevation model and resample to 10 m. No logarithmic/dB
-   conversion is applied.
+   `COPERNICUS_30` elevation model and resample to 10 m in its source projection,
+   or align it to the Sentinel-2 grid when both sensors are selected.
+   No logarithmic/dB conversion is applied.
 8. Aggregate acquisitions into the configured temporal periods, or retain all
    acquisition timestamps when `temporal_reducer="none"`.
 9. Download each raster cube as NetCDF and cache it locally.
@@ -72,8 +73,8 @@ For spatial grouping, see [buffer clusters versus grid partitions and tiles](PAR
     each filled raster pixel. An observation-only copy is calculated separately
     so statistics and provenance distinguish indices that depend on an imputed
     source pixel.
-12. Mask the filled raster by parcel and calculate parcel statistics. With
-    `temporal_reducer="none"`, pool all valid pixel observations across acquisitions
+12. Reproject parcels to the NetCDF CRS, mask the filled raster by parcel and
+    calculate parcel statistics. With `temporal_reducer="none"`, pool all valid pixel observations across acquisitions
     within each configured period, separately for each band/index. Spatial filling
     may use neighboring pixels that fall inside an adjacent parcel.
 13. Add parcel metrics and derived statistics.
@@ -135,9 +136,10 @@ Invalid geometries are repaired where possible. Duplicate parcel IDs raise an
 error.
 
 Choose a projected `working_epsg` appropriate for the parcel location, normally
-the local UTM zone. It is used for metre-based grids, parcel area, tile buffers,
-local interpolation, the requested NetCDF raster grid, and output GeoParquet
-geometry. A geographic CRS such as EPSG:4326 is not accepted as `working_epsg`.
+the local UTM zone. It is used for metre-based planning grids, parcel area, tile
+buffers and output GeoParquet geometry. Acquisition preserves the source raster
+projection; local interpolation and parcel masking use the actual NetCDF CRS.
+A geographic CRS such as EPSG:4326 is not accepted as `working_epsg`.
 
 Select the WGS84 UTM CRS containing the dissolved parcel centroid when the
 working CRS should be chosen automatically:

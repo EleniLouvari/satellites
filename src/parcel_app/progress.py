@@ -11,7 +11,7 @@ from .artifacts import sanitize_text
 
 
 @contextmanager
-def event_logging(job, secrets):
+def event_logging(job, secrets, *, private_paths=()):
     """Redact records before handlers and publish bounded events without blocking jobs."""
     pending = queue.Queue(maxsize=1000)
     stop = threading.Event()
@@ -20,7 +20,7 @@ def event_logging(job, secrets):
 
     def factory(*args, **kwargs):
         record = previous(*args, **kwargs)
-        record.msg = sanitize_text(record.getMessage(), protected)
+        record.msg = sanitize_text(record.getMessage(), protected, private_paths=private_paths)
         record.args = ()
         record.exc_info = record.exc_text = None
         if record.name.startswith("parcel_stats_pipeline") and record.levelno >= logging.INFO:

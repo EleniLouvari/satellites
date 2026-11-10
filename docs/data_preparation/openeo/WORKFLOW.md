@@ -259,7 +259,8 @@ client's cached/interactive OIDC flow. Credentials are not written to job tables
 1. Load `SENTINEL2_L2A` with required physical bands plus SCL, the temporal extent,
    and configured maximum scene cloud cover (70).
 2. Restrict spatial extent using batch polygons or the manager's rectangle.
-3. Resample reflectance bilinearly to 10 m in `working_epsg`, then scale by 0.0001.
+3. Resample reflectance bilinearly to 10 m while retaining the source projection,
+   then scale by 0.0001. Do not request `working_epsg` as the raster projection.
 4. Align SCL to reflectance with nearest-neighbor resampling.
 5. Mask SCL classes 0, 1, 3, 8, 9, 10, and 11. Expand cloud-related classes
    3, 8, 9, 10, and 11 with a 3x3 kernel before masking cloud edges.
@@ -272,8 +273,16 @@ client's cached/interactive OIDC flow. Credentials are not written to job tables
 2. Calculate `sigma0-ellipsoid` backscatter with `COPERNICUS_30` and
    `local_incidence_angle=False`. Values remain linear power.
 3. Apply temporal behavior, then align radar to the S2 grid when S2 is present.
-   For S1-only runs, resample directly to 10 m in `working_epsg`.
+   For S1-only runs, resample directly to 10 m while retaining the source projection.
 4. Merge the two sensor cubes when both are enabled. Indices are computed locally.
+
+Local parcel masking reprojects parcel geometries to the actual NetCDF CRS.
+`working_epsg` controls metric batch/tile planning, parcel geometry metrics and
+final output geometry; it does not control the acquisition raster projection.
+Native-grid acquisition uses a new cache namespace, so rasters, batch statistics
+and completed partitions from the previous forced-CRS strategy are not reused.
+Existing files are not migrated or repaired by this change. Rebuild deployed
+images before starting a fresh run; validate a small sample before a full rerun.
 
 ### Temporal behavior
 

@@ -88,8 +88,9 @@ class OpenEOCubePipeline:
                 bands=[*required_bands, self.SENTINEL2_SCENE_CLASSIFICATION_BAND],
                 max_cloud_cover=self.SENTINEL2_MAX_SCENE_CLOUD_COVER,
             ).filter_spatial(feature_collection)
+            # Preserve the source projection; local parcel masks follow the downloaded NetCDF CRS.
             reflectance = sentinel2.filter_bands(list(required_bands)).resample_spatial(
-                resolution=self.TARGET_RESOLUTION_METRES, projection=f"EPSG:{self.working_epsg}", method="bilinear"
+                resolution=self.TARGET_RESOLUTION_METRES, method="bilinear"
             )
             reflectance = reflectance * self.SENTINEL2_REFLECTANCE_SCALE_FACTOR
             scl = sentinel2.band(self.SENTINEL2_SCENE_CLASSIFICATION_BAND).resample_cube_spatial(reflectance, method="near")
@@ -120,7 +121,7 @@ class OpenEOCubePipeline:
         # Align radar pixels to the optical grid before merging the two sensor cubes.
         if sentinel2_temporal is None:
             return sentinel1_temporal.resample_spatial(
-                resolution=self.TARGET_RESOLUTION_METRES, projection=f"EPSG:{self.working_epsg}", method="bilinear"
+                resolution=self.TARGET_RESOLUTION_METRES, method="bilinear"
             )
         sentinel1_temporal = sentinel1_temporal.resample_cube_spatial(sentinel2_temporal, method="bilinear")
         return sentinel2_temporal.merge_cubes(sentinel1_temporal)
