@@ -80,6 +80,12 @@ def reconcile(lane="all"):
     if lane == "all":
         kinds += ["run", "resume", "bundle", "eda"]
     with db.connection() as conn:
+        # Stop requests and task publication lock jobs before analysis rows.
+        db.all_rows(
+            "SELECT job_id FROM web_jobs WHERE status='running' AND kind=ANY(%s) ORDER BY job_id FOR UPDATE",
+            (kinds,),
+            conn=conn,
+        )
         db.execute(
             """UPDATE eda_runs SET status='interrupted',finished_at=now(),
             error='Error: EDA worker interrupted; create a new analysis with these settings.'
@@ -89,10 +95,11 @@ def reconcile(lane="all"):
             conn=conn,
         )
         db.execute(
-            """UPDATE analysis_runs SET status='interrupted',error='Error: Worker interrupted; resume explicitly.',
-            updated_at=now() WHERE run_id::text IN
-            (SELECT target_id FROM web_jobs WHERE status='running' AND kind IN ('run','resume') AND kind=ANY(%s))
-            AND status IN ('queued','running')""",
+            """UPDATE analysis_runs r SET status='interrupted',error=CASE
+            WHEN j.payload->>'stop_requested'='true' THEN 'Stopped by request. Resume analysis to reuse completed checkpoints.'
+            ELSE 'Error: Worker interrupted; resume explicitly.' END,updated_at=now()
+            FROM web_jobs j WHERE r.run_id::text=j.target_id AND j.status='running'
+            AND j.kind IN ('run','resume') AND j.kind=ANY(%s) AND r.status IN ('queued','running')""",
             (kinds,),
             conn=conn,
         )
@@ -117,10 +124,27 @@ def reconcile(lane="all"):
         )
 
 
-def child_main(job, root, lane):
+def stop_requested(job):
+    """Read a stop request only for the exact active parcel-analysis claim."""
+    from . import db
+
+    if job["kind"] not in {"run", "resume"}:
+        return False
+    row = db.one(
+        "SELECT payload FROM web_jobs WHERE job_id=%s AND claim_token=%s AND status='running'",
+        (str(job["job_id"]), str(job["claim_token"])),
+    )
+    return bool(row and row["payload"].get("stop_requested"))
+
+
+def child_main(job, root, lane, ready=None, group_name=None):
     """Execute in fresh memory while retaining the filesystem lock until process exit."""
     from .tasks import execute_task
+    from .process_control import isolate_task
 
+    isolate_task(group_name)
+    if ready is not None:
+        ready.set()
     with process_lock(root, lane):
         execute_task(job)
 
@@ -129,6 +153,7 @@ def run_worker(once=False, lane="all"):
     """Hold a PostgreSQL singleton and maintain heartbeats while a spawned child works."""
     from . import db
     from .settings import get_settings
+    from .process_control import task_group
 
     root = get_settings().storage_root
     # This connection must remain open and must never be shared with a child.
@@ -153,29 +178,43 @@ def run_worker(once=False, lane="all"):
                     return
                 time.sleep(2)
                 continue
-            child = multiprocessing.get_context("spawn").Process(target=child_main, args=(job, str(root), lane))
-            child.start()
-            try:
-                while child.is_alive():
-                    child.join(timeout=5)
-                    db.one("SELECT 1 AS alive", conn=singleton)
-                    singleton.commit()
-                    changed = db.execute(
-                        """UPDATE web_jobs SET heartbeat_at=now(),updated_at=now()
-                        WHERE job_id=%s AND claim_token=%s AND status='running'""",
-                        (str(job["job_id"]), str(job["claim_token"])),
-                    )
-                    if not changed and child.is_alive():
-                        child.join(timeout=1)
+            context = multiprocessing.get_context("spawn")
+            ready = context.Event()
+            with task_group() as group:
+                child = context.Process(
+                    target=child_main, args=(job, str(root), lane, ready, group.name if group else None),
+                )
+                child.start()
+                supervise_task(child, ready, group, job, singleton)
                 # Native crashes cannot run the child's exception handler.
                 with process_lock(root, lane):
                     reconcile(lane)
-            except BaseException:
-                # Never reclaim a still-active child. Its lock prevents the next
-                # parent from reconciling until it (and its runner) have exited.
-                raise
             if once:
                 return
+
+
+def supervise_task(child, ready, group, job, singleton):
+    """Finish the entire task group before allowing reconciliation or Resume."""
+    from . import db
+    from .process_control import stop_task
+
+    while child.is_alive():
+        child.join(timeout=5)
+        db.one("SELECT 1 AS alive", conn=singleton)
+        singleton.commit()
+        changed = db.execute(
+            """UPDATE web_jobs SET heartbeat_at=now(),updated_at=now()
+            WHERE job_id=%s AND claim_token=%s AND status='running'""",
+            (str(job["job_id"]), str(job["claim_token"])),
+        )
+        if not changed and child.is_alive():
+            child.join(timeout=1)
+        if ready.is_set() and stop_requested(job):
+            break
+    # Also clean up after early leader exit, even if Stop arrives after the last
+    # poll. Descendants can otherwise keep writing after reconciliation/Resume.
+    if ready.is_set():
+        stop_task(child, group)
 
 
 def main():

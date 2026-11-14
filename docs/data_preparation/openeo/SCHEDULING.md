@@ -289,6 +289,53 @@ an ownership record. See [database account setup and restart ordering](CREDENTIA
 
 ## Calling the scheduler
 
+### Failure-aware remote resources
+
+`OpenEOJobManagerZonalStats` supports `openeo_job_options` in either scheduling
+mode. For example, configure a new run with:
+
+```python
+config.update(
+    openeo_job_options={"executor-memory": "2G", "max-executors": 20},
+    openeo_auto_memory_retry=True,
+    openeo_max_executor_memory="8G",
+)
+```
+
+Only confirmed JVM memory evidence (such as `exit code 52 (JVM OOM)` or
+`java.lang.OutOfMemoryError`) increases the executor heap: normally 2G, then 4G,
+then 8G. Other options remain unchanged. A missing shuffle location alone does
+not establish OOM. Unknown/transient failures use the existing bounded retry
+budget with unchanged resources. Explicit invalid process graph/input codes are
+terminal; OOM at the cap is terminal even if ordinary retries remain. Use smaller
+spatial batches in a new run when the cap is insufficient. Backend resource limits
+still apply, and larger allocations may consume more credits.
+
+Each `tile_jobs.parquet` row records effective `job_options` as JSON,
+`job_options_history` keyed by failed job ID, and `failure_kind`. Options are
+saved before a replacement submission. Failed job IDs and cumulative retry counts
+are never reset. Jobs whose start request failed reuse their existing ID. Failed
+execution jobs get a replacement ID; the old ID remains in history. Completed
+and running jobs retain their identities and accounts. These resource controls
+do not change raster/statistics cache signatures.
+
+The failure classifier reads only the current attempt's saved
+`job_manager/job_<id>/job_<id>_errors.json`. Missing/corrupt logs authorize no memory
+increase. Older rows without options are initialized with the run's configured
+options; older runs without that configuration use the explicit 2G baseline.
+
+Ordinary Resume honors exhausted retry limits. To recover an already-exhausted
+OOM batch, explicitly select **Allow higher-memory retries for exhausted memory
+failures** when resuming in the web app, use CLI `--retry-exhausted-memory`, or call
+`resume_parcel_stats(..., retry_exhausted_memory=True)`. This grants only strictly
+higher memory tiers up to the saved policy's cap; repeating Resume cannot reset
+the cap or counters. It does not edit `config.json` or bypass input/account/hash
+verification. If automatic memory retry was disabled in the original settings,
+this switch does not override it. Direct manager callers may pass the same
+`retry_exhausted_memory=True` runtime option explicitly.
+
+### Scheduler invocation
+
 Pass `scheduling` as a keyword argument to `run_parallel_extractions`, separately
 from the extraction configuration:
 

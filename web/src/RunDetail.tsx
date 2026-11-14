@@ -12,6 +12,7 @@ import {
 import { Button, Empty, Heading, Notice, Status } from "./ui";
 import DeleteAction from "./DeleteAction";
 import RenameAction from "./RenameAction";
+import StopAction from "./StopAction";
 import Progress from "./Progress";
 type Bundle = { status: string; artifact_id?: string; error?: string };
 export default function RunDetail({
@@ -40,6 +41,7 @@ export default function RunDetail({
     [notice, setNotice] = useState("");
   const [bundle, setBundle] = useState<Bundle>({ status: "unrequested" });
   const [downloadWhenReady, setDownloadWhenReady] = useState(false);
+  const [retryMemory, setRetryMemory] = useState(false);
   useEffect(() => {
     let live = true;
     let after = 0;
@@ -136,7 +138,8 @@ export default function RunDetail({
     setBusy(true);
     setError("");
     try {
-      const r = await api<Run>(`/runs/${run.run_id}/${name}`, "POST");
+      const r = await api<Run>(`/runs/${run.run_id}/${name}`, "POST",
+        name === "resume" ? { retry_exhausted_memory: retryMemory } : undefined);
       if (name === "duplicate") onEdit(r);
       else setRun(r);
     } catch (e) {
@@ -164,6 +167,7 @@ export default function RunDetail({
             EDA
           </Button>
           {zipControl}
+          <StopAction run={run} onRequested={setRun} />
           <DeleteAction
             kind="run"
             id={run.run_id}
@@ -184,6 +188,13 @@ export default function RunDetail({
           )}
           {["failed", "interrupted"].includes(run.status) &&
             run.validated_revision !== null && (
+              <div>
+              <label className="fieldhelp">
+                <input type="checkbox" checked={retryMemory} disabled={busy}
+                  onChange={(event) => setRetryMemory(event.target.checked)} />
+                Allow higher-memory retries for exhausted memory failures
+              </label>
+              <small className="fieldhelp">Retries stay within the configured memory cap and may use more credits.</small>
               <Button
                 disabled={busy}
                 primary
@@ -191,6 +202,7 @@ export default function RunDetail({
               >
                 Resume analysis
               </Button>
+              </div>
             )}
           {run.status === "queued" && (
             <Button disabled={busy} onClick={() => void action("cancel")}>
@@ -201,6 +213,11 @@ export default function RunDetail({
       </Heading>
       <Notice message={error} />
       <Notice message={run.error ?? ""} />
+      {run.stop_requested && run.status === "running" && (
+        <p role="status" className="note">
+          Stopping local processing… Completed checkpoints will be kept. Resume will be available after the worker exits.
+        </p>
+      )}
       {notice && (
         <div role="status" className="note">
           {notice}

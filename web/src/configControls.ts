@@ -28,7 +28,9 @@ export function activeArrayErrors(fields: Field[], drafts: Record<string, string
     try {
       const text = drafts[field.name].trim();
       const parsed = text ? JSON.parse(text) : null;
-      return parsed !== null && !Array.isArray(parsed);
+      return parsed !== null && (field.type === "object"
+        ? typeof parsed !== "object" || Array.isArray(parsed)
+        : !Array.isArray(parsed));
     } catch {
       return true;
     }

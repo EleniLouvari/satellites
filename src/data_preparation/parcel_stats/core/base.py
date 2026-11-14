@@ -144,6 +144,12 @@ class ParcelStatsBase(
         Maximum number of openEO jobs run concurrently and worker processes used
         for local batch statistics. A value of 1 keeps sequential behaviour.
         Local concurrency also applies when completed NetCDF cleanup is enabled.
+    temporal_fill_block_rows:
+        Positive maximum spatial row count per temporal-fill block, capped at
+        raster height and rounded down to whole chunk rows where possible.
+        ``None`` selects chunk-aligned blocks with a 64 MiB payload target.
+        Column blocking limits wide reads. Working copies and temporary chunk
+        caches use additional memory per worker; this is not a total RAM limit.
     openeo_username, openeo_password:
         Optional CDSE credentials used with the OIDC resource-owner-password
         flow. Both values must be supplied together. When omitted, the normal
@@ -265,13 +271,14 @@ class ParcelStatsBase(
         temporal_fill_mode: str = "past_only",
         minimum_parcel_pixels: int = 3,
         minimum_observed_fraction_for_fill: float = 0.20,
-        spatial_fill_window_sizes: tuple[int, ...] | list[int] = (3, 5),
+        spatial_fill_window_sizes: tuple[int, ...] | list[int] = (3, 5, 7),
         keep_cleaned_checkpoint: bool = False,
         openeo_username: str | None = None,
         openeo_password: str | None = None,
-        temporal_fill_window_sizes: tuple[int, ...] | list[int] | None = None,
+        temporal_fill_window_sizes: tuple[int, ...] | list[int] | None = (3,),
         remove_nc_after_completion: bool = False,
         resume_completed_partitions: bool = False,
+        temporal_fill_block_rows: int | None = 512,
     ) -> None:
         """Validate inputs and prepare a reusable extraction instance."""
         self.start_date, self.end_date = self._validate_dates(start_date, end_date)
@@ -297,6 +304,7 @@ class ParcelStatsBase(
             raise ValueError("Error: parcel_id_field must be a non-empty, non-geometry column name.")
         self.PARCEL_ID_FIELD = parcel_id_field
         self.batch_workers = self._validate_batch_workers(batch_workers)
+        self.temporal_fill_block_rows = self._validate_temporal_fill_block_rows(temporal_fill_block_rows)
         self.spatial_fill_window_sizes = self._validate_spatial_fill_windows(spatial_fill_window_sizes)
         self.temporal_fill_window_sizes = self._validate_temporal_fill_windows(temporal_fill_window_sizes)
         if not isinstance(keep_cleaned_checkpoint, bool):

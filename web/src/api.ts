@@ -45,6 +45,7 @@ export type Run = {
   account_ids: number[];
   status: string;
   revision: number;
+  stop_requested?: boolean;
   validated_revision: number | null;
   summary: Record<string, unknown>;
   config: Record<string, unknown>;

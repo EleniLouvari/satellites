@@ -1,6 +1,7 @@
 """Bounded-memory NetCDF cleaning and index checkpoints for openEO cubes."""
 
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
+from math import ceil, prod
 from threading import RLock
 
 import numpy as np
@@ -13,7 +14,8 @@ from shared.io import write_data
 # remote jobs continue independently; netCDF-C also requires serialized access.
 LOCAL_RASTER_LOCK = RLock()
 # This targets one temporal strip payload, not total RAM including working copies and masks.
-TEMPORAL_BLOCK_BYTES = 8 * 1024**2
+TEMPORAL_BLOCK_BYTES = 64 * 1024**2
+TEMPORAL_CACHE_BYTES = 64 * 1024**2
 
 
 class StreamedRasterProcessing:
@@ -254,29 +256,75 @@ class StreamedRasterProcessing:
             self.parcel_logger.info("Cleaned acquisition %s/%s for batch %s.", time_index + 1, len(periods), batch_number)
         return rows
 
+    def _temporal_block_shape(self, stored):
+        """Choose chunk-aligned spatial blocks with a bounded automatic payload."""
+        time_count, _, height, width = stored.shape
+        chunk_rows, chunk_columns = stored.chunking()[-2:]
+        block_rows = self.temporal_fill_block_rows
+        if block_rows is None:
+            block_rows = TEMPORAL_BLOCK_BYTES // max(1, time_count * min(width, chunk_columns) * 4)
+        block_rows = max(1, min(height, block_rows))
+        if block_rows >= chunk_rows:
+            block_rows = (block_rows // chunk_rows) * chunk_rows
+        # Even tiny row strips touch complete disk chunks; limit column groups
+        # using that footprint so repeated strips can reuse the same cache.
+        columns = TEMPORAL_BLOCK_BYTES // max(1, time_count * max(block_rows, chunk_rows) * 4)
+        block_columns = min(width, max(chunk_columns, (columns // chunk_columns) * chunk_columns))
+        return block_rows, block_columns
+
+    @staticmethod
+    def _temporal_spatial_windows(stored, block_rows, block_columns):
+        """Finish sub-chunk strips before advancing to the next spatial chunk group."""
+        height, width = stored.shape[-2:]
+        row_span = max(block_rows, stored.chunking()[-2])
+        for row_start in range(0, height, row_span):
+            row_end = min(height, row_start + row_span)
+            for column_start in range(0, width, block_columns):
+                columns = slice(column_start, min(width, column_start + block_columns))
+                for start in range(row_start, row_end, block_rows):
+                    yield slice(start, min(row_end, start + block_rows)), columns
+
+    @contextmanager
+    def _temporal_chunk_caches(self, variables, block_rows, block_columns):
+        """Temporarily retain each block's chunks, with a per-variable cache ceiling."""
+        with ExitStack() as restore:
+            for variable in variables:
+                chunks = variable.chunking()
+                chunk_count = ceil(variable.shape[0] / chunks[0]) * ceil(block_rows / chunks[2]) * ceil(block_columns / chunks[3])
+                footprint = chunk_count * prod(chunks) * variable.dtype.itemsize
+                previous = variable.get_var_chunk_cache()
+                restore.callback(variable.set_var_chunk_cache, *previous)
+                # Prime hash-table size avoids collisions among resident chunks.
+                # LRU keeps chunks reusable between the read and subsequent write.
+                variable.set_var_chunk_cache(size=min(TEMPORAL_CACHE_BYTES, max(1024**2, footprint)), nelems=10007, preemption=0)
+            yield
+
     def _stream_temporal_fill(self, checkpoint, allowed, null_counts):
-        """Fill spatial strips using every date, with coverage guards computed globally."""
+        """Fill chunk-aligned blocks across all dates, retaining global coverage guards."""
         stored = checkpoint.variables["cleaned"]
         temporal_mask = checkpoint.variables["temporal_filled_mask"]
-        time_count, band_count, height, width = stored.shape
-        block_rows = max(1, min(height, TEMPORAL_BLOCK_BYTES // max(1, time_count * width * 4)))
-        for band_index in range(band_count):
-            self.parcel_logger.info("Temporal filling band %s/%s in strips of %s rows.", band_index + 1, band_count, block_rows)
-            for start in range(0, height, block_rows):
-                window = slice(start, min(height, start + block_rows))
-                observed = stored[:, band_index, window, :]
-                source = observed.copy()
-                # Low-coverage dates cannot donate temporal values; their original observations remain in observed.
-                source[~allowed[:, band_index]] = np.nan
-                candidate = self._fill_temporal_neighbors(source)
-                filled = self._merge_filled_values(
-                    observed, candidate, np.ones(observed.shape[-2:], dtype=bool), allowed[:, band_index]
+        block_rows, block_columns = self._temporal_block_shape(stored)
+        band_count = stored.shape[1]
+        with self._temporal_chunk_caches((stored, temporal_mask), block_rows, block_columns):
+            for band_index in range(band_count):
+                self.parcel_logger.info(
+                    "Temporal filling band %s/%s in blocks of up to %s rows x %s columns.",
+                    band_index + 1, band_count, block_rows, block_columns,
                 )
-                added = ~np.isfinite(observed) & np.isfinite(filled)
-                null_counts[:, band_index] -= added.sum(axis=(1, 2))
-                stored[:, band_index, window, :] = filled
-                temporal_mask[:, band_index, window, :] = added
-                del observed, source, candidate, filled, added
+                for rows, columns in self._temporal_spatial_windows(stored, block_rows, block_columns):
+                    observed = stored[:, band_index, rows, columns]
+                    source = observed.copy()
+                    # Low-coverage dates cannot donate values; retain their original observations.
+                    source[~allowed[:, band_index]] = np.nan
+                    candidate = self._fill_temporal_neighbors(source)
+                    filled = self._merge_filled_values(
+                        observed, candidate, np.ones(observed.shape[-2:], dtype=bool), allowed[:, band_index]
+                    )
+                    added = ~np.isfinite(observed) & np.isfinite(filled)
+                    null_counts[:, band_index] -= added.sum(axis=(1, 2))
+                    stored[:, band_index, rows, columns] = filled
+                    temporal_mask[:, band_index, rows, columns] = added
+                    del observed, source, candidate, filled, added
 
     def _stream_output_indices(self, source, target, periods, bands, variables, spatial_shape):
         """Write one acquisition/output at a time, including index fill provenance."""

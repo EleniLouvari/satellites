@@ -42,6 +42,7 @@ export default function ConfigForm({
       : f.default;
 
     const array = f.type === "array";
+    const object = f.type === "object";
     const disabledReason = fieldDisabledReason(f, effective);
 
     // Re-enabled controls must submit the defaults displayed in the form too.
@@ -97,14 +98,14 @@ export default function ConfigForm({
           <option value="false">Disabled</option>
         </select>
       );
-    } else if (array) {
+    } else if (array || object) {
       control = (
         <textarea
           value={
             arrayDrafts[f.name] ??
             (current == null ? "" : JSON.stringify(current))
           }
-          placeholder="e.g. [3, 5, 7]"
+          placeholder={object ? 'e.g. {"executor-memory":"2G"}' : "e.g. [3, 5, 7]"}
           rows={2}
           onChange={(e) => {
             setArrayDrafts({ ...arrayDrafts, [f.name]: e.target.value });
@@ -112,7 +113,9 @@ export default function ConfigForm({
               const parsed = e.target.value.trim()
                 ? JSON.parse(e.target.value)
                 : null;
-              if (parsed !== null && !Array.isArray(parsed)) throw new Error();
+              if (parsed !== null && (object
+                ? typeof parsed !== "object" || Array.isArray(parsed)
+                : !Array.isArray(parsed))) throw new Error();
               set(parsed);
             } catch {
               // Keep unfinished text locally until it is valid JSON.
@@ -169,7 +172,7 @@ export default function ConfigForm({
       <Notice
         message={
           arrayErrorNames
-            ? `Error: Enter JSON arrays for ${arrayErrorNames}.`
+            ? `Error: Enter valid JSON of the requested type for ${arrayErrorNames}.`
             : ""
         }
       />

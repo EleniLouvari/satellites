@@ -19,7 +19,10 @@ router = APIRouter()
 # Existing runs already record their true first start, so duration needs no
 # fabricated creation-time estimate or migration of historic analyses.
 RUN_TIMING = """(SELECT min(e.created_at) FROM run_events e WHERE e.run_id=analysis_runs.run_id
-    AND e.stage='processing' AND e.message='Analysis started.') AS started_at"""
+    AND e.stage='processing' AND e.message='Analysis started.') AS started_at,
+    EXISTS(SELECT 1 FROM web_jobs j WHERE j.target_id=analysis_runs.run_id::text
+    AND j.kind IN ('run','resume') AND j.status='running'
+    AND j.payload->>'stop_requested'='true') AS stop_requested"""
 
 
 class RunDraft(BaseModel):
@@ -41,6 +44,13 @@ class Submission(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     revision: int = Field(ge=1)
+
+
+class ResumeOptions(BaseModel):
+    """Permit bounded resource recovery without editing the submitted science configuration."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    retry_exhausted_memory: bool = False
 
 
 class RunName(BaseModel):
@@ -284,7 +294,7 @@ def submit_run(run_id: UUID, body: Submission, user: dict = Depends(current_user
 
 
 @router.post("/runs/{run_id}/resume", status_code=202)
-def resume_run(run_id: UUID, user: dict = Depends(current_user)):
+def resume_run(run_id: UUID, user: dict = Depends(current_user), options: ResumeOptions | None = None):
     """Resume the original file/configuration/account snapshot without editing it."""
     with db.connection() as conn:
         run = owned_run(run_id, user["app_user_id"], conn=conn, lock=True)
@@ -297,7 +307,8 @@ def resume_run(run_id: UUID, user: dict = Depends(current_user)):
             raise HTTPException(409, "Error: This analysis has no submitted work to resume.")
         selected_accounts([a["eo_user_id"] for a in accounts], user["app_user_id"], conn=conn)
         reserve_accounts(run, accounts, conn=conn)
-        enqueue("resume", run_id, user["app_user_id"], conn=conn)
+        payload = {"retry_exhausted_memory": True} if options and options.retry_exhausted_memory else {}
+        enqueue("resume", run_id, user["app_user_id"], payload=payload, conn=conn)
         return public_run(
             db.one(
                 "UPDATE analysis_runs SET status='queued',error=NULL,updated_at=now() WHERE run_id=%s RETURNING *",
@@ -305,6 +316,34 @@ def resume_run(run_id: UUID, user: dict = Depends(current_user)):
                 conn=conn,
             )
         )
+
+
+@router.post("/runs/{run_id}/stop", status_code=202)
+def stop_run(run_id: UUID, user: dict = Depends(current_user)):
+    """Request local interruption without releasing the claim or deleting checkpoints."""
+    with db.connection() as conn:
+        owned_run(run_id, user["app_user_id"], conn=conn)
+        # Match task publication's lock order: queue claim, then analysis row.
+        job = db.one(
+            "SELECT * FROM web_jobs WHERE target_id=%s AND app_user_id=%s "
+            "AND kind IN ('run','resume') AND status='running' FOR UPDATE",
+            (str(run_id), user["app_user_id"]), conn=conn,
+        )
+        run = owned_run(run_id, user["app_user_id"], conn=conn, lock=True)
+        if run["status"] == "interrupted":
+            return public_run(run)
+        if run["status"] != "running" or not job:
+            raise HTTPException(409, "Error: Only a running analysis can be stopped.")
+        if not job["payload"].get("stop_requested"):
+            db.execute(
+                "UPDATE web_jobs SET payload=payload || '{\"stop_requested\":true}'::jsonb,updated_at=now() WHERE job_id=%s",
+                (str(job["job_id"]),), conn=conn,
+            )
+            db.execute(
+                "INSERT INTO run_events(run_id,stage,message) VALUES(%s,'processing',%s)",
+                (str(run_id), "Stop requested. Waiting for local processing to exit; completed checkpoints will be kept."), conn=conn,
+            )
+        return public_run({**run, "stop_requested": True})
 
 
 @router.post("/runs/{run_id}/cancel")

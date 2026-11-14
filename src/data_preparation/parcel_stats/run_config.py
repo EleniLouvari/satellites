@@ -27,6 +27,7 @@ _RESERVED = {
     "openeo_password",
     "run_identifier",
     "resume_completed_partitions",
+    "retry_exhausted_memory",
 }
 
 
@@ -102,10 +103,18 @@ def _processing(value) -> dict:
         default = parameters[name].default
         if isinstance(default, bool) and not isinstance(value, bool):
             raise ValueError(f"Error: {name} must be a boolean.")
-        if type(default) is int and type(value) is not int:
+        # This optional integer accepts explicit null for automatic sizing even
+        # when the configured constructor default is a concrete row count.
+        if type(default) is int and name != "temporal_fill_block_rows" and type(value) is not int:
             raise ValueError(f"Error: {name} must be an integer.")
     if options.get("openeo_parallel_jobs", 2) not in (1, 2):
         raise ValueError("Error: openeo_parallel_jobs must be 1 or 2 per account.")
+    ParcelStatsBase._validate_temporal_fill_block_rows(options.get("temporal_fill_block_rows"))
+    from data_preparation.sources.openeo.job_options import memory_bytes, validate_job_options
+
+    remote_options = validate_job_options(options.get("openeo_job_options"))
+    if memory_bytes(options.get("openeo_max_executor_memory", "8G")) < memory_bytes(remote_options["executor-memory"]):
+        raise ValueError("Error: openeo_max_executor_memory must be at least the initial executor memory.")
     # Reject NaN/Infinity and non-JSON objects before persisting any configuration.
     json.dumps(options, allow_nan=False)
     return options

@@ -151,7 +151,7 @@ def _publish(prepared: PreparedRun, options: dict) -> dict:
     return manifest
 
 
-def _execute(prepared: PreparedRun, accounts: list[tuple[str, str]], state: dict) -> dict:
+def _execute(prepared: PreparedRun, accounts: list[tuple[str, str]], state: dict, *, retry_exhausted_memory=False) -> dict:
     """Persist status around execution without putting exception payloads or secrets on disk."""
     output = Path(prepared.config["output_dir"])
     state.update(status="running", updated_at=datetime.now(timezone.utc).isoformat())
@@ -160,6 +160,8 @@ def _execute(prepared: PreparedRun, accounts: list[tuple[str, str]], state: dict
         _write_json(output / "artifacts.json", {"status": "running"})
     try:
         options = _extraction_config(prepared)
+        if retry_exhausted_memory:
+            options["retry_exhausted_memory"] = True
         with engine_workspace(output):
             multiuser.run_parallel_extractions(prepared.parts, accounts, options, scheduling=prepared.config["scheduling"])
             manifest = _publish(prepared, options)
@@ -202,8 +204,13 @@ def run_parcel_stats(
         return _execute(prepared, accounts, state)
 
 
-def resume_parcel_stats(run_dir: str | Path, *, accounts: list[tuple[str, str]], app_user_id: int | None = None) -> dict:
+def resume_parcel_stats(
+    run_dir: str | Path, *, accounts: list[tuple[str, str]], app_user_id: int | None = None,
+    retry_exhausted_memory: bool = False,
+) -> dict:
     """Resume a saved run with unchanged input/configuration and the same account identities."""
+    if type(retry_exhausted_memory) is not bool:
+        raise TypeError("Error: retry_exhausted_memory must be a boolean.")
     output = Path(run_dir).resolve()
     if not (output / "run.json").is_file() or not (output / "config.json").is_file():
         raise ValueError("Error: run_dir must contain run.json and config.json from a CLI run.")
@@ -222,4 +229,4 @@ def resume_parcel_stats(run_dir: str | Path, *, accounts: list[tuple[str, str]],
         prepared = prepare_run(config)
         if state.get("input_sha256") != prepared.input_sha256:
             raise ValueError("Error: The input file changed; create a new run.")
-        return _execute(prepared, accounts, state)
+        return _execute(prepared, accounts, state, retry_exhausted_memory=retry_exhausted_memory)

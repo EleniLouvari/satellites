@@ -47,6 +47,15 @@ test("invalid arrays block saving only while their controls are active", () => {
   assert.deepEqual(activeArrayErrors(fields, {iqr_quantiles: "[0.25, 0.75]"}, {remove_outliers: true}), []);
 });
 
+test("remote resource settings require a JSON object while arrays retain their contract", () => {
+  const fields = [{name: "openeo_job_options", type: "object"}];
+  assert.deepEqual(activeArrayErrors(fields, {openeo_job_options: '{"executor-memory":"4G"}'}, {}), []);
+  assert.deepEqual(activeArrayErrors(fields, {openeo_job_options: "[]"}, {}), ["openeo_job_options"]);
+  assert.deepEqual(activeArrayErrors(fields, {openeo_job_options: "42"}, {}), ["openeo_job_options"]);
+  assert.deepEqual(activeArrayErrors(fields, {openeo_job_options: "{"}, {}), ["openeo_job_options"]);
+  assert.deepEqual(activeArrayErrors(fields, {openeo_job_options: ""}, {}), []);
+});
+
 test("import retains supported fields but excludes paths, ownership and secrets", () => {
   const result = sanitizeConfig({start_date: "2024-01-01", batch_workers: 2,
     temporal_fill_window_sizes: [3, 5], output_dir: "/etc", app_user_id: 2,

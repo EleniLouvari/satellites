@@ -51,6 +51,24 @@ def test_unknown_processing_and_excess_workers_rejected():
         check_processing({"start_date": "2024-01-01", "end_date": "2024-01-31", "batch_workers": 99999})
 
 
+def test_temporal_fill_block_rows_web_configuration():
+    """Expose optional numeric tuning and preserve it only when filling is enabled."""
+    from parcel_app.config import check_processing, configuration
+
+    fields = {field["name"]: field for field in configuration(user={})["fields"]}
+    field = fields["temporal_fill_block_rows"]
+    assert field["type"] == "number"
+    assert field["nullable"] is True
+    assert field["group"] == "filling"
+    options = {"start_date": "2024-01-01", "end_date": "2024-01-31", "fill_nulls": True, "temporal_fill_block_rows": 256}
+    assert check_processing(options)["temporal_fill_block_rows"] == 256
+    assert check_processing({**options, "temporal_fill_block_rows": None})["temporal_fill_block_rows"] is None
+    assert "temporal_fill_block_rows" not in check_processing({**options, "fill_nulls": False})
+    for value in (0, -1, True, 1.5, "256"):
+        with pytest.raises((TypeError, ValueError), match="temporal_fill_block_rows"):
+            check_processing({**options, "temporal_fill_block_rows": value})
+
+
 def test_public_config_hides_paths():
     """Only portable, non-secret configuration is returned to browsers."""
     from parcel_app.runs import public_run
@@ -275,7 +293,8 @@ def test_full_pipeline_queue_download_and_resume(clients, tmp_path, monkeypatch)
     assert owner.get(f"/api/runs/{run_id}").json()["status"] == "ready"
     assert owner.post(f"/api/runs/{run_id}/submit", json={"revision": 1}).status_code == 202
 
-    def synthetic_download(shared, pinned, users, jobs_per_user):
+    def synthetic_download(shared, pinned, users, jobs_per_user, *, batch_workers):
+        assert batch_workers == 1
         while not shared.empty():
             task = shared.get_nowait()
             cube = xr.Dataset(

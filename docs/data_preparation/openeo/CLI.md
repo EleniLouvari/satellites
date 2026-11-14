@@ -32,6 +32,18 @@ satellites parcel-stats run --config C:/work/config.json --app-user-id 42
 satellites parcel-stats resume --run-dir C:/work/run --app-user-id 42
 ```
 
+For a run with confirmed JVM out-of-memory failures whose retries are exhausted:
+
+```powershell
+satellites parcel-stats resume --run-dir C:/work/run --app-user-id 42 --retry-exhausted-memory
+```
+
+This explicitly permits higher executor-memory tiers up to the saved cap, without
+resetting retry counts or changing the saved science configuration. New runs can
+set `processing.openeo_job_options`, `openeo_auto_memory_retry` and
+`openeo_max_executor_memory`. The recovery switch itself is a resume argument,
+not an accepted `processing` field. See [remote retry policy](SCHEDULING.md#failure-aware-remote-resources).
+
 The equivalent module invocation is `python -m data_preparation.cli parcel-stats ...`.
 `validate` never connects to PostgreSQL or openEO. It reads the parcel input and
 plans all tiles using temporary files; it does not create the requested output
@@ -81,6 +93,10 @@ column upstream when reproducing a clustered notebook workflow.
   statistics use the [existing parameter guide](README.md#common-constructor-parameters).
 - All IQR, filling, interpolation, quality-threshold and checkpoint-retention
   options remain available. JSON arrays replace Python tuples.
+- `temporal_fill_block_rows` accepts a positive integer such as `256` for larger
+  temporal-fill reads, or `null` (default) for automatic sizing. Larger values
+  increase memory use per worker without changing numerical results; see the
+  [NetCDF memory guidance](../NETCDF_PROCESSING.md#5-why-does-processing-take-time-or-use-several-large-files).
 - Tile size, buffer, fitted extents, local workers, remote slots, polling and
   retry controls use the [manager options](README.md#job-manager-tile-workflow).
   Remote concurrency is limited to 1 or 2 jobs per account by this multiuser API.

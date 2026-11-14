@@ -57,6 +57,17 @@ class ZonalStatsConfiguration:
             raise ValueError("Error: batch_workers must be at least 1.")
         return workers
 
+    @staticmethod
+    def _validate_temporal_fill_block_rows(block_rows: int | None) -> int | None:
+        """Accept automatic strip sizing or an explicit positive integer row count."""
+        if block_rows is None:
+            return None
+        if type(block_rows) is not int:
+            raise TypeError("Error: temporal_fill_block_rows must be a positive integer or None.")
+        if block_rows < 1:
+            raise ValueError("Error: temporal_fill_block_rows must be at least 1.")
+        return block_rows
+
     def _validate_spatial_fill_windows(self, window_sizes) -> tuple[int, ...]:
         """Validate an ordered prefix of the supported spatial mean windows."""
         if not isinstance(window_sizes, (tuple, list)):

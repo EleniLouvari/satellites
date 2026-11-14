@@ -324,6 +324,7 @@ rerunning to load the new implementation and release arrays held by the old run.
 | `fill_nulls` | `False` | Enable temporal, sequential spatial-neighbor, and final interpolation filling |
 | `spatial_fill_window_sizes` | `(3, 5)` | Ordered spatial-mean passes: `(3,)`, `(3, 5)`, `(3, 5, 7)`, or `(3, 5, 7, 9)` |
 | `temporal_fill_window_sizes` | `None` | Increasing odd time-step widths. `(3,)` searches the immediately previous/next step at the same pixel; `None` keeps unlimited search. Direction is controlled by `temporal_fill_mode`. |
+| `temporal_fill_block_rows` | `None` | Positive maximum spatial row count per temporal-fill block, e.g. `256`, aligned down to chunk rows where possible. `None` selects chunk-aligned spatial blocks with a 64 MiB payload target. Larger reads can use more RAM per worker; results and cache signatures are unchanged. See [NetCDF memory guidance](../NETCDF_PROCESSING.md#5-why-does-processing-take-time-or-use-several-large-files). |
 | `keep_cleaned_checkpoint` | `False` | Retain the intermediate cleaned physical-band NetCDF after the final NetCDF commits |
 | `temporal_fill_mode` | `"past_only"` | `past_only` carries the nearest earlier value; `bidirectional` uses closest earlier/later values |
 | `minimum_parcel_pixels` | `3` | Threshold for the output quality flag; small parcels are retained |
@@ -435,6 +436,10 @@ result = extractor.run()
 | `job_poll_seconds` | `30` | Positive number of seconds between status polls |
 | `max_job_retries` | `3` | Bounded retries after terminal `error` or a failed start request; persisted across restarts |
 | `job_retry_delay_seconds` | `60` | Cooldown before retry waves for transient backend/API failures |
+| `openeo_job_options` | `None` | Backend resource JSON; normalized to a 2G executor heap, with other omitted options using backend defaults |
+| `openeo_auto_memory_retry` | `True` | Increase only the executor heap after confirmed JVM OOM, within the retry budget |
+| `openeo_max_executor_memory` | `"8G"` | Ceiling for automatic heap increases; must be at least the initial heap |
+| `retry_exhausted_memory` | `False` | Explicit runtime recovery of exhausted JVM OOM batches at strictly higher memory tiers; never resets counters |
 | `run_identifier` | generated timestamp | Readable label, at most 80 characters, included in openEO job titles |
 
 ### Fitting cubes to cluster bounds

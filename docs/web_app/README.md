@@ -112,6 +112,11 @@ original app_user_id and are available when that user signs in.
    `temporal_reducer=none`. These web defaults do not overwrite existing saved
    selections or change the CLI constructor defaults. Reporting intervals remain
    editable with reducer `none` because they still define the output periods.
+   **Temporal fill block rows** in Gap filling accepts a positive maximum row count,
+   such as `256`, aligned down to storage chunks where possible. Wide rasters also
+   use column blocks. Larger values can use more RAM per local worker; leave blank
+   for automatic chunk-aligned sizing with a 64 MiB payload target. This affects
+   execution rather than calculated results and does not retune running workers.
    Bands, indices and statistics use supported choices from the Python classes.
    Scheduling is available separately. Import/export processing JSON is supported.
 5. Save a draft and validate. Validation runs separately from HTTP requests.
@@ -260,8 +265,50 @@ locks prevent duplicate lane workers and protect orphan child processes.
 Closing the browser has no effect on running jobs. Interrupted/failed submitted
 runs retain account reservations because their remote jobs may still exist. Resume
 the original run to reconcile its checkpoints. Do not edit its uploaded bytes,
-paths or saved configuration. Active remote cancellation is not implemented;
-only never-started queued runs can be cancelled in this release.
+paths or saved configuration.
+
+For a running parcel analysis, select **Stop analysis** in its details and confirm.
+The button shows **Stopping…** while the supervising worker stops that task and
+its local subprocesses. The website and queue service remain available. After
+local processes have exited, the run becomes **Interrupted** and **Resume analysis**
+is available. Completed checkpoints are preserved; an unfinished stage may repeat.
+The worker normally notices a request at its next five-second supervision check;
+termination and status refresh can take longer. A stopped worker service cannot
+acknowledge new requests until it is restarted.
+
+Stopping is local: already-submitted openEO jobs may continue remotely. Accounts
+remain reserved for the original run. Active remote cancellation is not implemented;
+**Remove from queue** applies only to never-started queued parcel runs. EDA does not
+yet expose this stop action. **Pause tail** pauses log updates only.
+
+Stop requests use the existing queue payload; no database migration is needed.
+Deploy the API, worker and frontend together by rebuilding and restarting the app
+when active work can be interrupted. Updating only the API cannot make an old
+worker honor the new stop request.
+
+Remote JVM out-of-memory failures can now retry with a larger executor heap.
+New-run settings under **Tiles and execution** expose `openeo_job_options` as a
+JSON object (for example `{"executor-memory":"2G","max-executors":20}`),
+`openeo_auto_memory_retry` and `openeo_max_executor_memory` (default `8G`). Only
+confirmed JVM memory errors increase the heap; generic shuffle failures do not.
+The full [retry policy](../data_preparation/openeo/SCHEDULING.md#failure-aware-remote-resources)
+explains supported evidence, saved per-batch history and terminal failures.
+
+For an already failed/interrupted run with exhausted memory retries, check
+**Allow higher-memory retries for exhausted memory failures**, then select
+**Resume analysis**. This grants only higher memory tiers up to its cap, keeps
+completed work and original account ownership, and does not change the immutable
+configuration snapshot. Ordinary Resume retains the original retry limit. The
+owned resume API accepts `{"retry_exhausted_memory":true}`; no database migration
+is required for this feature.
+
+Build the updated images while the existing run continues. Before replacing the
+worker, allow useful work to finish or stop local processing; already submitted
+remote jobs can continue and are reconciled on Resume. If the current deployed
+version has no Stop button, `docker compose -f compose.web.yml stop worker`
+stops the local run worker. Start the rebuilt services, refresh the UI, then
+resume the original interrupted analysis with the recovery checkbox. Do not
+duplicate the analysis or manually edit retry counters/configuration files.
 
 The UI shows actual stage events rather than an invented percentage or ETA. Some
 events can be dropped under excessive log volume; complete sanitized pipeline logs

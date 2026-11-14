@@ -264,13 +264,37 @@ where one sensor has no observation. Zero expected slots produce null ratios.
 
 The code keeps raster checkpoints on disk to avoid loading the entire
 time-by-band cube at once. It reads individual band/time layers for cleaning,
-spatial strips across all dates for temporal filling, and all physical bands
+spatial blocks across all dates for temporal filling, and all physical bands
 for one time slice during index creation. Parcel statistics read one parcel,
 variable, and reporting period at a time.
 
 This reduces memory demand but still requires complete spatial layers and
-temporary arrays. The temporal strip's nominal 8 MiB target is not a total RAM
-limit. Exact medians/percentiles also require a parcel's sample pool in memory.
+temporary arrays. By default, `temporal_fill_block_rows=None` selects spatial
+blocks aligned to the checkpoint's chunks with a nominal 64 MiB float32 payload
+target across all dates. Wide rasters are split into column blocks. This replaces
+the previous 8 MiB full-width strips, which repeatedly accessed the same chunks.
+Set a positive integer, for example `temporal_fill_block_rows=256`, to limit each
+block to at most 256 rows. Counts above a chunk height round down to a whole
+multiple of that height; for example, 300 becomes 256 with 256-row chunks.
+Smaller strips finish within a spatial chunk before advancing. Edge blocks are
+shortened to the remaining rows and columns. The option is available in Python constructors, extraction
+dictionaries, JSON `processing`, and the web form's **Gap filling** panel.
+Leave the web field blank (JSON `null`) to keep automatic sizing.
+
+One float32 block uses `dates * block_columns * block_rows * 4` bytes per band.
+For 135 dates on a 1,173 x 2,036 raster with 256 x 256 chunks, automatic blocks
+are 256 x 256, about 33.75 MiB each. Working copies and masks need several times
+that amount. Each worker temporarily sizes the cleaned-value and temporal-mask
+chunk caches to the block footprint, capped at 64 MiB **each**, and restores the
+previous cache settings on completion or failure. Very deep time axes may need
+sub-chunk strips and exceed cache capacity, reducing the speed benefit.
+An explicit large row count can exceed the payload target even at one chunk's
+width. Neither the payload target nor an explicit count is a total RAM limit;
+memory also scales with concurrent workers. Block sizing changes execution only,
+so it does not invalidate completed
+raster or statistics caches. Running workers retain their original settings;
+changing a form or source file does not retune an active analysis.
+Exact medians/percentiles also require a parcel's sample pool in memory.
 Raster checkpoints are chunked and are not compressed by this writer.
 
 Raw, cleaned, and final files can coexist while processing. Within one process,
@@ -297,7 +321,7 @@ These messages appear in `satellite_parcel_statistics.log`, or its worker log:
 | --- | --- |
 | `Reading temporal pixel cube ...` | Opening and validating the raw cube. |
 | `Stored observations X/Y ...` | Physical band/time layers have been written after optional IQR filtering; filling can still remain. |
-| `Temporal filling band X/Y in strips ...` | Filling one band's time series across spatial strips. |
+| `Temporal filling band X/Y in blocks ...` | Filling one band's time series across chunk-aligned spatial blocks. Older versions log `in strips`. |
 | `Cleaned acquisition X/Y ...` | Spatial filling/interpolation and audit assembly for that time slice. “Acquisition” can also refer to a composite slice here. |
 | `Saved output indices for acquisition X/Y` | Requested output layers are being written into the final partial checkpoint. |
 | `Using completed post-index checkpoint ...` | Reusing `_final.nc` and proceeding to parcel statistics. |

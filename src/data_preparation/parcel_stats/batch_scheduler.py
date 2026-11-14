@@ -270,7 +270,9 @@ def _enqueue_partition_tasks(part_idx, extractor, plans, uncached, users_list, s
         view = _BatchJobDatabase(database, indices[plan["batch_number"]], lock)
         task = _BatchTask(part_idx, extractor, plan, view, cube_dir)
         row = view.df.iloc[0]
-        if extractor._clean_job_id(row.get("id")) and not Path(plan["target_path"]).is_file():
+        owned = extractor._clean_job_id(row.get("id")) or extractor._clean_job_id(row.get("openeo_user"))
+        if owned and not Path(plan["target_path"]).is_file():
+            # Prepared replacements have no new ID yet, but retain their owner.
             # Older partition queues did not persist usernames. Their jobs
             # belong to the original round-robin account; keep account order
             # unchanged for the first resume of a legacy run.

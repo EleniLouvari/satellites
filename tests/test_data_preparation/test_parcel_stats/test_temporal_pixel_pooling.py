@@ -175,9 +175,9 @@ def test_existing_composites_still_reduce_only_spatial_pixels(tmp_path):
 @pytest.mark.parametrize("fill_mode", ["past_only", "bidirectional"])
 @pytest.mark.parametrize("remove_outliers", [False, True])
 @pytest.mark.parametrize("temporal_windows", [None, (3,), (3, 5)])
-def test_streamed_cleaning_matches_full_cube_with_filling(tmp_path, monkeypatch, fill_mode, remove_outliers, temporal_windows):
-    from data_preparation.parcel_stats.core import streamed_raster
-
+@pytest.mark.parametrize("block_rows", [1, 256])
+def test_streamed_cleaning_matches_full_cube_with_filling(tmp_path, fill_mode, remove_outliers, temporal_windows, block_rows):
+    """Small and oversized strips preserve values, provenance, audits and parcel statistics."""
     extractor = _extractor(
         tmp_path,
         fill_nulls=True,
@@ -187,6 +187,7 @@ def test_streamed_cleaning_matches_full_cube_with_filling(tmp_path, monkeypatch,
         minimum_observed_fraction_for_fill=0.5,
         spatial_fill_window_sizes=(3, 5, 7),
         temporal_fill_window_sizes=temporal_windows,
+        temporal_fill_block_rows=block_rows,
     )
     times = ["2024-01-01", "2024-01-10", "2024-02-01", "2024-02-15"]
     red = np.array(
@@ -211,8 +212,6 @@ def test_streamed_cleaning_matches_full_cube_with_filling(tmp_path, monkeypatch,
     expected_cleaned = extractor._build_local_output_cube(cleaned, ["B04", "B08"])
     expected_observed = np.isfinite(extractor._build_local_output_cube(observed, ["B04", "B08"]))
     expected_temporal = ~expected_observed & np.isfinite(extractor._build_local_output_cube(temporal, ["B04", "B08"]))
-    # Force temporal strips to one row, exercising cross-strip and cross-period fills.
-    monkeypatch.setattr(streamed_raster, "TEMPORAL_BLOCK_BYTES", 1)
     result, report = extractor._calculate_local_statistics(path, extractor.parcels, 1)
     with xr.open_dataset(extractor._final_checkpoint_path(path)) as final:
         np.testing.assert_allclose(final.cleaned.values, expected_cleaned, equal_nan=True)
@@ -225,6 +224,53 @@ def test_streamed_cleaning_matches_full_cube_with_filling(tmp_path, monkeypatch,
     )
     for name, value in metrics.items():
         expect_equal(whole[name], pytest.approx(value))
+
+
+@pytest.mark.parametrize("block_rows", [0, -1, True, 1.5, "256"])
+def test_temporal_fill_block_rows_rejects_invalid_values(tmp_path, block_rows):
+    """Reject invalid strip sizes before creating output directories."""
+    output = tmp_path / "invalid"
+    with pytest.raises((TypeError, ValueError), match="temporal_fill_block_rows"):
+        _extractor(output, temporal_fill_block_rows=block_rows)
+    expect_false(output.exists())
+
+
+def test_temporal_fill_block_rows_preserves_cache_signatures(tmp_path):
+    """Execution-only tuning can reuse previously calculated raster and batch caches."""
+    extractor = _extractor(tmp_path, temporal_fill_block_rows=None)
+    expect_is_none(extractor.temporal_fill_block_rows)
+    signatures = (extractor._run_signature(), extractor._cleaning_checkpoint_signature())
+    extractor.temporal_fill_block_rows = 256
+    expect_equal((extractor._run_signature(), extractor._cleaning_checkpoint_signature()), signatures)
+
+
+@pytest.mark.parametrize("block_rows,expected_heights", [(3, [3, 2]), (256, [5]), (None, [1, 1, 1, 1, 1])])
+def test_temporal_fill_reads_configured_strips(tmp_path, monkeypatch, block_rows, expected_heights):
+    """Honor explicit rows, clamp the last strip and retain automatic sizing."""
+    from data_preparation.parcel_stats.core import streamed_raster
+
+    extractor = _extractor(tmp_path, fill_nulls=True, temporal_fill_mode="bidirectional", temporal_fill_block_rows=block_rows)
+    values = np.arange(30, dtype="float32").reshape(3, 5, 2)
+    values[1, :, 0] = np.nan
+    expected = extractor._fill_temporal_neighbors(values)
+    heights = []
+    fill = extractor._fill_temporal_neighbors
+
+    def record_strip(strip):
+        """Capture real input sizes while retaining the numerical fill operation."""
+        heights.append(strip.shape[1])
+        return fill(strip)
+
+    monkeypatch.setattr(extractor, "_fill_temporal_neighbors", record_strip)
+    monkeypatch.setattr(streamed_raster, "TEMPORAL_BLOCK_BYTES", 1)
+    with extractor._new_streamed_checkpoint(tmp_path / "strips.nc", ["a", "b", "c"], ["B04"], (5, 2)) as checkpoint:
+        checkpoint.variables["cleaned"][:, 0] = values
+        counts = (~np.isfinite(values)).sum(axis=(1, 2))[:, None]
+        extractor._stream_temporal_fill(checkpoint, np.ones((3, 1), dtype=bool), counts)
+        np.testing.assert_allclose(checkpoint.variables["cleaned"][:, 0], expected)
+        np.testing.assert_array_equal(checkpoint.variables["temporal_filled_mask"][:, 0], ~np.isfinite(values))
+        np.testing.assert_array_equal(counts, 0)
+    expect_equal(heights, expected_heights)
 
 
 def test_streamed_path_never_selects_the_complete_raw_cube(tmp_path, monkeypatch):

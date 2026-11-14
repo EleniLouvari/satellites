@@ -83,6 +83,16 @@ def test_validation_resolves_defaults_without_remote_or_output(config, monkeypat
     assert config == original
 
 
+@pytest.mark.parametrize("block_rows", [None, 256])
+def test_preflight_preserves_temporal_fill_block_rows(config, block_rows):
+    """Pass optional strip sizing through JSON preflight to the normalized engine configuration."""
+    from data_preparation.parcel_stats.run_config import prepare_run
+
+    config["processing"]["temporal_fill_block_rows"] = block_rows
+    prepared = prepare_run(config)
+    assert prepared.config["processing"]["temporal_fill_block_rows"] == block_rows
+
+
 @pytest.mark.parametrize(
     "option,value",
     [

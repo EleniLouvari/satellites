@@ -27,6 +27,8 @@ from openeo.extra.job_management import MultiBackendJobManager, create_job_db, g
 from shared.io import write_data
 
 from .openeo import OpenEOZonalStats
+from .job_retry import TileJobRetryMixin
+from data_preparation.sources.openeo.job_options import memory_bytes, validate_job_options
 
 
 def compute_tile_buffer_metres(
@@ -236,7 +238,7 @@ class _NetCDFTileJobManager(MultiBackendJobManager):
         temporary.replace(target)
 
 
-class OpenEOJobManagerZonalStats(OpenEOZonalStats):
+class OpenEOJobManagerZonalStats(TileJobRetryMixin, OpenEOZonalStats):
     """Run one tile-bounded CDSE batch job per ``split_area`` tile.
 
     Parameters are identical to :class:`OpenEOZonalStats`, with these
@@ -265,6 +267,18 @@ class OpenEOJobManagerZonalStats(OpenEOZonalStats):
     ``job_retry_delay_seconds``
         Cooldown before retrying a failed job. This delay is useful for
         transient CDSE Kubernetes/API failures and is separate from polling.
+    ``openeo_job_options``
+        Validated backend resource options. Defaults to an explicit 2G executor
+        heap; other omitted resource options use backend defaults. Effective
+        options and prior attempt options are persisted per batch.
+    ``openeo_auto_memory_retry``, ``openeo_max_executor_memory``
+        Enable confirmed JVM OOM heap escalation (default True), doubling the
+        heap up to the configured cap (default 8G), within the retry budget.
+        Invalid graph/input errors and OOM at the cap are not retried.
+    ``retry_exhausted_memory``
+        Explicit runtime recovery switch, default False. Allows exhausted JVM
+        OOM batches to advance strictly higher memory tiers up to the cap.
+        Retry counts/history are retained. Ordinary Resume never enables this.
     ``run_identifier``
         Short label included in every openEO job title for this run. When
         omitted, a local timestamp such as ``run-20260811-143025`` is created
@@ -290,6 +304,10 @@ class OpenEOJobManagerZonalStats(OpenEOZonalStats):
         job_poll_seconds: int = 30,
         max_job_retries: int = DEFAULT_MAX_JOB_RETRIES,
         job_retry_delay_seconds: int = DEFAULT_JOB_RETRY_DELAY_SECONDS,
+        openeo_job_options: dict | None = None,
+        openeo_auto_memory_retry: bool = True,
+        openeo_max_executor_memory: str = "8G",
+        retry_exhausted_memory: bool = False,
         run_identifier: str | None = None,
         **kwargs,
     ) -> None:
@@ -307,6 +325,14 @@ class OpenEOJobManagerZonalStats(OpenEOZonalStats):
         self.job_poll_seconds = self._positive_integer(job_poll_seconds, "job_poll_seconds")
         self.max_job_retries = self._non_negative_integer(max_job_retries, "max_job_retries")
         self.job_retry_delay_seconds = self._non_negative_integer(job_retry_delay_seconds, "job_retry_delay_seconds")
+        self.openeo_job_options = validate_job_options(openeo_job_options)
+        self.openeo_max_executor_memory = openeo_max_executor_memory
+        if memory_bytes(openeo_max_executor_memory) < memory_bytes(self.openeo_job_options["executor-memory"]):
+            raise ValueError("Error: openeo_max_executor_memory must be at least the initial executor memory.")
+        if type(openeo_auto_memory_retry) is not bool or type(retry_exhausted_memory) is not bool:
+            raise TypeError("Error: Remote memory retry switches must be booleans.")
+        self.openeo_auto_memory_retry = openeo_auto_memory_retry
+        self.retry_exhausted_memory = retry_exhausted_memory
         self.run_identifier = self._validate_run_identifier(run_identifier)
         super().__init__(*args, **kwargs)
 
@@ -394,47 +420,18 @@ class OpenEOJobManagerZonalStats(OpenEOZonalStats):
     def _reset_retryable_failed_jobs(self, job_db) -> int:
         """Reset eligible terminal failures for a bounded retry."""
         self._ensure_job_retry_tracking(job_db)
+        self._ensure_job_options(job_db)
         failed = job_db.get_by_status(statuses=self.RETRYABLE_JOB_FAILURE_STATUSES).copy()
         if failed.empty:
             return 0
 
-        retry_counts = pd.to_numeric(failed["retry_count"], errors="coerce").fillna(0).astype(int)
-        retryable = failed.loc[retry_counts < self.max_job_retries].copy()
-        exhausted = failed.loc[retry_counts >= self.max_job_retries]
-        if not exhausted.empty:
-            self.source_logger.error(
-                "%s tile job(s) exhausted the limit of %s retries: batches %s.",
-                len(exhausted),
-                self.max_job_retries,
-                exhausted["batch_number"].astype(int).tolist(),
-            )
-        if retryable.empty:
-            return 0
-
-        for index, row in retryable.iterrows():
-            failure_status = str(row["status"])
-            failed_id = self._clean_job_id(row.get("id"))
-            history = [job_id for job_id in str(row.get("failed_job_ids") or "").split(";") if job_id]
-            restart_existing = failure_status in {"start_failed", "queued_for_start_failed"} and bool(failed_id)
-            if not restart_existing and failed_id and failed_id not in history:
-                history.append(failed_id)
-            next_retry = int(retry_counts.loc[index]) + 1
-            retryable.at[index, "failed_job_ids"] = ";".join(history)
-            retryable.at[index, "retry_count"] = next_retry
-            retryable.at[index, "retry_mode"] = "restart" if restart_existing else "replace"
-            retryable.at[index, "status"] = "not_started"
-            self.source_logger.warning(
-                "Retrying batch %s after status %s for openEO job %s (retry %s/%s; mode=%s).",
-                int(row["batch_number"]),
-                failure_status,
-                failed_id or "<unknown>",
-                next_retry,
-                self.max_job_retries,
-                retryable.at[index, "retry_mode"],
-            )
-
-        job_db.persist(retryable)
-        return len(retryable)
+        count = 0
+        for index, row in failed.iterrows():
+            updated, retry = self._prepare_failed_retry(row.copy())
+            failed.loc[index] = updated
+            count += int(retry)
+        job_db.persist(failed)
+        return count
 
     def _wait_before_job_retry(self, retry_count: int) -> None:
         """Apply the configured backend cooldown before a retry wave."""
@@ -450,7 +447,9 @@ class OpenEOJobManagerZonalStats(OpenEOZonalStats):
         if row.get("retry_mode") == "restart" and existing_job_id:
             return connection.job(existing_job_id), True
         cube = self._build_tile_cube(connection, plan["spatial_extent"])
-        return cube.create_job(out_format="netCDF", title=self._job_title(plan)), False
+        return cube.create_job(
+            out_format="netCDF", title=self._job_title(plan), job_options=self._job_options_for_row(row),
+        ), False
 
     def _run_signature(self) -> str:
         """Keep tile caches separate from original and differently sized runs."""

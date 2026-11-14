@@ -20,6 +20,8 @@ def _parser() -> argparse.ArgumentParser:
         command = actions.add_parser(action)
         if action == "resume":
             command.add_argument("--run-dir", type=Path, required=True)
+            command.add_argument("--retry-exhausted-memory", action="store_true",
+                                 help="Allow exhausted JVM OOM batches to retry at higher memory, up to the saved cap")
         else:
             command.add_argument("--config", type=Path, required=True, help="JSON configuration file")
             command.add_argument("--output-dir", type=Path, help="Override output directory (relative to current directory)")
@@ -80,7 +82,10 @@ def main(argv: list[str] | None = None) -> int:
                     accounts = load_openeo_users_from_db()
                 running = True
                 if args.action == "resume":
-                    result = resume_parcel_stats(args.run_dir, accounts=accounts, app_user_id=args.app_user_id)
+                    result = resume_parcel_stats(
+                        args.run_dir, accounts=accounts, app_user_id=args.app_user_id,
+                        retry_exhausted_memory=args.retry_exhausted_memory,
+                    )
                 else:
                     result = run_parcel_stats(
                         config, accounts=accounts, base_dir=args.config.resolve().parent, app_user_id=args.app_user_id

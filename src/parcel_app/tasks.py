@@ -14,6 +14,8 @@ def _owned(job, conn):
     row = db.one("SELECT * FROM web_jobs WHERE job_id=%s FOR UPDATE", (str(job["job_id"]),), conn=conn)
     if not row or row["status"] != "running" or str(row["claim_token"]) != str(job["claim_token"]):
         raise RuntimeError("Error: Worker claim is no longer active.")
+    if row.get("payload", {}).get("stop_requested"):
+        raise RuntimeError("Error: Analysis stop requested; task publication is fenced.")
 
 
 def _run(job):
@@ -163,7 +165,10 @@ def _execute_run(job):
             event_logging(job, secrets, private_paths=private_paths),
         ):
             if job["kind"] == "resume" and (Path(run["output_dir"]) / "run.json").is_file():
-                resume_parcel_stats(run["output_dir"], accounts=accounts, app_user_id=run["app_user_id"])
+                resume_parcel_stats(
+                    run["output_dir"], accounts=accounts, app_user_id=run["app_user_id"],
+                    retry_exhausted_memory=job.get("payload", {}).get("retry_exhausted_memory", False),
+                )
             else:
                 run_parcel_stats(run["config"], accounts=accounts, app_user_id=run["app_user_id"])
     with db.connection() as conn:

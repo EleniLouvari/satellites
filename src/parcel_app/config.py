@@ -40,6 +40,7 @@ GROUP_FIELDS = {
         "minimum_observed_fraction_for_fill",
         "temporal_fill_mode",
         "temporal_fill_window_sizes",
+        "temporal_fill_block_rows",
         "spatial_fill_window_sizes",
     ],
     "interpolation": [
@@ -54,6 +55,9 @@ GROUP_FIELDS = {
         "fit_tiles_to_parcels",
         "batch_workers",
         "openeo_parallel_jobs",
+        "openeo_job_options",
+        "openeo_auto_memory_retry",
+        "openeo_max_executor_memory",
         "job_poll_seconds",
         "max_job_retries",
         "job_retry_delay_seconds",
@@ -129,6 +133,7 @@ def configuration(user: dict = Depends(current_user)):
         "temporal_reducer": "none",
         "spatial_fill_window_sizes": [3, 5, 7],
         "temporal_fill_window_sizes": [3],
+        "temporal_fill_block_rows": 512,
     }
     choices = {
         "openeo_parallel_jobs": [1, 2],
@@ -139,11 +144,21 @@ def configuration(user: dict = Depends(current_user)):
     }
     descriptions = {
         "openeo_parallel_jobs": "Parallel remote jobs per Copernicus account. Maximum 2; default 2.",
+        "openeo_job_options": (
+            'Remote resources as a JSON object, e.g. {"executor-memory":"2G","max-executors":20}. '
+            "Blank uses a 2G executor heap; omitted options use backend defaults."
+        ),
+        "openeo_auto_memory_retry": "Increase remote executor memory only after confirmed JVM out-of-memory failures.",
+        "openeo_max_executor_memory": "Maximum executor heap for memory retries, e.g. 8G. Higher memory may use more credits.",
         "temporal_period": "Reporting interval, e.g. 1M or 15D. Also applies when temporal reducer is none.",
         "temporal_reducer": "None retains individual acquisitions; other reducers composite observations per interval.",
         "iqr_quantiles": "Lower and upper quantiles as fractions, e.g. [0.25, 0.75].",
         "temporal_fill_mode": "Bidirectional uses previous and next observations; past_only uses earlier observations.",
         "temporal_fill_window_sizes": "Search windows in time steps, e.g. [3, 5]. Leave blank for an unlimited search.",
+        "temporal_fill_block_rows": (
+            "Maximum rows processed together across dates, e.g. 256; aligned to storage chunks where possible. "
+            "Larger values can use more RAM per worker. Leave blank for automatic sizing."
+        ),
         "spatial_fill_window_sizes": "Neighborhood widths in pixels, e.g. [3, 5]. Applied in sequence.",
         "minimum_observed_fraction_for_fill": "Minimum observed coverage from 0 to 1 for a layer to receive or supply fills.",
         "interpolation_max_distance_in_meters": "Required for IDW: maximum search distance in metres.",
@@ -175,6 +190,8 @@ def configuration(user: dict = Depends(current_user)):
             else "string"
         )
         annotation = str(parameter.annotation)
+        if isinstance(value, dict) or "dict" in annotation:
+            kind = "object"
         if value is None:
             kind = (
                 "array"
@@ -193,7 +210,7 @@ def configuration(user: dict = Depends(current_user)):
                 "default": value,
                 "label": name.replace("_", " ").capitalize(),
                 "choices": choices.get(name),
-                "nullable": value is None,
+                "nullable": value is None or name == "temporal_fill_block_rows",
                 "group": next((group for group, names in GROUP_FIELDS.items() if name in names), "execution"),
                 "enabled_when": field_dependencies(name),
                 "description": descriptions[name]
