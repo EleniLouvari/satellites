@@ -122,7 +122,8 @@ def build_eda_artifacts(df: pd.DataFrame, config: EDAConfig) -> dict[str, Any]:
     # The outlier table contains flagged rows; annotated_data below retains the full input population.
     multivariate_outliers = multivariate_scores.loc[outlier_mask].reset_index(drop=True)
     annotated_data = _annotate_multivariate_outliers(dataset, multivariate_scores)
-    summary["multivariate_rows_scored"] = int(multivariate_scores["is_outlier"].notna().sum())
+    # is_outlier is never null, so scored rows are those with at least two voting methods.
+    summary["multivariate_rows_scored"] = int(multivariate_scores["eda_outlier_methods_available"].ge(2).sum())
     summary["multivariate_outliers_found"] = len(multivariate_outliers)
     summary["mahalanobis_confidence"] = 0.975
     summary["outlier_voting_rule"] = "strict majority of available methods; minimum two methods"

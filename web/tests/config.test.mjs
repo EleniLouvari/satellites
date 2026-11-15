@@ -9,12 +9,31 @@ const code = ts.transpileModule(source, {compilerOptions: {module: ts.ModuleKind
 const {sanitizeConfig, duration} = await import(`data:text/javascript;base64,${Buffer.from(code).toString("base64")}`);
 const schema = {fields: [{name: "start_date"}, {name: "batch_workers"}, {name: "temporal_fill_window_sizes"}]};
 
-const controlsSource = fs.readFileSync(new URL("../src/configControls.ts", import.meta.url), "utf8");
+const controlsSource = fs.readFileSync(new URL("../src/components/configControls.ts", import.meta.url), "utf8");
 const controlsCode = ts.transpileModule(controlsSource, {compilerOptions: {module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022}}).outputText;
-const {fieldDisabledReason, activeArrayErrors} = await import(`data:text/javascript;base64,${Buffer.from(controlsCode).toString("base64")}`);
-const edaSource = fs.readFileSync(new URL("../src/edaControls.ts", import.meta.url), "utf8");
+const {fieldDisabledReason, activeArrayErrors, parseDraft} = await import(`data:text/javascript;base64,${Buffer.from(controlsCode).toString("base64")}`);
+const edaSource = fs.readFileSync(new URL("../src/features/eda/edaControls.ts", import.meta.url), "utf8");
 const edaCode = ts.transpileModule(edaSource, {compilerOptions: {module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022}}).outputText;
 const {includeRoleColumns, newlyCompletedReport} = await import(`data:text/javascript;base64,${Buffer.from(edaCode).toString("base64")}`);
+
+const mlSource = fs.readFileSync(new URL("../src/features/ml/mlControls.ts", import.meta.url), "utf8");
+const mlCode = ts.transpileModule(mlSource, {compilerOptions: {module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022}}).outputText;
+const {stepStates, canContinue, withoutRoles, trainingCounts} = await import(`data:text/javascript;base64,${Buffer.from(mlCode).toString("base64")}`);
+
+test("ML steps show what is done, where a run stopped, and when it can continue", () => {
+  assert.deepEqual(stepStates("paused", 2), ["done", "done", "pending", "pending", "pending"]);
+  assert.deepEqual(stepStates("running", 2), ["done", "done", "running", "pending", "pending"]);
+  assert.deepEqual(stepStates("queued", 0), ["queued", "pending", "pending", "pending", "pending"]);
+  assert.deepEqual(stepStates("interrupted", 3), ["done", "done", "done", "failed", "pending"]);
+  assert.deepEqual(stepStates("complete", 5), ["done", "done", "done", "done", "done"]);
+  assert.ok(canContinue("paused", 1) && canContinue("failed", 0) && canContinue("interrupted", 4));
+  assert.ok(!canContinue("running", 1) && !canContinue("queued", 0) && !canContinue("complete", 5));
+});
+
+test("the ML target and ID columns are never kept as features", () => {
+  assert.deepEqual(withoutRoles(["NDVI", "crop", "id"], {target_column: "crop", id_column: "id"}), ["NDVI"]);
+  assert.deepEqual(withoutRoles(["NDVI"], {target_column: null}), ["NDVI"]);
+});
 
 test("report auto-opens once on completion, never for old, failed or report-free runs", () => {
   const running = {eda_id: "a", status: "running", artifacts: []};
@@ -37,6 +56,9 @@ test("parent switches and interpolation methods control dependent inputs", () =>
   assert.ok(fieldDisabledReason(distance, {fill_nulls: true, interpolation_method: "kriging"}));
   assert.equal(fieldDisabledReason(distance, {fill_nulls: true, interpolation_method: "IDW"}), "");
   assert.equal(fieldDisabledReason({name: "temporal_period"}, {temporal_reducer: "none"}), "");
+  const capped = {name: "distance", enabled_when: {interpolation_method: ["idw", "nearest"]}};
+  assert.equal(fieldDisabledReason(capped, {interpolation_method: "kriging"}), "Available with IDW or NEAREST interpolation.");
+  assert.equal(fieldDisabledReason(capped, {interpolation_method: "nearest"}), "");
 });
 
 test("invalid arrays block saving only while their controls are active", () => {
@@ -72,4 +94,43 @@ test("durations show seconds, minutes and hours without inventing missing timest
   assert.equal(duration(0), "0s");
   assert.equal(duration(125), "2m 5s");
   assert.equal(duration(3661), "1h 1m 1s");
+});
+
+test("EDA keyword filter matches whole name parts and lists shared keywords", async () => {
+  const {columnTokens, keywordOptions, matchesKeywords} = await import(`data:text/javascript;base64,${Buffer.from(edaCode).toString("base64")}`);
+  assert.deepEqual(columnTokens("NDVI_median_2023-05"), ["ndvi", "median", "2023", "05"]);
+  const names = ["NDVI_median_2023", "NDVI_sd_2023", "EVI_median_2023", "parcel_id"];
+  assert.deepEqual(keywordOptions(names), [{keyword: "median", count: 2}, {keyword: "ndvi", count: 2}]);
+  assert.ok(matchesKeywords("NDVI_sd", ["sd"], "any"));
+  assert.ok(!matchesKeywords("NDVI_sdx", ["sd"], "any"));
+  assert.ok(matchesKeywords("EVI_median", ["ndvi", "evi"], "any"));
+  assert.ok(!matchesKeywords("EVI_median", ["ndvi", "median"], "all"));
+  assert.ok(matchesKeywords("anything", [], "all"));
+});
+
+test("list settings accept plain comma-separated values as well as JSON", () => {
+  assert.deepEqual(parseDraft("array", "9999"), [9999]);
+  assert.deepEqual(parseDraft("array", "9999, 8888"), [9999, 8888]);
+  assert.deepEqual(parseDraft("array", "[9999, 8888]"), [9999, 8888]);
+  assert.deepEqual(parseDraft("array", "wheat, 'barley', \"oats\""), ["wheat", "barley", "oats"]);
+  assert.deepEqual(parseDraft("array", '"wheat"'), ["wheat"]);
+  assert.equal(parseDraft("array", ""), null);
+  assert.equal(parseDraft("array", "[9999"), undefined);
+  assert.equal(parseDraft("array", "1,,2"), undefined);
+  assert.equal(parseDraft("array", '{"a": 1}'), undefined);
+  const fields = [{name: "exclude_target_values", type: "array"}];
+  assert.deepEqual(activeArrayErrors(fields, {exclude_target_values: "9999, 8888"}, {}), []);
+});
+
+test("Train step counts finished, failed and reused models as done, skipping missing libraries", () => {
+  const models = [
+    {name: "random_forest", status: "finished"},
+    {name: "xgboost", status: "running"},
+    {name: "lightgbm", status: "failed"},
+    {name: "svm", status: "reused"},
+    {name: "keras_lstm", status: "unavailable"},
+    {name: "knn", status: "pending"},
+  ];
+  assert.deepEqual(trainingCounts(models), {total: 5, done: 3, failed: 1, unavailable: 1});
+  assert.deepEqual(trainingCounts([]), {total: 0, done: 0, failed: 0, unavailable: 0});
 });

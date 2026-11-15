@@ -6,11 +6,14 @@ Lists return arrays. Runs/uploads include JSON-native metadata/config (not strin
 
 ## Python module ownership
 
-`src/parcel_app/`: new standalone package, add to setuptools include.
-Foundation: `settings.py`, `db.py`, `schema.sql`, `security.py`, `auth.py`,
-`accounts.py`, `app.py`, `manage.py`, `__init__.py`.
-Primary: `uploads.py`, `runs.py`, `files.py`, `config.py`.
-Worker: `worker.py`, `tasks.py`, `inspection.py`, `artifacts.py` (+ worker helpers).
+`src/parcel_app/` is grouped by responsibility; see the
+[repository structure](../repository_structure.md#web-application-parcel_app) for the full tree.
+Foundation: `settings.py`, `app.py`, `manage.py`, `core/` (`db.py`, `security.py`, `storage.py`),
+`auth/routes.py`, `migrations/*.sql`.
+Jobs: `jobs/registry.py` (job kinds and routers), `jobs/queue.py`, `jobs/dispatch.py`, `jobs/worker.py`.
+Data sources: `sources/openeo/` (Copernicus accounts, connection test, remote job cleanup).
+Pipelines: `pipelines/uploads/`, `pipelines/parcel_stats/`, `pipelines/eda/`, `pipelines/ml/`, each with `routes.py` and `tasks.py`.
+The module names below (`db.`, `security.`, ...) refer to these locations.
 
 `settings.get_settings()` returns cached Settings with `storage_root: Path`,
 `credential_key: str`, `cookie_secure: bool`, `allowed_origin: str`,
@@ -159,6 +162,29 @@ checks the source checksum, reads selected columns, runs `EDAPipeline` with rese
 disabled, and publishes a ZIP preserving report/plot relative paths. Each new
 analysis gets a fresh output directory. An interrupted EDA is rerun as a new ID.
 
+## ML classification contract
+
+An ML run (scenario) belongs to one completed EDA analysis. Its input table is the parcel
+result of the EDA's run; EDA supplies the proposed features and its calculated columns.
+
+- GET `/eda/{eda_id}/ml/options`: owned completed EDA only. Returns `columns` (each with
+  `source`: `eda` = analysed in EDA, `calculated` = added by EDA, `result` = other parcel
+  columns; and `proposed`), `default_features` (the EDA proposal), and the grouped schema of
+  every `ClassificationPipelineConfig` option with defaults, choices, dependencies and help text.
+- POST `/eda/{eda_id}/ml`: `{request_id, name, features, config, through}`. Saves an immutable
+  scenario and queues `ml` on the heavy lane for steps 1..`through` (1-5). Idempotent per ID.
+- GET `/eda/{eda_id}/ml`: the EDA's scenarios with `status`, `steps_done` and files.
+- POST `/ml/{ml_id}/continue`: `{through}`. Queues the remaining steps of a `paused`, `failed`
+  or `interrupted` run. Finished steps and already trained models are reused.
+- GET `/ml/{ml_id}/report/{page}`: `check|prepare|train|evaluate|predict|dashboard`; a finished
+  step's report with registered plots embedded, under the same sandbox policy as EDA reports.
+- GET `/ml/{ml_id}/log`, GET `/ml/{ml_id}/files/{artifact_id}`, DELETE `/ml/{ml_id}`.
+
+`ml_runs` stores the run and EDA foreign keys, feature list, configuration, both source
+checksums, `steps_done` and the published file list. The worker verifies the checksums before
+the first step, saves `steps_done` after every step, and builds `ml-results.zip` after the last.
+Deleting a run removes its ML runs; an EDA analysis with ML runs cannot be deleted first.
+
 ## Deletion and progress contracts
 
 - DELETE `/runs/{run_id}`: owner/CSRF checked, refuses active related jobs.
@@ -177,7 +203,7 @@ analysis gets a fresh output directory. An interrupted EDA is rerun as a new ID.
 
 ## Worker contract
 
-Start `python -m parcel_app.worker` (long-lived poller); `--once` for one job/test.
+Start `python -m parcel_app.jobs.worker` (long-lived poller); `--once` for one job/test.
 `tasks.execute_task(job: dict) -> None` runs in a fresh spawned child. DB writes
 use transactions, claim ownership is checked before final state writes. Parent
 maintains heartbeat, singleton advisory lock plus storage-root process lock to

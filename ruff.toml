@@ -1,5 +1,9 @@
 line-length = 130
 extend-exclude = ["**/to_delete/_archive/**"]
 
+[lint.flake8-bugbear]
+# FastAPI dependency markers are evaluated once by design; they are not mutable defaults.
+extend-immutable-calls = ["fastapi.Depends"]
+
 [format]
 skip-magic-trailing-comma = true

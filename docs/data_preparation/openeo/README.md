@@ -330,7 +330,7 @@ rerunning to load the new implementation and release arrays held by the old run.
 | `minimum_parcel_pixels` | `3` | Threshold for the output quality flag; small parcels are retained |
 | `minimum_observed_fraction_for_fill` | `0.20` | Minimum observed fraction for a raster-variable-period to be filled or used as a temporal source |
 | `interpolation_method` | `"nearest"` | Final interpolation method: raster-native `nearest`, `idw`, or `kriging` |
-| `interpolation_max_distance_in_meters` | `None` | Required positive search distance in metres for `idw` |
+| `interpolation_max_distance_in_meters` | `None` | Positive search distance in metres. Required for `idw`; optional cutoff for `nearest` (`None` = unlimited) |
 | `interpolation_variogram_lags` | `15` | Positive kriging variogram lag count |
 | `interpolation_variogram_max_distance_in_meters` | `None` | Required positive distance in metres for `kriging` |
 
@@ -352,7 +352,8 @@ spatial_fill_window_sizes=(3, 5, 7),
 ```
 
 The two temporal observations are averaged; if only one is available, its value
-is used. Windows count raster time steps, not calendar days. Wider temporal
+is used. Windows count raster time steps, not calendar days; steps on which the
+band has no observation at all (another sensor's dates) are not counted. Wider temporal
 windows retry remaining gaps using the nearest original observation in each
 allowed direction; filled values never extend the temporal search range.
 
@@ -439,6 +440,7 @@ result = extractor.run()
 | `openeo_job_options` | `None` | Backend resource JSON; normalized to a 2G executor heap, with other omitted options using backend defaults |
 | `openeo_auto_memory_retry` | `True` | Increase only the executor heap after confirmed JVM OOM, within the retry budget |
 | `openeo_max_executor_memory` | `"8G"` | Ceiling for automatic heap increases; must be at least the initial heap |
+| `openeo_memory_reference_area_km2` | `625.0` | Tile area the configured heap is sized for; larger tiles start with the heap doubled per doubling of area, up to the ceiling. `None` disables |
 | `retry_exhausted_memory` | `False` | Explicit runtime recovery of exhausted JVM OOM batches at strictly higher memory tiers; never resets counters |
 | `run_identifier` | generated timestamp | Readable label, at most 80 characters, included in openEO job titles |
 

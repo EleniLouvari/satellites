@@ -10,6 +10,7 @@ from sklearn.preprocessing import LabelEncoder
 
 from ml_classification.shared.config.base import PipelineStepBase
 from ml_classification.shared.logging import print_formatted_txt, time_decorator
+from ml_classification.shared.models.modeling_context import training_rows_mask
 from ml_classification.shared.persistence import load_joblib, load_json, save_frame_csv, save_joblib, save_json
 from ml_classification.shared.reports.report_index import write_index_report
 from ml_classification.step_02_prepare.libraries.cross_validation import (
@@ -34,8 +35,8 @@ class PrepareStep(PipelineStepBase):
         # Load the validated dataset and active feature list from the check step artifacts.
         dataset = load_joblib(self.config.check_dir / "input_dataset.joblib")
         active_features = load_json(self.config.check_dir / "check_summary.json")["active_features"]
-        # Keep only rows with known target labels for splitting and encoding.
-        labeled = dataset.loc[dataset[self.config.target_column].notna()].copy().reset_index(drop=True)
+        # Keep only labeled rows not excluded by the check step (e.g. null features) for splitting and encoding.
+        labeled = dataset.loc[training_rows_mask(dataset, self.config)].copy().reset_index(drop=True)
         labeled[self.config.target_column] = labeled[self.config.target_column].astype(str)
         # Require at least two classes for classification tasks.
         if labeled[self.config.target_column].nunique() < 2:

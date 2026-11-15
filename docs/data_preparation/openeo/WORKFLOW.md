@@ -339,9 +339,9 @@ from these switches and still takes place when local cleaning is disabled.
 | --- | --- |
 | IQR, when enabled | Compute quantiles across the complete raster for one physical band/time slice. Remove values outside `Qlow - multiplier * IQR` and `Qhigh + multiplier * IQR`. Skip filtering below `iqr_min_valid_pixels` (default 20). |
 | Fill eligibility | Use the full layer's post-IQR observed fraction. Default threshold is 0.20; a layer below it cannot be filled or supply temporal observations. |
-| Temporal fill | Work at the same spatial pixel. Default `past_only` uses the nearest earlier observation. `bidirectional` averages closest earlier/later observations, or uses the available side. Optional odd windows count time steps, not days. Filled values do not extend the temporal search. |
+| Temporal fill | Work at the same spatial pixel. Default `past_only` uses the nearest earlier observation. `bidirectional` averages closest earlier/later observations, or uses the available side. Optional odd windows count time steps, not days; steps on which the band has no observation in the whole layer (another sensor's dates on a merged time axis) are skipped. Filled values do not extend the temporal search. |
 | Spatial means | Apply configured neighborhoods sequentially: default 3x3 then 5x5; optional 7x7 and 9x9. Earlier passes can supply later passes. |
-| Final interpolation | Fill eligible remaining gaps using `nearest`, `idw`, or `kriging`. IDW and kriging require their corresponding distance settings. Remaining nulls are retained. |
+| Final interpolation | Fill eligible remaining gaps using `nearest`, `idw`, or `kriging`. IDW and kriging require their corresponding distance settings; `nearest` honours `interpolation_max_distance_in_meters` when it is set. Remaining nulls are retained. |
 
 ### 6.1 Cleaning decision flow
 
@@ -421,7 +421,8 @@ After temporal filling, spatial passes run separately on each band/time layer:
 2. Remaining gaps are retried with the default 5x5 window. Values filled in
    the earlier pass can contribute to this pass.
 3. Remaining gaps reach the interpolation method, default `nearest`.
-   Nearest filling has no maximum-distance cutoff in this implementation.
+   Nearest filling leaves gaps farther than `interpolation_max_distance_in_meters`
+   null when that option is set, and has no cutoff when it is `None`.
    IDW/kriging use their configured distance options.
 
 The spatial passes operate before parcel masking, so a donor may be outside the

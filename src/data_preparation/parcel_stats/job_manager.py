@@ -24,11 +24,11 @@ import openeo
 import pandas as pd
 from openeo.extra.job_management import MultiBackendJobManager, create_job_db, get_job_db, split_area
 
+from data_preparation.sources.openeo.job_options import memory_bytes, validate_job_options
 from shared.io import write_data
 
-from .openeo import OpenEOZonalStats
 from .job_retry import TileJobRetryMixin
-from data_preparation.sources.openeo.job_options import memory_bytes, validate_job_options
+from .openeo import OpenEOZonalStats
 
 
 def compute_tile_buffer_metres(
@@ -275,6 +275,12 @@ class OpenEOJobManagerZonalStats(TileJobRetryMixin, OpenEOZonalStats):
         Enable confirmed JVM OOM heap escalation (default True), doubling the
         heap up to the configured cap (default 8G), within the retry budget.
         Invalid graph/input errors and OOM at the cap are not retried.
+    ``openeo_memory_reference_area_km2``
+        Tile area (km²) that the configured executor heap is sized for,
+        default 625 (25 x 25 km). A larger tile starts with the heap doubled
+        each time its buffered extent doubles beyond this area, up to
+        ``openeo_max_executor_memory``. Other options are unchanged. ``None``
+        submits every tile with the configured options.
     ``retry_exhausted_memory``
         Explicit runtime recovery switch, default False. Allows exhausted JVM
         OOM batches to advance strictly higher memory tiers up to the cap.
@@ -307,6 +313,7 @@ class OpenEOJobManagerZonalStats(TileJobRetryMixin, OpenEOZonalStats):
         openeo_job_options: dict | None = None,
         openeo_auto_memory_retry: bool = True,
         openeo_max_executor_memory: str = "8G",
+        openeo_memory_reference_area_km2: float | None = 625.0,
         retry_exhausted_memory: bool = False,
         run_identifier: str | None = None,
         **kwargs,
@@ -332,6 +339,10 @@ class OpenEOJobManagerZonalStats(TileJobRetryMixin, OpenEOZonalStats):
         if type(openeo_auto_memory_retry) is not bool or type(retry_exhausted_memory) is not bool:
             raise TypeError("Error: Remote memory retry switches must be booleans.")
         self.openeo_auto_memory_retry = openeo_auto_memory_retry
+        reference = openeo_memory_reference_area_km2
+        if reference is not None and (type(reference) not in (int, float) or not 0 < reference < float("inf")):
+            raise ValueError("Error: openeo_memory_reference_area_km2 must be a positive number or None.")
+        self.openeo_memory_reference_area_km2 = None if reference is None else float(reference)
         self.retry_exhausted_memory = retry_exhausted_memory
         self.run_identifier = self._validate_run_identifier(run_identifier)
         super().__init__(*args, **kwargs)

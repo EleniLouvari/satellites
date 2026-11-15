@@ -34,12 +34,12 @@ services:
       retries: 5
   worker:
     <<: *service
-    command: [-m, parcel_app.worker, --lane, run]
+    command: [-m, parcel_app.jobs.worker, --lane, run]
     cpus: ${PARCEL_WORKER_CPUS:-4}
     mem_limit: ${PARCEL_WORKER_MEMORY:-16g}
   inspector:
     <<: *service
-    command: [-m, parcel_app.worker, --lane, small]
+    command: [-m, parcel_app.jobs.worker, --lane, small]
     cpus: 2
     mem_limit: 4g
   web:

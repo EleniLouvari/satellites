@@ -111,12 +111,15 @@ The target, configured ID, and prior EDA diagnostic columns are excluded from Ma
 `OutlierAnalysis.detect_all_outliers()` now supplies `is_outlier` through
 one vote each from IQR, z-score, multivariate Isolation Forest, PCA/DBSCAN and
 Mahalanobis. A strict majority is required (normally 3 of 5); ties are false.
-Unavailable methods abstain, and fewer than two available votes produces a null
-flag. Rows with no finite selected features remain unscored. IQR and z-score
-vote if any selected feature exceeds their configured threshold.
+Unavailable methods abstain. `is_outlier` is never null: fewer than two
+available votes gives `False`, so rows with no finite selected features are not
+outliers; `eda_outlier_methods_available` shows how many methods voted. IQR and
+z-score vote if any selected feature exceeds their configured threshold.
 
 All five methods use the first `max_multivariate_features` numeric predictors
-in input order, excluding target, configured ID and prior EDA diagnostics.
+in input order, excluding target, configured ID, prior EDA diagnostics and
+Boolean (True/False) columns. `OutlierAnalysis` never analyses Boolean columns:
+their IQR bounds are undefined and they are never flagged.
 All-null and constant features are removed. Multivariate methods median-impute
 remaining gaps and standardize internally; original values are preserved.
 Isolation Forest uses 5% contamination and the configured random seed.

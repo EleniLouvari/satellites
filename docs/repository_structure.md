@@ -8,7 +8,7 @@ tests, documentation, and generated results live outside these packages.
 
 ```text
 src/
-  parcel_app/                    FastAPI application, PostgreSQL jobs and web worker
+  parcel_app/                    Parcel Studio web API and worker (see below)
   data_preparation/
     cli.py                       satellites parcel-stats validate/run/resume
     sources/
@@ -71,6 +71,45 @@ EDA and classification consume tables and shared helpers. They do not import
 acquisition code or each other. Shared cleaning stays below the pipelines;
 temporal reduction and environmental enrichment belong to data preparation.
 
+## Web application (`parcel_app`)
+
+`parcel_app` is the backend of Parcel Studio. It calls the library packages; the
+library packages never import it. Code is grouped by responsibility:
+
+```text
+src/parcel_app/
+  app.py                 FastAPI factory; mounts the routers listed in the registry
+  manage.py              migrate / set-password operator commands
+  settings.py            environment-based settings
+  core/                  db.py, security.py, storage.py (path containment, checksums, log redaction)
+  auth/routes.py         registration, login, sessions
+  jobs/                  generic background-job engine
+    registry.py          the one list of data sources and pipelines, their job kinds and routers
+    queue.py             enqueue, claim, claim fencing, reconciliation, stop requests
+    dispatch.py          runs one claimed job and records failures
+    worker.py            worker service (`python -m parcel_app.jobs.worker --lane run|small`)
+    process_control.py   process groups / Windows job objects for stoppable tasks
+  sources/               data providers, one package each
+    openeo/              Copernicus accounts, connection test, run credentials, remote job cleanup
+  pipelines/             analyses, one package each (routes.py, tasks.py, ...)
+    uploads/             parcel file upload and inspection
+    parcel_stats/        configuration, validation, runs, results, bundles, deletion
+    eda/                 EDA of a completed parcel-statistics result
+    ml/                  ML classification scenarios of a completed EDA analysis, run step by step
+  migrations/            001_core.sql, 002_eda.sql, 003_ml.sql; applied in name order by `manage migrate`
+```
+
+Each `sources/*` and `pipelines/*` package declares its background job kinds
+(`JOBS`) and API routers (`ROUTERS`) in its `__init__.py`; `jobs/registry.py`
+lists the enabled packages. The worker lanes, job dispatch, failure handling,
+interrupted-job recovery and the API routes are all derived from that list.
+To add a data provider (HUB, Planet) or a pipeline (ML), follow
+[Extending Parcel Studio](web_app/EXTENDING.md).
+
+The React frontend in `web/src/` mirrors this split: `api.ts` (API client and
+types), `components/` (shared widgets and the schema-driven `ConfigForm`), and
+`features/` (`auth/`, `sources/openeo/`, `parcel-stats/`, `eda/`, `ml/`).
+
 ### Shared spatial statistics
 
 `shared.spatial_statistics` is a package. Buffer clustering remains available as
@@ -111,8 +150,8 @@ Python namespace or compatibility package. Use the public imports in the
 The distribution name in package metadata remains unchanged.
 
 For source-tree development, `PYTHONPATH` needs only `src`. Pytest and VS Code
-already use this directory. Package discovery includes the four top-level
-packages and their subpackages; coverage measures the same four packages.
+already use this directory. Package discovery includes the five top-level
+packages and their subpackages; coverage measures the same five packages.
 
 Constructor arguments, output filenames, log namespaces and cache signatures
 remain unchanged by the directory move. Python pickle/joblib artifacts store

@@ -178,6 +178,22 @@ class RasterCleaner:
         filled[missing & ~forward_valid & backward_valid] = backward[missing & ~forward_valid & backward_valid]
         return filled
 
+    def _fill_temporal_active_steps(self, variable_values: np.ndarray, active_steps: np.ndarray | None) -> np.ndarray:
+        """Run the temporal fill only across steps on which this variable was acquired.
+
+        A merged multisensor time axis contains steps where a variable has no
+        observation anywhere in the layer, such as Sentinel-1 dates for a
+        Sentinel-2 band. Those steps are not temporal neighbours for the
+        variable: they are skipped so step-counted windows reach the variable's
+        own previous/next acquisition, and they never receive temporal fills.
+        """
+        if active_steps is None or active_steps.all():
+            return self._fill_temporal_neighbors(variable_values)
+        filled = variable_values.copy()
+        if active_steps.any():
+            filled[active_steps] = self._fill_temporal_neighbors(variable_values[active_steps])
+        return filled
+
     def _fill_bounded_temporal_neighbors(self, variable_values: np.ndarray, window_sizes: tuple[int, ...]) -> np.ndarray:
         """Retry gaps with wider windows without propagating imputed values."""
         filled = variable_values.copy()
@@ -274,7 +290,11 @@ class RasterCleaner:
         return result
 
     def _fill_nearest_raster(self, layer: np.ndarray, eligible_mask: np.ndarray, transform) -> np.ndarray:
-        """Fill raster gaps from the nearest observed pixel without constructing geometries."""
+        """Fill raster gaps from the nearest observed pixel without constructing geometries.
+
+        When ``interpolation_max_distance_in_meters`` is set, gaps farther than
+        that distance from every observed pixel remain null.
+        """
         valid = np.isfinite(layer) & eligible_mask
         targets = ~np.isfinite(layer) & eligible_mask
         if not targets.any() or not valid.any():
@@ -282,9 +302,13 @@ class RasterCleaner:
 
         # Sampling preserves projected nearest-distance behavior for non-square raster pixels.
         sampling = (abs(float(transform.e)), abs(float(transform.a))) if transform is not None else None
-        _, nearest_indexes = distance_transform_edt(
+        distances, nearest_indexes = distance_transform_edt(
             ~valid, sampling=sampling, return_distances=True, return_indices=True
         )
+        maximum_distance = getattr(self, "interpolation_max_distance_in_meters", None)
+        # Without a transform distances are in pixels, so a metre cutoff cannot be applied.
+        if maximum_distance is not None and sampling is not None:
+            targets &= distances <= maximum_distance
         result = layer.copy()
         result[targets] = layer[nearest_indexes[0][targets], nearest_indexes[1][targets]]
         return result
@@ -600,11 +624,17 @@ class RasterCleaner:
             initial_null_counts,
         )
 
+        # Steps without any observation of this variable are not part of its temporal axis.
+        active_steps = observed_counts > 0
+
+        def temporal_operation(values):
+            return self._fill_temporal_active_steps(values, active_steps)
+
         temporal_stage = f"temporal fill ({self.temporal_fill_mode})"
         filled, current_counts = self._run_fill_stage(
             temporal_stage,
             fill_source,
-            self._fill_temporal_neighbors,
+            temporal_operation,
             variable_values,
             eligible_mask,
             fill_allowed,
@@ -667,7 +697,7 @@ class RasterCleaner:
             # Match the main filling path: weak periods are neither targets nor
             # temporal sources for other periods.
             fill_source[~fill_allowed] = np.nan
-            candidate = self._fill_temporal_neighbors(fill_source)
+            candidate = self._fill_temporal_active_steps(fill_source, observed_counts > 0)
             temporally_filled[:, variable_index] = self._merge_filled_values(
                 variable_values, candidate, eligible_mask, fill_allowed
             )

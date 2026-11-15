@@ -5,7 +5,7 @@ agricultural parcels.
 
 ## Project Architecture
 
-### Three Core Pipelines
+### Core Components
 
 1. **Satellite Zonal Statistics** (`src/data_preparation/parcel_stats/`)
    - Extracts Sentinel-1/2 observations from Copernicus Data Space via openEO
@@ -22,7 +22,13 @@ agricultural parcels.
    - Supports hyperparameter tuning with configurable model candidates
 
 3. **EDA Pipeline** (`src/eda/`)
-   - Exploratory data analysis reports; mostly used in notebooks
+   - Exploratory data analysis reports; used in notebooks and in the web app
+
+4. **Parcel Studio web app** (`src/parcel_app/`, `web/`)
+   - FastAPI + PostgreSQL job queue + worker; React frontend
+   - Exposes parcel statistics (openEO), EDA and ML classification (several scenarios per EDA analysis, run step by step)
+   - Data providers live in `src/parcel_app/sources/<provider>/`, analyses in `src/parcel_app/pipelines/<pipeline>/`,
+     both registered in `src/parcel_app/jobs/registry.py`; see `docs/web_app/EXTENDING.md`
 
 ### Key Integration Point
 
@@ -36,7 +42,8 @@ Zonal stats pipeline output → ML classification pipeline input. Features must 
 
 ### Running Code Quality Checks
 ```bash
-# Windows: scripts\run_code_checks.bat
+# Windows: scripts\run_code_checks.bat [python.exe] [live|file] [db]
+# db: also runs the parcel_app PostgreSQL integration tests in a throwaway Docker container
 # Includes: ruff (lint/fix), pydocstyle, bandit (security), pytest with coverage
 # Output: outputs/quality/ folder with junit.xml, pydocstyle.txt, bandit.txt
 # Coverage HTML: outputs/quality/htmlcov/index.html

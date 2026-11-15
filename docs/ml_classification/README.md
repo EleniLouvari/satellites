@@ -142,7 +142,8 @@ config = ClassificationPipelineConfig(
     iqr_upper_quantile=0.75,
     iqr_multiplier=1.5,
     # Works with the original input table as well as reshaped time-series data.
-    spatial_interpolation_method="nearest",  # None, nearest, idw, or kriging
+    fill_nulls=False,  # False excludes rows with null features from training; True fills them
+    spatial_interpolation_method="nearest",  # None, nearest, idw, or kriging; used when fill_nulls=True
     spatial_interpolation_max_distance_in_meters=None,  # required for idw
     cv_ranking_method="score_minus_std",
     spatial_split=False,
@@ -187,9 +188,16 @@ pipeline.run_predict()
 ```
 
 When `apply_iqr=True`, numeric values outside the configured IQR fences are
-replaced with nulls. Spatial interpolation, when configured, runs afterward and
-can fill those nulls. IQR bounds and replacement counts are written to the
-check summary.
+replaced with nulls. Spatial interpolation runs afterward only when
+`fill_nulls=True` (which requires `spatial_interpolation_method`) and can fill
+those nulls. `run_check` prints each `id_column` value that still has nulls and
+the null columns. With `fill_nulls=False` (the default), those rows get
+`excluded_from_training=True`: they are left out of the train/validation/test
+split, cross-validation, and the final refit, but are still predicted by the
+final model in `run_predict` (the model pipelines impute remaining nulls).
+All-null feature columns are ignored for this check because they are rejected
+as features. IQR bounds, replacement counts, and
+`rows_excluded_from_training_with_nulls` are written to the check summary.
 
 ML-ready satellite GeoParquet usage:
 
@@ -202,6 +210,7 @@ config = ClassificationPipelineConfig(
     target_column="class",
     id_column="parcel_id",
     # Optional spatial filling of dated period features.
+    fill_nulls=True,
     spatial_interpolation_method="nearest",
     feature_columns=features,
     spatial_split=True,

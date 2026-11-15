@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
@@ -154,7 +154,7 @@ def _publish(prepared: PreparedRun, options: dict) -> dict:
 def _execute(prepared: PreparedRun, accounts: list[tuple[str, str]], state: dict, *, retry_exhausted_memory=False) -> dict:
     """Persist status around execution without putting exception payloads or secrets on disk."""
     output = Path(prepared.config["output_dir"])
-    state.update(status="running", updated_at=datetime.now(timezone.utc).isoformat())
+    state.update(status="running", updated_at=datetime.now(UTC).isoformat())
     _write_json(output / "run.json", state)
     if (output / "artifacts.json").exists():
         _write_json(output / "artifacts.json", {"status": "running"})
@@ -173,7 +173,7 @@ def _execute(prepared: PreparedRun, accounts: list[tuple[str, str]], state: dict
         state.pop("error_type", None)
         return manifest
     finally:
-        state["updated_at"] = datetime.now(timezone.utc).isoformat()
+        state["updated_at"] = datetime.now(UTC).isoformat()
         _write_json(output / "run.json", state)
 
 

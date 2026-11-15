@@ -16,6 +16,7 @@
   "python.analysis.extraPaths": [
     "${workspaceFolder}/src",
   ],
+  "python.defaultInterpreterPath": "C:\\ProgramData\\anaconda3\\envs\\parcel_env\\python.exe",
   "python.envFile": "${workspaceFolder}/.env",
   "python.testing.pytestEnabled": true,
   "python.testing.unittestEnabled": false,

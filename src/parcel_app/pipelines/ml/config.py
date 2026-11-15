@@ -1,0 +1,691 @@
+"""Grouped, documented ML classification settings and strict web input validation."""
+
+import json
+import warnings
+from dataclasses import MISSING, fields
+from importlib.util import find_spec
+
+from ml_classification.shared.config.config import ClassificationPipelineConfig
+from ml_classification.shared.config.tune_params import _default_tune_params
+from parcel_app.settings import get_settings
+
+# Chosen by the server, never by the browser. feature_columns comes from the column picker
+# and tune_params is edited as one "tune_params.<model>" field per model.
+MANAGED = {
+    "project_dir": "A separate directory is allocated for every ML run.",
+    "reset_project_dir_on_run_check": False,
+    "fail_on_cleanup_error": False,
+    "force_retrain_models": False,
+    "open_html_report": False,
+    "output_schema_version": None,
+    "log_filename": None,
+    "step_names": None,
+}
+SEPARATE = {"feature_columns", "tune_params"}
+TUNE_PREFIX = "tune_params."
+# Web-only settings that shape the input table before the pipeline receives it.
+WEB_DEFAULTS = {"exclude_target_values": [], "add_centroid_features": False}
+CENTROID_COLUMNS = ("centroid_x", "centroid_y")
+OUTLIER_COLUMN = "is_outlier"
+# Fields whose library default is None, so their type cannot be read from the default.
+NULLABLE = {
+    "target_column": "string",
+    "spatial_interpolation_method": "string",
+    "spatial_interpolation_max_distance_in_meters": "number",
+    "spatial_interpolation_variogram_max_distance_in_meters": "number",
+    "top_voting_models": "number",
+    "lstm_temporal_statistics": "array",
+    "lstm_temporal_frequency": "string",
+    "prediction_column": "string",
+    "prediction_filled_column": "string",
+}
+SCORERS = ["f1_macro", "balanced_accuracy", "f1_weighted", "accuracy"]
+CHOICES = {
+    "float_dtype": ["float32", "float64"],
+    "spatial_interpolation_method": [None, "nearest", "idw", "kriging"],
+    "spatial_split_method": ["by_row", "by_group"],
+    "scoring_primary": SCORERS,
+    "scoring_secondary": SCORERS,
+    "cv_ranking_method": ["score_minus_std", "mean_score"],
+    "label_balancing_method": ["none", "random_oversample", "smote"],
+    "selection_type": ["soft_voting", "single_model"],
+    "lstm_temporal_frequency": [None, "monthly"],
+    "lstm_class_balancing_method": ["balanced_class_weight", "none"],
+}
+def _when(rule, *names):
+    """Give several dependent fields the same parent rule."""
+    return {name: rule for name in names}
+
+
+# A dependent field is greyed out, with the reason shown, until its parent has one of these values.
+ENABLED_WHEN = {
+    **_when({"apply_iqr": [True]}, "iqr_lower_quantile", "iqr_upper_quantile", "iqr_multiplier"),
+    "spatial_interpolation_method": {"fill_nulls": [True]},
+    "spatial_interpolation_max_distance_in_meters": {"fill_nulls": [True], "spatial_interpolation_method": ["nearest", "idw"]},
+    **_when(
+        {"fill_nulls": [True], "spatial_interpolation_method": ["kriging"]},
+        "spatial_interpolation_variogram_lags",
+        "spatial_interpolation_variogram_max_distance_in_meters",
+    ),
+    **_when({"spatial_split": [True]}, "spatial_split_method", "spatial_split_grid_size"),
+    "smote_k_neighbors": {"label_balancing_method": ["smote"]},
+    "top_voting_models": {"selection_type": ["soft_voting"]},
+    **_when(
+        {"optimize_class_probabilities": [True]},
+        "probability_multiplier_grid",
+        "probability_optimization_iterations",
+        "probability_optimization_max_accuracy_drop",
+    ),
+    **_when(
+        {"rank_confidence_enabled": [True]},
+        "rank_confidence_minimum_models",
+        "rank_confidence_high_min_borda",
+        "rank_confidence_high_max_range",
+        "rank_confidence_medium_min_borda",
+        "rank_confidence_medium_max_range",
+    ),
+    **_when(
+        {"class_reliability_enabled": [True]},
+        "class_reliability_minimum_oof_support",
+        "class_reliability_high_min_precision",
+        "class_reliability_medium_min_precision",
+    ),
+    **_when(
+        {"inspection_scoring_enabled": [True]},
+        "inspection_include_outlier",
+        "inspection_data_reliability_column",
+        "inspection_geometry_complexity_column",
+        "inspection_model_weight",
+        "inspection_data_weight",
+        "inspection_geometry_weight",
+        "inspection_low_data_reliability_threshold",
+        "inspection_medium_data_reliability_threshold",
+        "inspection_medium_geometry_risk_threshold",
+        "inspection_high_geometry_risk_threshold",
+        "inspection_medium_score_threshold",
+        "inspection_high_score_threshold",
+    ),
+    "shap_sample_size": {"interpretability_include_shap": [True]},
+}
+
+# (group id, title, what the group is for, {field: what the field does}). Order is the form order.
+GROUPS = (
+    (
+        "data",
+        "Target and parcels",
+        "What the models predict and which parcels take part. Feature columns are chosen in step 2 above.",
+        {
+            "target_column": "Column holding the class to predict, for example the crop category. Parcels with an empty "
+            "value are not used for training; they only receive a prediction.",
+            "id_column": "Column that identifies each parcel in the checks, reports and prediction table.",
+            "exclude_target_values": "Classes to leave out completely, separated by commas (9999, 8888) or as a JSON "
+            "list ([9999, 8888]). Parcels with these target values are neither trained on nor predicted.",
+            "add_centroid_features": "Add each parcel's centroid coordinates (centroid_x, centroid_y, in metres) as two "
+            "extra features, so models can learn regional patterns.",
+            "enforce_unique_ids": "Stop the run when two rows share the same ID. Keep enabled: the pipeline expects one "
+            "row per parcel.",
+            "float_dtype": "Numeric precision used for the features. float32 halves memory use; float64 keeps full precision.",
+        },
+    ),
+    (
+        "quality",
+        "Data cleaning before training",
+        "Optional outlier clipping and gap filling applied to the feature values during the Check step.",
+        {
+            "apply_iqr": "Treat feature values outside the IQR fences as missing before training.",
+            "iqr_lower_quantile": "Lower quantile of the IQR range (0.25 = first quartile).",
+            "iqr_upper_quantile": "Upper quantile of the IQR range (0.75 = third quartile).",
+            "iqr_multiplier": "How many IQRs beyond the quantiles a value may lie before it counts as an outlier. "
+            "Larger values remove fewer points.",
+            "fill_nulls": "Fill missing feature values from neighbouring parcels. When disabled, parcels with missing "
+            "features are left out of training but are still predicted.",
+            "spatial_interpolation_method": "How gaps are filled: nearest parcel, inverse distance weighting (idw) or kriging.",
+            "spatial_interpolation_max_distance_in_meters": "Farthest neighbour used for filling. Required for idw; "
+            "blank means no limit for nearest.",
+            "spatial_interpolation_variogram_lags": "Number of distance bins used to fit the kriging variogram.",
+            "spatial_interpolation_variogram_max_distance_in_meters": "Largest parcel distance considered by the kriging "
+            "variogram. Required for kriging.",
+        },
+    ),
+    (
+        "split",
+        "Train/test split and cross-validation",
+        "How labelled parcels are divided to train the models and to measure their accuracy honestly.",
+        {
+            "test_size": "Share of labelled parcels held out as the final test set (0.2 = 20%).",
+            "cv_folds": "Number of cross-validation folds used to compare models. Every class needs at least this many parcels.",
+            "random_state": "Seed for splits, searches and models. The same seed and settings reproduce the same run.",
+            "spatial_split": "Split by location instead of at random, so nearby parcels do not leak between train and test.",
+            "spatial_split_method": "by_row spreads individual parcels across the area; by_group holds out complete grid cells.",
+            "spatial_split_grid_size": "Number of grid cells per side used for the spatial split (30 = a 30 × 30 grid).",
+        },
+    ),
+    (
+        "models",
+        "Models and hyperparameter search",
+        "Which algorithms are trained and how their settings are searched and ranked.",
+        {
+            "selected_models": "Algorithms to train. More models take longer; a model whose library is not installed "
+            "on the server is skipped.",
+            "max_search_candidates": "Hyperparameter combinations tried per model, sampled from its grid. "
+            "Higher is slower and may find better settings.",
+            "n_jobs": "CPU cores used in parallel for the search, up to the server limit.",
+            "scoring_primary": "Metric used to tune and rank the models. f1_macro weights every class equally.",
+            "scoring_secondary": "Additional metrics calculated and reported for every model.",
+            "cv_ranking_method": "score_minus_std prefers models that are stable across folds; mean_score ranks by the average only.",
+        },
+    ),
+    (
+        "balance",
+        "Class imbalance",
+        "How classes with few parcels are handled during training.",
+        {
+            "label_balancing_method": "none keeps the data as is; random_oversample repeats parcels of rare classes; "
+            "smote creates synthetic ones.",
+            "smote_k_neighbors": "Neighbours SMOTE uses to create a synthetic parcel. Must be smaller than the rarest class.",
+            "rare_category_min_frequency": "For text (categorical) features: values seen fewer times than this are grouped "
+            "as infrequent. A value below 1 is read as a share of the rows.",
+        },
+    ),
+    (
+        "ensemble",
+        "Final model and probability tuning",
+        "How the final predictor is built from the trained models.",
+        {
+            "selection_type": "soft_voting averages the class probabilities of the best models; single_model keeps only the best one.",
+            "top_voting_models": "How many of the best-ranked models vote, at most the number of selected "
+            "models. Blank uses every trained model.",
+            "optimize_class_probabilities": "Rescale class probabilities after training to raise macro F1, which helps rare classes.",
+            "probability_multiplier_grid": "Multipliers tried for each class probability, as a JSON list.",
+            "probability_optimization_iterations": "Number of passes over the classes while searching the multipliers.",
+            "probability_optimization_max_accuracy_drop": "Largest accuracy loss accepted in exchange for a better "
+            "macro F1 (0.02 = two percentage points).",
+        },
+    ),
+    (
+        "confidence",
+        "Prediction confidence",
+        "How each prediction is graded HIGH, MEDIUM or LOW confidence, and how reliable each predicted class is.",
+        {
+            "prediction_confidence_threshold": "Review cut-off for the highest soft-voting class probability (0-1). "
+            "Applied only when rank confidence is disabled.",
+            "rank_confidence_enabled": "Grade every prediction by how strongly the voting models agree on its class, "
+            "using the Borda score described above.",
+            "rank_confidence_minimum_models": "Fewest voting models needed for a Borda grade. With fewer models every "
+            "prediction is LOW (reason insufficient_models).",
+            "rank_confidence_high_min_borda": "Lowest mean Borda score (0-100) of the predicted class that still counts as HIGH.",
+            "rank_confidence_high_max_range": "Largest rank range (worst minus best rank of the predicted class across "
+            "the models) still allowed for HIGH. 0 means every model ranked it the same.",
+            "rank_confidence_medium_min_borda": "Lowest mean Borda score (0-100) that still counts as MEDIUM. "
+            "Must not exceed the HIGH value.",
+            "rank_confidence_medium_max_range": "Largest rank range still allowed for MEDIUM. Must be at least the HIGH value.",
+            "class_reliability_enabled": "Measure the out-of-fold precision of every predicted class and use it in the "
+            "inspection priority rules.",
+            "class_reliability_minimum_oof_support": "Out-of-fold predictions of a class needed before its precision is "
+            "trusted. Classes with fewer are marked unavailable, not LOW.",
+            "class_reliability_high_min_precision": "Out-of-fold precision (0-1) from which a class is HIGH reliability.",
+            "class_reliability_medium_min_precision": "Out-of-fold precision (0-1) from which a class is MEDIUM "
+            "reliability; below it the class is LOW.",
+        },
+    ),
+    (
+        "inspection",
+        "Inspection priority",
+        ("Ranks parcels for field inspection from five pieces of evidence: declared versus predicted class, "
+        "rank confidence, class reliability, data reliability and geometry risk."),
+        {
+            "inspection_scoring_enabled": "Calculate an inspection priority for every predicted parcel.",
+            "inspection_include_outlier": "After the rule table, raise the priority one band (for example Low to "
+            "Low–Medium) for parcels the selected EDA analysis flagged as outliers. Very High stays Very High.",
+            "inspection_data_reliability_column": "Column with the 0-1 data reliability score: the share of the parcel's "
+            "pixel values that were observed rather than filled. Inspection is skipped when the column is absent.",
+            "inspection_geometry_complexity_column": "Column with the shape complexity score (0 = simple compact shape, "
+            "larger = irregular or elongated). Inspection is skipped when the column is absent.",
+            "inspection_model_weight": "Weight w_model of the confidence risk in the diagnostic score.",
+            "inspection_data_weight": "Weight w_data of the data risk in the diagnostic score.",
+            "inspection_geometry_weight": "Weight w_geometry of the geometry risk. The three weights must sum to 1.",
+            "inspection_low_data_reliability_threshold": "Reason codes only: data reliability below this value is "
+            "reported as LOW_DATA_RELIABILITY.",
+            "inspection_medium_data_reliability_threshold": "Rule table and reason codes: data reliability must be "
+            "strictly above this value to count as high. At or below it, rules R10/R20 give Medium; between the low "
+            "threshold and this one the reason is MEDIUM_DATA_RELIABILITY.",
+            "inspection_medium_geometry_risk_threshold": "Rule table and reason codes: geometry risk (0-1 percentile) "
+            "below this value counts as favourable. At or above it the parcel drops one band in the rules and gets "
+            "the reason MEDIUM_GEOMETRY_COMPLEXITY.",
+            "inspection_high_geometry_risk_threshold": "Reason codes only: geometry risk at or above this percentile is "
+            "reported as HIGH_GEOMETRY_COMPLEXITY.",
+            "inspection_medium_score_threshold": "Diagnostic score only: a score at or above this value (0-100) gives "
+            "inspection_need_base MEDIUM.",
+            "inspection_high_score_threshold": "Diagnostic score only: a score at or above this value (0-100) gives "
+            "inspection_need_base HIGH.",
+        },
+    ),
+    (
+        "interpretability",
+        "Explanations and report plots",
+        "How much explanation the reports contain. These settings do not change the predictions.",
+        {
+            "interpretability_top_models": "Number of best models that receive feature-importance analysis. 0 skips it.",
+            "interpretability_include_shap": "Also calculate SHAP values. More detailed, and considerably slower.",
+            "shap_sample_size": "Parcels sampled for the SHAP calculation.",
+            "feature_importance_top_n": "Number of most important features shown per model.",
+            "max_distribution_features": "Features shown in the train/test distribution comparison plots.",
+            "max_features_per_plot": "Largest number of features drawn in one plot.",
+            "max_map_geometries": "Largest number of parcels drawn on report maps; larger sets are sampled.",
+        },
+    ),
+    (
+        "lstm",
+        "LSTM time-series model",
+        "Used only when keras_lstm is selected. It reads the dated feature columns as a time series.",
+        {
+            "lstm_temporal_statistics": "Statistics of the dated features that form the sequence, as a JSON list "
+            'such as ["median"] or ["median", "sd", "range"].',
+            "lstm_require_complete_timesteps": "Use only dates that have every selected statistic and index.",
+            "lstm_temporal_frequency": "monthly groups the dates into months; None keeps each acquisition date.",
+            "lstm_min_timesteps": "Fewest time steps required to train the LSTM.",
+            "lstm_class_balancing_method": "balanced_class_weight gives rare classes more weight; none treats all parcels equally.",
+        },
+    ),
+    (
+        "output",
+        "Output column names",
+        "Names of the columns added to the prediction table.",
+        {
+            "prediction_column": "Column for the predicted class. Blank uses <target>_prediction.",
+            "prediction_filled_column": "Column holding the declared class where known and the prediction elsewhere. "
+            "Blank uses <target>_filled.",
+            "probability_prefix": "Prefix of the per-class probability columns, for example probability_wheat.",
+            "prediction_confidence_column": "Column for the highest class probability of each prediction.",
+            "prediction_confidence_level_column": "Column for the HIGH, MEDIUM or LOW confidence grade.",
+            "prediction_review_column": "Column marking predictions that need review.",
+        },
+    ),
+)
+# Optional sections inside a group: (id, title, explanation paragraphs, formula or None, member fields).
+# Every member must belong to the enclosing group; fields of a group outside any section are shown first.
+SUBGROUPS = {
+    "confidence": (
+        (
+            "probability",
+            "Maximum probability check",
+            (
+                ("The simplest confidence measure: the highest class probability of the final soft-voting model, "
+                "saved in the prediction_confidence column for every parcel."),
+                ("It flags a prediction for review only when rank confidence is disabled. With rank confidence "
+                "enabled, the review flag comes from the Borda grade below and this value is kept as a diagnostic."),
+            ),
+            None,
+            ("prediction_confidence_threshold",),
+        ),
+        (
+            "borda",
+            "Rank confidence (Borda score)",
+            (
+                ("The Borda score measures how strongly the voting models agree on the predicted class. Each model "
+                "ranks all K classes by its own probabilities (rank 1 = most likely; tied probabilities share an "
+                "average rank) and every rank is converted into points: first place earns 100, last place 0. "
+                "The points of the predicted class are averaged over the models. Raw model probabilities are used, "
+                "before any class multipliers, so the score stays independent of probability tuning."),
+                ("Rank range is the worst minus the best rank the models gave the predicted class; 0 means "
+                "they all ranked it the same. A grade is HIGH or MEDIUM only when the predicted class is also the "
+                "unique Borda winner (no tie, no other class with more points) and enough models vote. Everything "
+                "else is LOW."),
+                ("Output: prediction_confidence_level (HIGH, MEDIUM or LOW) with the mean Borda, rank range and the "
+                "reason for the grade. LOW or invalid predictions are flagged for review, and the grade is an input "
+                "of the inspection priority rules and of the diagnostic inspection score."),
+            ),
+            ("Borda points  B(r) = 100 × (K − r) / (K − 1)\n"
+            "Mean Borda    = average of B(r) for the predicted class over the voting models\n"
+            "Rank range    = max(r) − min(r) of the predicted class over the voting models\n"
+            "\n"
+            "HIGH    unique winner · mean Borda ≥ high min · range ≤ high max · models ≥ minimum\n"
+            "MEDIUM  unique winner · mean Borda ≥ medium min · range ≤ medium max · models ≥ minimum\n"
+            "LOW     everything else\n"
+            "\n"
+            "Example  K = 10 classes, 3 models rank the class 1, 1, 2\n"
+            "         B = 100, 100, 88.9 → mean 96.3, range 1 → HIGH (defaults 90 and 2)"),
+            (
+                "rank_confidence_enabled",
+                "rank_confidence_minimum_models",
+                "rank_confidence_high_min_borda",
+                "rank_confidence_high_max_range",
+                "rank_confidence_medium_min_borda",
+                "rank_confidence_medium_max_range",
+            ),
+        ),
+        (
+            "class_reliability",
+            "Class reliability",
+            (
+                ("Rank agreement cannot detect a class that every model predicts consistently but wrongly. Class "
+                "reliability measures how often each predicted class was actually right. During the Evaluate step "
+                "the selected models predict the training parcels out-of-fold (each parcel by models that did not "
+                "train on it), and the precision of every predicted class is calculated. The table is frozen in "
+                "Evaluate and reused by Predict."),
+                ("It never changes the confidence grade or the review flag. It is used only in the inspection "
+                "priority rules: HIGH allows the strongest bands (Very Low or Very High), MEDIUM gives one band "
+                "less, LOW gives Medium (inconclusive), and a class below the support minimum gives Medium with "
+                "rule CLASS_RELIABILITY_UNAVAILABLE. When disabled, the rules ignore this condition."),
+                ("Output: prediction_class_reliability_level, precision, support and validity for the predicted "
+                "class of every parcel."),
+            ),
+            ("precision(c) = correct out-of-fold predictions of c / all out-of-fold predictions of c\n"
+            "support(c)   = all out-of-fold predictions of c\n"
+            "\n"
+            "HIGH    support ≥ minimum · precision ≥ high min\n"
+            "MEDIUM  support ≥ minimum · precision ≥ medium min\n"
+            "LOW     support ≥ minimum · precision < medium min\n"
+            "n/a     support < minimum (treated as unavailable evidence)"),
+            (
+                "class_reliability_enabled",
+                "class_reliability_minimum_oof_support",
+                "class_reliability_high_min_precision",
+                "class_reliability_medium_min_precision",
+            ),
+        ),
+    ),
+    "inspection": (
+        (
+            "inputs",
+            "Switch and input columns",
+            (
+                ("The priority comes from a table of 20 rules (R01–R20). It compares the declared class with the "
+                "prediction and checks the rank confidence and class reliability (Prediction confidence group), the "
+                "data reliability and the geometry risk. Agreement backed by strong evidence gives Very Low "
+                "or Low; disagreement backed by strong evidence gives High or Very High; weak evidence gives Medium."),
+                ("Parcels without a declared class get Medium (rule NO_DECLARATION). Parcels with missing or "
+                "invalid evidence get Unknown. The optional EDA outlier flag is applied last."),
+                ("Output: inspection_need, inspection_priority_label, the matched inspection_rule, "
+                "inspection_check_type and pipe-separated inspection_reasons for every parcel."),
+            ),
+            None,
+            (
+                "inspection_scoring_enabled",
+                "inspection_include_outlier",
+                "inspection_data_reliability_column",
+                "inspection_geometry_complexity_column",
+            ),
+        ),
+        (
+            "weights",
+            "Diagnostic score weights",
+            (
+                ("The three weights combine three risks, each scaled 0 (no concern) to 1 (strong concern), into one "
+                "0-100 inspection_score. Geometry risk is the percentile of the parcel's shape complexity among all "
+                "predicted parcels, so 0.9 means more complex than 90% of them."),
+                ("Output: inspection_score (higher = weaker evidence) and inspection_need_base (LOW, MEDIUM or HIGH "
+                "from the score thresholds below). The score does not depend on the declared class and does not set "
+                "the final priority. It is shown in the report to compare parcels and audit the rules."),
+            ),
+            ("confidence_risk = 0 (HIGH) · 0.5 (MEDIUM) · 1 (LOW)   from the rank confidence grade\n"
+            "data_risk       = 1 − data reliability\n"
+            "geometry_risk   = percentile of shape complexity (0-1)\n"
+            "\n"
+            "inspection_score = 100 × (w_model × confidence_risk\n"
+            "                        + w_data × data_risk\n"
+            "                        + w_geometry × geometry_risk)\n"
+            "\n"
+            "Example  MEDIUM confidence, reliability 0.9, geometry percentile 0.4, weights 0.60/0.25/0.15\n"
+            "         100 × (0.60 × 0.5 + 0.25 × 0.1 + 0.15 × 0.4) = 38.5 → MEDIUM (25 ≤ score < 50)"),
+            ("inspection_model_weight", "inspection_data_weight", "inspection_geometry_weight"),
+        ),
+        (
+            "thresholds",
+            "Thresholds",
+            (
+                ("Each threshold divides one input into bands. They serve three purposes. Only the medium data "
+                "reliability and medium geometry risk thresholds affect the final priority, through the rule table. "
+                "The low data reliability and high geometry risk thresholds only add explanation codes to "
+                "inspection_reasons. The two score thresholds only band the diagnostic score into inspection_need_base."),
+            ),
+            ("Threshold                       Compared with          Used in\n"
+            "low data reliability   (0.60)   data reliability       reasons\n"
+            "medium data reliability (0.80)  data reliability       rule table + reasons\n"
+            "medium geometry risk   (0.50)   geometry percentile    rule table + reasons\n"
+            "high geometry risk     (0.75)   geometry percentile    reasons\n"
+            "medium score           (25)     inspection_score       inspection_need_base\n"
+            "high score             (50)     inspection_score       inspection_need_base\n"
+            "\n"
+            "Rule table: high data = reliability > medium threshold;\n"
+            "            favourable geometry = geometry risk < medium threshold"),
+            (
+                "inspection_low_data_reliability_threshold",
+                "inspection_medium_data_reliability_threshold",
+                "inspection_medium_geometry_risk_threshold",
+                "inspection_high_geometry_risk_threshold",
+                "inspection_medium_score_threshold",
+                "inspection_high_score_threshold",
+            ),
+        ),
+    ),
+}
+# Groups most scenarios change are shown open; the rest start collapsed to keep the form short.
+OPEN_GROUPS = {"data", "split", "models"}
+TUNING_GROUP = {
+    "id": "tuning",
+    "label": "Hyperparameter grids (advanced)",
+    "description": "Values searched for each model, as JSON: {\"parameter\": [values]}. Only the grids of selected models are used.",
+    "collapsed": True,
+}
+
+
+def available_models():
+    """List models whose optional libraries are installed, without importing those libraries."""
+    optional = {
+        "xgboost": ("xgboost",),
+        "lightgbm": ("lightgbm",),
+        "tensorflow_neural_network": ("tensorflow", "scikeras"),
+        "keras_lstm": ("tensorflow", "scikeras"),
+    }
+    return [
+        name
+        for name in _default_tune_params()
+        if all(find_spec(module) is not None for module in optional.get(name, ()))
+    ]
+
+
+def ml_defaults():
+    """Return JSON-compatible defaults for every editable setting, keyed as the form submits them."""
+    # Read the declared defaults; building a config would clip limits to placeholder columns.
+    defaults = {
+        option.name: option.default
+        for option in fields(ClassificationPipelineConfig)
+        if option.default is not MISSING and option.name not in MANAGED
+    }
+    defaults |= WEB_DEFAULTS
+    # The browser must choose the target; the output names are derived from it when left blank.
+    defaults |= {"target_column": None, "prediction_column": None, "prediction_filled_column": None}
+    defaults["selected_models"] = available_models()
+    defaults["n_jobs"] = get_settings().max_batch_workers
+    # The EDA outlier flag is always attached in the web app, so use it unless the user opts out.
+    defaults["inspection_include_outlier"] = True
+    # Web scenarios start with a row-wise spatial split, a five-model vote and probability optimisation.
+    defaults |= {
+        "spatial_split": True,
+        "spatial_split_method": "by_row",
+        "top_voting_models": 5,
+        "optimize_class_probabilities": True,
+        "probability_optimization_iterations": 5,
+    }
+    defaults |= {f"{TUNE_PREFIX}{model}": grid for model, grid in _default_tune_params().items()}
+    return json.loads(json.dumps(defaults))
+
+
+def _field_type(name, value):
+    """Map a default value to the form control type."""
+    if name in NULLABLE:
+        return NULLABLE[name]
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, (int, float)):
+        return "number"
+    if isinstance(value, list):
+        return "array"
+    return "object" if isinstance(value, dict) else "string"
+
+
+def ml_schema(columns):
+    """Describe every setting with its group, default, choices, dependencies and help text."""
+    defaults = ml_defaults()
+    # A spatial split needs parcel geometry, so results without it start with a random split.
+    defaults["spatial_split"] = any(column.get("geometry") for column in columns)
+    names = [column["name"] for column in columns if not column.get("geometry")]
+    choices = CHOICES | {
+        "target_column": [None, *names],
+        "id_column": names,
+        "selected_models": list(_default_tune_params()),
+    }
+    sections = {
+        name: section[0] for group_sections in SUBGROUPS.values() for section in group_sections for name in section[4]
+    }
+    metadata = [
+        {
+            "name": name,
+            "type": _field_type(name, defaults[name]),
+            "default": defaults[name],
+            "choices": choices.get(name),
+            "group": group,
+            "subgroup": sections.get(name),
+            "description": description,
+            "enabled_when": ENABLED_WHEN.get(name),
+        }
+        for group, _, _, members in GROUPS
+        for name, description in members.items()
+    ]
+    metadata += [
+        {
+            "name": f"{TUNE_PREFIX}{model}",
+            "label": model.replace("_", " "),
+            "type": "object",
+            "default": defaults[f"{TUNE_PREFIX}{model}"],
+            "choices": None,
+            "group": TUNING_GROUP["id"],
+            "description": "",
+            "enabled_when": None,
+        }
+        for model in _default_tune_params()
+    ]
+    return {
+        "defaults": defaults,
+        "fields": metadata,
+        "groups": [
+            {
+                "id": group,
+                "label": title,
+                "description": text,
+                "collapsed": group not in OPEN_GROUPS,
+                "subgroups": [
+                    {"id": section, "label": label, "description": list(paragraphs), "formula": formula}
+                    for section, label, paragraphs, formula, _ in SUBGROUPS.get(group, ())
+                ],
+            }
+            for group, title, text, _ in GROUPS
+        ]
+        + [TUNING_GROUP],
+        "managed": MANAGED,
+        "limits": {"upload_limit_bytes": 0, "max_batch_workers": get_settings().max_batch_workers},
+    }
+
+
+def _valid_grid(grid):
+    """Accept only a bounded {"model__parameter": [JSON scalars or lists]} search grid."""
+    return (
+        isinstance(grid, dict)
+        and 0 < len(grid) <= 40
+        and all(
+            isinstance(key, str) and key.startswith("model__") and isinstance(values, list) and 0 < len(values) <= 50
+            for key, values in grid.items()
+        )
+    )
+
+
+def _valid_value(name, value, original, choices):
+    """Check one setting against the type of its default and its allowed choices."""
+    if name.startswith(TUNE_PREFIX):
+        return _valid_grid(value)
+    if value is None:
+        return name in NULLABLE
+    kind = _field_type(name, original)
+    if kind == "boolean":
+        return type(value) is bool
+    if kind == "number":
+        return type(value) is int if type(original) is int else type(value) in {int, float}
+    if kind == "array":
+        if name == "probability_multiplier_grid":
+            return isinstance(value, list) and 0 < len(value) <= 50 and all(type(item) in {int, float} for item in value)
+        scalar = (str, int, float) if name == "exclude_target_values" else str
+        valid = isinstance(value, list) and len(value) <= 200 and all(isinstance(item, scalar) for item in value)
+        return valid and (name not in choices or set(value) <= set(choices[name]))
+    return isinstance(value, str) and 0 < len(value) <= 200 and (name not in choices or value in choices[name])
+
+
+def validate_ml(settings, features, available, *, geometry=True):
+    """Return complete validated settings, rejecting unknown keys, bad types and unusable columns.
+
+    ``available`` lists the selectable columns (parcel result plus EDA-calculated); ``geometry``
+    says whether the parcel result has a geometry column for spatial splitting and centroids.
+    """
+    defaults = ml_defaults()
+    if not isinstance(settings, dict) or set(settings) - set(defaults):
+        raise ValueError("Error: Unsupported or server-managed ML setting.")
+    options = defaults | settings
+    choices = CHOICES | {"selected_models": list(_default_tune_params())}
+    for name, value in options.items():
+        if not _valid_value(name, value, defaults[name], choices):
+            raise ValueError(f"Error: Invalid value for {name}.")
+    try:
+        json.dumps(options, allow_nan=False)
+    except ValueError:
+        raise ValueError("Error: Settings must contain only finite numbers.") from None
+    target, identifier = options["target_column"], options["id_column"]
+    if target is None or target not in available:
+        raise ValueError("Error: Choose the target column to predict.")
+    if identifier not in available or identifier == target:
+        raise ValueError("Error: Choose an ID column that differs from the target.")
+    reserved = {target, identifier, *CENTROID_COLUMNS}
+    if (
+        not isinstance(features, list)
+        or not features
+        or len(features) != len(set(features))
+        or set(features) - set(available)
+        or reserved & set(features)
+    ):
+        raise ValueError("Error: Select unique feature columns from the list, excluding the target and ID.")
+    if not options["selected_models"]:
+        raise ValueError("Error: Select at least one model.")
+    if not 1 <= options["n_jobs"] <= get_settings().max_batch_workers:
+        raise ValueError(f"Error: n_jobs must be between 1 and {get_settings().max_batch_workers}.")
+    if not 0 <= options["random_state"] <= 2**32 - 1:
+        raise ValueError("Error: random_state must be between 0 and 4294967295.")
+    if not geometry and (options["spatial_split"] or options["add_centroid_features"] or options["fill_nulls"]):
+        raise ValueError("Error: This parcel result has no geometry; disable spatial split, gap filling and centroid features.")
+    try:
+        with warnings.catch_warnings():
+            # The library reports clipped limits as warnings; they are not submission errors.
+            warnings.simplefilter("ignore")
+            ClassificationPipelineConfig(project_dir="managed", **pipeline_arguments(options, features))
+    except (TypeError, ValueError) as error:
+        message = str(error)
+        raise ValueError(message if message.startswith("Error:") else f"Error: {message}") from None
+    return options
+
+
+def _tuples(value):
+    """Restore the tuples that JSON stored as lists, such as hidden layer sizes."""
+    return tuple(_tuples(item) for item in value) if isinstance(value, list) else value
+
+
+def pipeline_arguments(options, features):
+    """Translate validated web settings into ``ClassificationPipelineConfig`` arguments."""
+    arguments = {k: v for k, v in options.items() if k not in WEB_DEFAULTS and not k.startswith(TUNE_PREFIX)}
+    arguments["feature_columns"] = [*features, *(CENTROID_COLUMNS if options["add_centroid_features"] else ())]
+    # The vote cannot use more models than were selected; one model falls back to a single-model run.
+    if arguments["top_voting_models"] and len(arguments["selected_models"]) >= 2:
+        arguments["top_voting_models"] = min(arguments["top_voting_models"], len(arguments["selected_models"]))
+    arguments["tune_params"] = {
+        name.removeprefix(TUNE_PREFIX): {parameter: [_tuples(item) for item in values] for parameter, values in grid.items()}
+        for name, grid in options.items()
+        if name.startswith(TUNE_PREFIX)
+    }
+    return arguments | {k: v for k, v in MANAGED.items() if isinstance(v, bool)}

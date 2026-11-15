@@ -19,13 +19,13 @@ class EDAConfig:
     target_column: str | None = None
     target_task: str = "auto"
     id_column: str | None = None
-    max_features_per_plot: int = 12
-    max_categories: int = 15
+    max_features_per_plot: int = 30
+    max_categories: int = 20
     categorical_association_max_unique_ratio: float = 0.95
     high_missing_percent_threshold: float = 40.0
     quasi_constant_threshold: float = 0.98
-    max_target_levels_for_plots: int = 8
-    max_multivariate_features: int = 8
+    max_target_levels_for_plots: int = 20
+    max_multivariate_features: int = 15
     correlation_threshold: float = 0.75
     normality_sample_size: int = 5000
     outlier_zscore_threshold: float = 3.0

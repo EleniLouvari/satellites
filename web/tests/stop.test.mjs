@@ -6,7 +6,7 @@ import { createServer } from "vite";
 
 const server = await createServer({ server: { middlewareMode: true }, appType: "custom" });
 after(async () => server.close());
-const { default: StopAction } = await server.ssrLoadModule("/src/StopAction.tsx");
+const { default: StopAction } = await server.ssrLoadModule("/src/features/parcel-stats/StopAction.tsx");
 const render = (status, stop_requested = false) => renderToStaticMarkup(
   React.createElement(StopAction, { run: { run_id: "test", name: "Test", status, stop_requested }, onRequested() {} }),
 );

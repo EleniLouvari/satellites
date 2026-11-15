@@ -2,7 +2,14 @@
 
 import json
 
-from data_preparation.sources.openeo.job_options import failure_kind, next_executor_memory, validate_job_options
+import pandas as pd
+
+from data_preparation.sources.openeo.job_options import (
+    executor_memory_for_area,
+    failure_kind,
+    next_executor_memory,
+    validate_job_options,
+)
 
 
 class TileJobRetryMixin:
@@ -11,20 +18,46 @@ class TileJobRetryMixin:
     openeo_job_options = None
     openeo_auto_memory_retry = True
     openeo_max_executor_memory = "8G"
+    openeo_memory_reference_area_km2 = None
     retry_exhausted_memory = False
+
+    def _initial_job_options(self, row):
+        """Scale the configured heap with the tile area; other options stay as configured."""
+        options = validate_job_options(self.openeo_job_options)
+        bounds = [row.get(name) for name in ("west", "south", "east", "north")]
+        if self.openeo_memory_reference_area_km2 is None or any(value is None or pd.isna(value) for value in bounds):
+            return options
+        west, south, east, north = (float(value) for value in bounds)
+        # Tile extents are stored in the projected working CRS, so the units are metres.
+        area_km2 = (east - west) * (north - south) / 1e6
+        memory = executor_memory_for_area(
+            options["executor-memory"], area_km2, self.openeo_memory_reference_area_km2, self.openeo_max_executor_memory,
+        )
+        return {**options, "executor-memory": memory}
 
     def _job_options_for_row(self, row):
         """Prefer the durable options of this batch over the run's initial options."""
         saved = row.get("job_options")
-        return validate_job_options(json.loads(saved) if isinstance(saved, str) and saved else self.openeo_job_options)
+        return validate_job_options(json.loads(saved)) if isinstance(saved, str) and saved else self._initial_job_options(row)
 
     def _ensure_job_options(self, job_db):
         """Initialize legacy metadata once without changing IDs, states or retry counts."""
         jobs = job_db.df.copy()
-        defaults = {"job_options": json.dumps(validate_job_options(self.openeo_job_options)),
-                    "job_options_history": "{}", "failure_kind": ""}
         changed = False
-        for column, default in defaults.items():
+        if "job_options" not in jobs:
+            jobs["job_options"] = None
+        missing = jobs["job_options"].isna()
+        for index in jobs.index[missing]:
+            options = self._initial_job_options(jobs.loc[index])
+            jobs.loc[index, "job_options"] = json.dumps(options, sort_keys=True)
+            if options["executor-memory"] != validate_job_options(self.openeo_job_options)["executor-memory"]:
+                self.source_logger.info(
+                    "Batch %s uses executor-memory=%s for its tile area (reference %s km2, cap %s).",
+                    int(jobs.loc[index, "batch_number"]), options["executor-memory"],
+                    self.openeo_memory_reference_area_km2, self.openeo_max_executor_memory,
+                )
+        changed = bool(missing.any())
+        for column, default in {"job_options_history": "{}", "failure_kind": ""}.items():
             if column not in jobs:
                 jobs[column] = default
                 changed = True

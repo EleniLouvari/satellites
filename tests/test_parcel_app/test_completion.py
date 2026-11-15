@@ -5,7 +5,7 @@ import pandas as pd
 
 
 def test_run_progress_separates_remote_jobs_from_completed_results(tmp_path):
-    from parcel_app.completion import run_progress
+    from parcel_app.pipelines.parcel_stats.completion import run_progress
 
     run = {"status": "running", "output_dir": str(tmp_path), "summary": {"batch_count": 2, "partition_count": 1}}
     folder = tmp_path / "partition_1" / "monthly_cubes"
@@ -24,13 +24,13 @@ def test_run_progress_separates_remote_jobs_from_completed_results(tmp_path):
 
 
 def test_unknown_progress_is_not_invented(tmp_path):
-    from parcel_app.completion import run_progress
+    from parcel_app.pipelines.parcel_stats.completion import run_progress
 
     assert run_progress({"status": "running", "output_dir": str(tmp_path), "summary": {}})["percent"] is None
 
 
 def test_local_batches_advance_before_partition_assembly(tmp_path):
-    from parcel_app.completion import run_progress
+    from parcel_app.pipelines.parcel_stats.completion import run_progress
 
     run = {"status": "running", "output_dir": str(tmp_path), "summary": {"batch_count": 4, "partition_count": 1}}
     folder = tmp_path / "partition_1" / "monthly_cubes" / "signature"
@@ -68,9 +68,21 @@ def test_local_batches_advance_before_partition_assembly(tmp_path):
 
 
 def test_deletion_progress_uses_checkpointed_remote_count():
-    from parcel_app.completion import run_progress
+    from parcel_app.pipelines.parcel_stats.completion import run_progress
 
     result = run_progress(
         {"status": "deleting", "deletion_manifest": {"jobs": [{}, {}, {}, {}], "remote_deleted": 1, "remote_complete": False}}
     )
     assert result["percent"] == 25 and result["stage"] == "Remote cleanup"
+
+
+def test_list_views_skip_checkpoint_scans_for_stopped_runs(tmp_path):
+    """Polling lists must not read saved checkpoints of runs that can no longer change."""
+    from parcel_app.pipelines.parcel_stats.completion import run_progress
+
+    missing = tmp_path / "never-read"
+    for status in ("failed", "interrupted"):
+        result = run_progress({"status": status, "output_dir": str(missing), "summary": {"batch_count": 3}}, scan=False)
+        assert result == {"stage": "Stopped; open for saved progress", "percent": None}
+    running = run_progress({"status": "running", "output_dir": str(tmp_path), "summary": {}}, scan=False)
+    assert "remote" in running

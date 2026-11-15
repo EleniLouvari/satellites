@@ -48,8 +48,8 @@ def test_outlier_masks_remain_row_aligned_with_duplicate_index_labels() -> None:
     expect_equal(summary.loc[0, "iqr_outlier_count"], 1)
 
 
-def test_combined_outliers_preserve_rows_and_leave_missing_rows_unscored() -> None:
-    """Strong anomalies get a majority without treating absent data as normal."""
+def test_combined_outliers_preserve_rows_and_default_unscored_rows_to_false() -> None:
+    """Strong anomalies get a majority; rows without votes are not outliers, and the vote count shows why."""
     random = np.random.default_rng(12)
     data = pd.DataFrame(random.normal(size=(100, 2)), columns=["x", "y"])
     data.iloc[-2] = [30, 30]
@@ -60,7 +60,8 @@ def test_combined_outliers_preserve_rows_and_leave_missing_rows_unscored() -> No
     pd.testing.assert_frame_equal(data, original)
     expect_equal(result.index.tolist(), data.index.tolist())
     expect_true(result["is_outlier"].iloc[-2])
-    expect_true(pd.isna(result["is_outlier"].iloc[-1]))
+    expect_true(result["is_outlier"].iloc[-1] is np.False_ or result["is_outlier"].iloc[-1] is False)
+    expect_true(result["is_outlier"].notna().all())
     expect_equal(result["eda_outlier_methods_available"].iloc[-1], 0)
 
 
@@ -77,10 +78,12 @@ def test_combined_outliers_require_strict_majority(monkeypatch) -> None:
     expect_equal(result["is_outlier"].tolist(), [False, True, False, True])
 
 
-def test_combined_outliers_without_usable_features_are_nullable() -> None:
-    """Constant and absent features cannot supply detector votes."""
-    result = OutlierAnalysis(pd.DataFrame({"x": [1.] * 6, "y": [np.nan] * 6})).detect_all_outliers()
-    expect_true(result["is_outlier"].isna().all())
+def test_combined_outliers_without_usable_features_default_to_false() -> None:
+    """Constant, absent and boolean features cannot supply detector votes; is_outlier is then False."""
+    data = pd.DataFrame({"x": [1.] * 6, "y": [np.nan] * 6, "flag": [True, False] * 3})
+    result = OutlierAnalysis(data).detect_all_outliers()
+    expect_equal(result["is_outlier"].dtype, np.dtype(bool))
+    expect_true(not result["is_outlier"].any())
     expect_equal(result["eda_outlier_methods_available"].tolist(), [0] * 6)
 
 

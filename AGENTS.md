@@ -116,6 +116,21 @@ random seeds and writes a results CSV, accuracy plot, and HTML summary.
 - Source entry point: `src/ml_classification/sensitivity/runner.py`.
 - Example: [test_sensitivity.ipynb](notebooks/experiments/test_sensitivity.ipynb).
 
+### Parcel Studio web application
+
+`src/parcel_app/` (FastAPI, PostgreSQL job queue, worker) and `web/` (React) expose
+parcel statistics, EDA and ML classification in the browser. ML runs (scenarios) belong to a
+completed EDA analysis and run step by step; see `src/parcel_app/pipelines/ml/`.
+
+- Read the [web app guide](docs/web_app/README.md), the
+  [web application structure](docs/repository_structure.md#web-application-parcel_app), and
+  [Extending Parcel Studio](docs/web_app/EXTENDING.md) before adding a data provider or pipeline.
+- Data sources and pipelines are registered once in `src/parcel_app/jobs/registry.py`;
+  provider-specific code lives in `src/parcel_app/sources/<provider>/`, analyses in
+  `src/parcel_app/pipelines/<pipeline>/`, schema changes in `src/parcel_app/migrations/`.
+- Database tests need `PARCEL_TEST_DB=1` and a disposable PostgreSQL; never point them
+  at the Parcel Studio database.
+
 ## Working with notebooks and run outputs
 
 - Read [notebook guidance](notebooks/README.md) and the notebook's path/configuration

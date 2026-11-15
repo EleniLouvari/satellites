@@ -46,13 +46,26 @@ def _validate_auxiliary_options(options):
         raise ValueError("Error: logging-threshold must be debug, info, warning or error.")
 
 
+def _format_memory(amount):
+    """Write a byte count as whole gibibytes when exact, otherwise kibibytes."""
+    return f"{amount // 1024**3}G" if amount % 1024**3 == 0 else f"{amount // 1024}K"
+
+
 def next_executor_memory(options, maximum):
     """Double only the JVM heap, stopping at the configured resource ceiling."""
     current, limit = memory_bytes(options["executor-memory"]), memory_bytes(maximum)
     if current >= limit:
         return None
-    amount = min(current * 2, limit)
-    return f"{amount // 1024**3}G" if amount % 1024**3 == 0 else f"{amount // 1024}K"
+    return _format_memory(min(current * 2, limit))
+
+
+def executor_memory_for_area(base, area_km2, reference_km2, maximum):
+    """Double the base heap each time the tile area doubles beyond the reference, up to the ceiling."""
+    current, limit = memory_bytes(base), memory_bytes(maximum)
+    factor = 1
+    while area_km2 > reference_km2 * factor and current * factor < limit:
+        factor *= 2
+    return base if factor == 1 else _format_memory(max(current, min(current * factor, limit)))
 
 
 def failure_kind(row):

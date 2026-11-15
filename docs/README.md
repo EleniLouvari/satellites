@@ -2,6 +2,7 @@
 
 - [Web application design and interactive preview](web_app/DESIGN.md)
 - [Run the Parcel Studio web application](web_app/README.md)
+- [Extending Parcel Studio with data providers and pipelines](web_app/EXTENDING.md)
 - [Repository structure and migration](repository_structure.md)
 - [Parcel statistics public API](data_preparation/README.md)
 - [openEO pipeline](data_preparation/openeo/README.md)
@@ -24,6 +25,7 @@
 - [Inspection-priority rules and optional outlier adjustment](ml_classification/INSPECTION_PRIORITY_DECISION_TABLE.md)
 - [Classification source guide](../src/ml_classification/README.md)
 - [Notebook setup and project workflow](../notebooks/README.md)
+- [Sentinel band interpretation notes](reference/sentinel_band_notes.txt)
 
 The original Word manuals are preserved in `manuals/`, and their reference
 images are in `images/`. These historical manuals may show pre-migration import

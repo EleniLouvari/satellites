@@ -1,9 +1,9 @@
 /** Isolated browser fixture: all requests are mocked and no real run is accessed. */
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
-import StopAction from "../src/StopAction";
+import StopAction from "../src/features/parcel-stats/StopAction";
 import { type Run } from "../src/api";
-import "../src/style.css";
+import "../src/styles/style.css";
 
 const initial = { run_id: "ui-test", name: "Synthetic parcel analysis", status: "running" } as Run;
 let requests = 0;

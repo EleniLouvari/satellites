@@ -10,7 +10,7 @@ from tests.test_parcel_app.test_routes import clients  # noqa: F401
 
 def test_stop_request_is_owned_idempotent_and_keeps_claim(monkeypatch):
     """Persist a request without releasing the active claim or account reservations."""
-    from parcel_app import runs
+    from parcel_app.pipelines.parcel_stats import routes as runs
 
     run_id = uuid4()
     run = {"run_id": run_id, "status": "running"}
@@ -41,7 +41,7 @@ def test_stop_request_is_owned_idempotent_and_keeps_claim(monkeypatch):
 @pytest.mark.parametrize("status", ["draft", "ready", "queued", "complete", "failed", "cancelled", "deleting"])
 def test_stop_rejects_nonrunning_runs(monkeypatch, status):
     """Stop cannot mutate queued or terminal analyses."""
-    from parcel_app import runs
+    from parcel_app.pipelines.parcel_stats import routes as runs
 
     monkeypatch.setattr(runs.db, "connection", lambda: nullcontext(object()))
     monkeypatch.setattr(runs, "owned_run", lambda *a, **k: {"status": status})
@@ -54,7 +54,7 @@ def test_stop_rejects_nonrunning_runs(monkeypatch, status):
 
 def test_stop_cannot_access_other_owner(monkeypatch):
     """Unknown and foreign analyses fail before queue access."""
-    from parcel_app import runs
+    from parcel_app.pipelines.parcel_stats import routes as runs
 
     monkeypatch.setattr(runs.db, "connection", lambda: nullcontext(object()))
 
@@ -71,18 +71,19 @@ def test_stop_cannot_access_other_owner(monkeypatch):
 
 def test_stop_request_fences_task_publication(monkeypatch):
     """A stopped task cannot publish success or overwrite the requested interruption."""
-    from parcel_app import tasks
+    from parcel_app.jobs import queue
 
     job = {"job_id": uuid4(), "claim_token": uuid4(), "kind": "run"}
     row = {**job, "status": "running", "payload": {"stop_requested": True}}
-    monkeypatch.setattr(tasks.db, "one", lambda *a, **k: row)
+    monkeypatch.setattr(queue.db, "one", lambda *a, **k: row)
     with pytest.raises(RuntimeError, match="stop"):
-        tasks._owned(job, object())
+        queue.owned_claim(job, object())
 
 
 def test_stop_poll_is_scoped_to_exact_run_claim(monkeypatch):
     """Only the currently supervised run/resume claim can request termination."""
-    from parcel_app import db, worker
+    from parcel_app.core import db
+    from parcel_app.jobs import queue
 
     job = {"job_id": uuid4(), "claim_token": uuid4(), "kind": "resume"}
 
@@ -93,8 +94,8 @@ def test_stop_poll_is_scoped_to_exact_run_claim(monkeypatch):
         return {"payload": {"stop_requested": True}}
 
     monkeypatch.setattr(db, "one", query)
-    assert worker.stop_requested(job)
-    assert not worker.stop_requested({**job, "kind": "eda"})
+    assert queue.stop_requested(job)
+    assert not queue.stop_requested({**job, "kind": "eda"})
 
 
 def _synthetic_analysis(root, ready, group_name=None, exit_early=False):
@@ -103,7 +104,7 @@ def _synthetic_analysis(root, ready, group_name=None, exit_early=False):
     import sys
     import time
     from pathlib import Path
-    from parcel_app.process_control import isolate_task
+    from parcel_app.jobs.process_control import isolate_task
 
     isolate_task(group_name)
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
@@ -115,6 +116,27 @@ def _synthetic_analysis(root, ready, group_name=None, exit_early=False):
     time.sleep(120)
 
 
+def _exited(process, timeout=10):
+    """Wait until a terminated process is gone or only an unreaped zombie remains.
+
+    stop_task returns once the kernel no longer counts the process as active, but
+    Windows keeps the PID visible to psutil until the last handle to it is closed.
+    """
+    import time
+    import psutil
+
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            if not process.is_running() or process.status() == psutil.STATUS_ZOMBIE:
+                return True
+        except psutil.NoSuchProcess:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+
+
 @pytest.mark.parametrize("exit_early", [False, True])
 def test_stop_terminates_descendants_but_preserves_other_processes_and_files(tmp_path, exit_early):
     """Exercise real process termination without touching any production worker."""
@@ -122,7 +144,7 @@ def test_stop_terminates_descendants_but_preserves_other_processes_and_files(tmp
     import subprocess
     import sys
     import psutil
-    from parcel_app.process_control import stop_task, task_group
+    from parcel_app.jobs.process_control import stop_task, task_group
 
     context = multiprocessing.get_context("spawn")
     ready = context.Event()
@@ -143,10 +165,7 @@ def test_stop_terminates_descendants_but_preserves_other_processes_and_files(tmp
                     assert descendant.is_running()
                 stop_task(child, group)
                 assert not child.is_alive()
-                try:
-                    assert not descendant.is_running() or descendant.status() == psutil.STATUS_ZOMBIE
-                except psutil.NoSuchProcess:
-                    pass
+                assert _exited(descendant)
                 assert sibling.poll() is None
                 assert (tmp_path / "completed.parquet").read_bytes() == b"committed checkpoint"
             finally:
@@ -163,7 +182,7 @@ def test_stop_terminates_descendants_but_preserves_other_processes_and_files(tmp
 def test_supervisor_cleans_descendants_when_leader_already_exited(monkeypatch):
     """An exit before the first polling iteration must still stop orphaned work."""
     from types import SimpleNamespace
-    from parcel_app import process_control, worker
+    from parcel_app.jobs import process_control, worker
 
     child = SimpleNamespace(is_alive=lambda: False)
     ready = SimpleNamespace(is_set=lambda: True)
@@ -176,22 +195,22 @@ def test_supervisor_cleans_descendants_when_leader_already_exited(monkeypatch):
 
 def test_reconciliation_locks_queue_before_analysis_rows(monkeypatch):
     """Recovery uses the same lock order as stop requests and task publication."""
-    from parcel_app import db, worker
+    from parcel_app.core import db
+    from parcel_app.jobs import queue
 
     statements = []
     monkeypatch.setattr(db, "connection", lambda: nullcontext(object()))
     monkeypatch.setattr(db, "all_rows", lambda sql, *a, **kw: statements.append(sql))
     monkeypatch.setattr(db, "execute", lambda sql, *a, **kw: statements.append(sql))
-    worker.reconcile("run")
+    queue.reconcile("run")
     assert "web_jobs" in statements[0] and "FOR UPDATE" in statements[0]
     assert any("UPDATE analysis_runs" in sql for sql in statements[1:])
 
 
 def test_stop_api_ownership_csrf_reconciliation_and_resume(clients, tmp_path):  # noqa: F811
     """Exercise the actual PostgreSQL stop/resume lifecycle without remote jobs."""
-    from parcel_app import db
-    from parcel_app.tasks import _owned
-    from parcel_app.worker import enqueue, reconcile, stop_requested
+    from parcel_app.core import db
+    from parcel_app.jobs.queue import enqueue, owned_claim, reconcile, stop_requested
     from tests.test_parcel_app.test_deletion import seed_run
 
     owner, stranger = clients
@@ -223,7 +242,7 @@ def test_stop_api_ownership_csrf_reconciliation_and_resume(clients, tmp_path):  
     assert stop_requested(job)
     with db.connection() as conn:
         with pytest.raises(RuntimeError, match="stop"):
-            _owned(job, conn)
+            owned_claim(job, conn)
     # No processes were started in this fixture, so reconciliation is safe now.
     reconcile("run")
     stopped = owner.get(link).json()

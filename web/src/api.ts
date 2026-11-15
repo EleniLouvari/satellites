@@ -59,14 +59,27 @@ export type Run = {
 };
 export type Schema = {
   defaults: Record<string, unknown>;
-  groups?: { id: string; label: string; description: string }[];
+  groups?: {
+    id: string;
+    label: string;
+    description: string;
+    collapsed?: boolean;
+    subgroups?: {
+      id: string;
+      label: string;
+      description: string[];
+      formula?: string | null;
+    }[];
+  }[];
   fields: {
     name: string;
+    label?: string;
     type: string;
     default: unknown;
     choices?: unknown[];
     description?: string;
     group?: string;
+    subgroup?: string | null;
     enabled_when?: Record<string, unknown[]>;
   }[];
   limits: { upload_limit_bytes: number; max_batch_workers: number };
@@ -123,7 +136,8 @@ export async function api<T>(
           : JSON.stringify(body),
   });
   if (!response.ok) {
-    if (response.status === 401)
+    // Only an established session can expire; a first visit or a failed sign-in is not one.
+    if (response.status === 401 && csrf)
       window.dispatchEvent(new CustomEvent("session-expired"));
     let detail = "Error: Request could not be completed.";
     try {

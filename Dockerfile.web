@@ -7,12 +7,15 @@ COPY pyproject.toml README.md ./
 COPY src/ ./src/
 RUN python -m pip install --no-cache-dir --no-deps . \
     && python -m pip install --no-cache-dir "fastapi==0.162.2" "uvicorn==0.54.0" "argon2-cffi==25.1.0" \
+    && python -m pip install --no-cache-dir --only-binary=:all: xgboost lightgbm imbalanced-learn shap \
     && python -m pip check \
-    && python -c "from eda import EDAConfig, EDAPipeline; from parcel_app.eda_task import run_eda_files" \
+    && python -c "from eda import EDAConfig, EDAPipeline; from parcel_app.pipelines.eda.tasks import run_eda_files; from parcel_app.pipelines.ml.tasks import run_ml_steps; import xgboost, lightgbm, imblearn" \
     && mkdir -p /data/parcel-studio /tmp/matplotlib \
     && chown -R satellites:satellites /data/parcel-studio /tmp/matplotlib
 USER satellites:satellites
 WORKDIR /data/parcel-studio
 ENV PARCEL_STORAGE_ROOT=/data/parcel-studio
 ENTRYPOINT ["python"]
-CMD ["-m", "uvicorn", "parcel_app.app:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
+# The API is reachable only through the bundled nginx on the compose network, which overwrites
+# X-Forwarded-For with the real client address; trust it so per-client login limits work.
+CMD ["-m", "uvicorn", "parcel_app.app:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log", "--proxy-headers", "--forwarded-allow-ips", "*"]

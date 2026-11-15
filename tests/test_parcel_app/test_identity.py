@@ -6,7 +6,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from parcel_app import auth, security
+from parcel_app.auth import routes as auth
+from parcel_app.core import security
 
 
 def client():
@@ -72,7 +73,8 @@ def test_database_identity_registration_isolation_and_revocation(monkeypatch):
     """Exercise real SQL, Argon2 storage, owner scopes, CSRF and session logout."""
     from uuid import uuid4
     from cryptography.fernet import Fernet
-    from parcel_app import accounts, db
+    from parcel_app.sources.openeo import accounts
+    from parcel_app.core import db
     from parcel_app.manage import migrate
     from parcel_app.settings import get_settings
 

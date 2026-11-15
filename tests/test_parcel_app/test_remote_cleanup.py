@@ -7,7 +7,7 @@ import pytest
 
 
 def test_remote_manifest_includes_retries_and_resolves_saved_owners(tmp_path):
-    from parcel_app.remote_cleanup import collect_jobs
+    from parcel_app.sources.openeo.remote_cleanup import collect_jobs
 
     folder = tmp_path / "partition_2" / "cubes"
     folder.mkdir(parents=True)
@@ -26,7 +26,7 @@ def test_remote_manifest_includes_retries_and_resolves_saved_owners(tmp_path):
 
 @pytest.mark.parametrize("owner,job_id", [("foreign", "job"), ("first", "../other")])
 def test_remote_manifest_rejects_unknown_owner_or_unsafe_job_id(tmp_path, owner, job_id):
-    from parcel_app.remote_cleanup import collect_jobs
+    from parcel_app.sources.openeo.remote_cleanup import collect_jobs
 
     pd.DataFrame([{"id": job_id, "openeo_user": owner}]).to_parquet(tmp_path / "tile_jobs.parquet")
     with pytest.raises(ValueError):
@@ -35,7 +35,7 @@ def test_remote_manifest_rejects_unknown_owner_or_unsafe_job_id(tmp_path, owner,
 
 def test_remote_cleanup_deletes_only_manifest_ids_and_accepts_already_deleted(monkeypatch):
     from openeo.rest import OpenEoApiError
-    from parcel_app import remote_cleanup
+    from parcel_app.sources.openeo import remote_cleanup
 
     connection = Mock()
     connection.job.return_value.delete.side_effect = [
@@ -55,7 +55,7 @@ def test_remote_cleanup_deletes_only_manifest_ids_and_accepts_already_deleted(mo
 
 
 def test_remote_manifest_refuses_partial_tracking_coverage(tmp_path):
-    from parcel_app.remote_cleanup import collect_jobs
+    from parcel_app.sources.openeo.remote_cleanup import collect_jobs
 
     folder = tmp_path / "partition_1"
     folder.mkdir()

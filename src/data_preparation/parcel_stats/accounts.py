@@ -36,6 +36,7 @@ def load_app_openeo_accounts(app_user_id: int) -> list[tuple[str, str]]:
         raise ValueError("Error: Set DB_NAME before loading application accounts.")
     cipher = _credential_cipher()
     from psycopg2 import sql
+
     from shared.postgress import create_db_handler
 
     app_table = os.getenv("TBL_APP_USERS", "public.app_users")
@@ -52,7 +53,7 @@ def load_app_openeo_accounts(app_user_id: int) -> list[tuple[str, str]]:
         with handler.connection.cursor() as cursor:
             cursor.execute(query, (app_user_id,))
             rows = cursor.fetchall()
-    except Exception:
+    except Exception:  # noqa: BLE001 - driver errors may contain connection secrets
         raise ValueError("Error: Could not read application accounts; check database settings, tables and permissions.") from None
     finally:
         if handler is not None:
@@ -61,6 +62,6 @@ def load_app_openeo_accounts(app_user_id: int) -> list[tuple[str, str]]:
         raise ValueError("Error: No Copernicus accounts are available for this active application user.")
     try:
         decrypted = [(username, cipher.decrypt(token.encode("ascii")).decode("utf-8")) for username, token in rows]
-    except Exception:
+    except Exception:  # noqa: BLE001 - decryption errors must not reveal token details
         raise ValueError("Error: Could not decrypt Copernicus credentials; check the encryption key and stored tokens.") from None
     return _validate_openeo_accounts(pd.DataFrame(decrypted, columns=["username", "password"]))

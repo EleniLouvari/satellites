@@ -148,7 +148,7 @@ class StreamedRasterProcessing:
             # Determine fill eligibility from whole-layer post-IQR coverage, not from individual strip coverage.
             allowed = observed_counts / mask.size >= self.minimum_observed_fraction_for_fill
             if self.fill_nulls:
-                self._stream_temporal_fill(checkpoint, allowed, stage_counts["after_temporal_fill"])
+                self._stream_temporal_fill(checkpoint, allowed, stage_counts["after_temporal_fill"], observed_counts > 0)
             rows = self._clean_streamed_physical_layers(
                 stored=stored,
                 original_mask=original_mask,
@@ -299,8 +299,13 @@ class StreamedRasterProcessing:
                 variable.set_var_chunk_cache(size=min(TEMPORAL_CACHE_BYTES, max(1024**2, footprint)), nelems=10007, preemption=0)
             yield
 
-    def _stream_temporal_fill(self, checkpoint, allowed, null_counts):
-        """Fill chunk-aligned blocks across all dates, retaining global coverage guards."""
+    def _stream_temporal_fill(self, checkpoint, allowed, null_counts, active=None):
+        """Fill chunk-aligned blocks across all dates, retaining global coverage guards.
+
+        ``active`` flags, per date and band, whether the whole layer holds any
+        observation. Dates without one (another sensor's acquisitions on a
+        merged time axis) are skipped as temporal neighbours.
+        """
         stored = checkpoint.variables["cleaned"]
         temporal_mask = checkpoint.variables["temporal_filled_mask"]
         block_rows, block_columns = self._temporal_block_shape(stored)
@@ -316,7 +321,9 @@ class StreamedRasterProcessing:
                     source = observed.copy()
                     # Low-coverage dates cannot donate values; retain their original observations.
                     source[~allowed[:, band_index]] = np.nan
-                    candidate = self._fill_temporal_neighbors(source)
+                    candidate = self._fill_temporal_active_steps(
+                        source, None if active is None else active[:, band_index]
+                    )
                     filled = self._merge_filled_values(
                         observed, candidate, np.ones(observed.shape[-2:], dtype=bool), allowed[:, band_index]
                     )

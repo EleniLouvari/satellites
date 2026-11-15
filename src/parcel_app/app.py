@@ -6,22 +6,17 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from . import accounts, auth
+from parcel_app.auth import routes as auth
+from parcel_app.jobs.registry import router_modules
 
 
 def create_app() -> FastAPI:
     """Assemble the private-network API and expose a secret-free health check."""
     application = FastAPI(title="Parcel Studio")
     application.include_router(auth.router, prefix="/api")
-    application.include_router(accounts.router, prefix="/api")
-    for name in ("uploads", "runs", "files", "config", "eda_api", "deletion"):
-        try:
-            module = import_module(f"parcel_app.{name}")
-        except ModuleNotFoundError as exc:
-            if exc.name != f"parcel_app.{name}":
-                raise
-            continue
-        application.include_router(module.router, prefix="/api")
+    # Data sources and pipelines are listed once, in parcel_app.jobs.registry.
+    for name in router_modules():
+        application.include_router(import_module(name).router, prefix="/api")
 
     @application.get("/api/health")
     def health():

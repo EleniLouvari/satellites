@@ -145,7 +145,7 @@ def test_real_parquet_and_shared_batch_view_preserve_options(tmp_path):
 
 def test_web_remote_options_validation_and_metadata():
     """New run settings expose a JSON object and exclude the runtime-only recovery flag."""
-    from parcel_app.config import check_processing, configuration
+    from parcel_app.pipelines.parcel_stats.config import check_processing, configuration
 
     fields = {f["name"]: f for f in configuration(user={})["fields"]}
     assert fields["openeo_job_options"]["type"] == "object"
@@ -223,3 +223,74 @@ def test_prepared_replacement_stays_pinned_to_original_account(tmp_path, monkeyp
                                        [("other-owner", "pw"), ("original-owner", "pw")], shared, pinned, tmp_path)
     assert shared.empty() and pinned["other-owner"].empty()
     assert pinned["original-owner"].qsize() == 1
+
+
+@pytest.mark.parametrize("area_km2,base,expected", [
+    (4, "4G", "4G"), (625, "4G", "4G"), (906, "4G", "8G"), (2086, "4G", "8G"),
+    (1000, "2G", "4G"), (1270, "2G", "8G"), (5000, "8G", "8G"), (700, "3G", "6G"), (2000, "3G", "8G"),
+])
+def test_executor_memory_doubles_per_area_tier_up_to_cap(area_km2, base, expected):
+    """Each doubling of area beyond the reference doubles the heap, never beyond the cap."""
+    from data_preparation.sources.openeo.job_options import executor_memory_for_area
+
+    assert executor_memory_for_area(base, area_km2, 625, "8G") == expected
+
+
+def tile_rows(*extents):
+    """Build new job rows from (width, height) metre extents, with no saved options yet."""
+    return _MemoryJobDatabase(pd.DataFrame([{
+        "batch_number": number, "id": "", "status": "not_started", "retry_count": 0,
+        "west": 0.0, "south": 0.0, "east": float(width), "north": float(height), "crs": "EPSG:2100",
+    } for number, (width, height) in enumerate(extents, start=1)]))
+
+
+def test_large_tiles_start_with_more_memory_and_keep_other_options():
+    """Only executor-memory scales with tile area; max-executors stays as configured."""
+    engine = planner()
+    engine.openeo_job_options = {"executor-memory": "4G", "max-executors": 20}
+    engine.openeo_memory_reference_area_km2 = 625.0
+    database = tile_rows((2_000, 2_000), (35_000, 26_000))
+    engine._ensure_job_options(database)
+    saved = [json.loads(value) for value in database.df.job_options]
+    assert saved == [{"executor-memory": "4G", "max-executors": 20}, {"executor-memory": "8G", "max-executors": 20}]
+    assert engine.openeo_job_options["executor-memory"] == "4G"
+
+
+def test_area_scaling_disabled_and_saved_options_are_not_resized():
+    """None disables scaling, and resumed rows keep the options they were saved with."""
+    engine = planner()
+    database = tile_rows((40_000, 40_000))
+    engine._ensure_job_options(database)
+    assert json.loads(database.df.iloc[0].job_options)["executor-memory"] == "2G"
+    engine.openeo_memory_reference_area_km2 = 625.0
+    engine._ensure_job_options(database)
+    assert json.loads(database.df.iloc[0].job_options)["executor-memory"] == "2G"
+
+
+def test_scaled_tile_oom_retry_doubles_from_scaled_memory(tmp_path):
+    """A large tile's OOM retry starts from its area-scaled heap, not the base heap."""
+    engine = planner()
+    engine.openeo_memory_reference_area_km2 = 625.0
+    database = failed_batch(tmp_path)
+    database.df[["west", "south", "east", "north"]] = [0.0, 0.0, 30_000.0, 30_000.0]
+    assert engine._reset_retryable_failed_jobs(database) == 1
+    row = database.df.iloc[0]
+    assert json.loads(row.job_options_history)["failed-1"]["executor-memory"] == "4G"
+    assert json.loads(row.job_options)["executor-memory"] == "8G"
+
+
+@pytest.mark.parametrize("value", [0, -1, True, "625", float("nan"), float("inf")])
+def test_invalid_reference_area_rejected(value):
+    """The reference area must be a positive finite number or None."""
+    with pytest.raises(ValueError):
+        OpenEOJobManagerZonalStats(openeo_memory_reference_area_km2=value)
+
+
+def test_web_exposes_nullable_reference_area():
+    """The web form shows the setting under execution and accepts blank to disable it."""
+    from parcel_app.pipelines.parcel_stats.config import check_processing, configuration
+
+    field = {f["name"]: f for f in configuration(user={})["fields"]}["openeo_memory_reference_area_km2"]
+    assert (field["type"], field["default"], field["nullable"], field["group"]) == ("number", 1000, True, "execution")
+    base = {"start_date": "2024-01-01", "end_date": "2024-01-31"}
+    assert check_processing({**base, "openeo_memory_reference_area_km2": None})["openeo_memory_reference_area_km2"] is None

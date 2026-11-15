@@ -41,6 +41,9 @@ class ClassificationPipelineConfig:
     iqr_upper_quantile: float = 0.75
     iqr_multiplier: float = 1.5
     enforce_unique_ids: bool = True
+    # When False, rows with nulls in any feature are dropped in run_check.
+    # When True, nulls are filled with spatial_interpolation_method.
+    fill_nulls: bool = False
     spatial_interpolation_method: str | None = None
     spatial_interpolation_max_distance_in_meters: float | None = None
     spatial_interpolation_variogram_lags: int = 15
@@ -309,6 +312,7 @@ class ClassificationPipelineConfig:
         bool_validations = {
             "lstm_require_complete_timesteps": "Error: lstm_require_complete_timesteps must be a bool.",
             "apply_iqr": "Error: apply_iqr must be a bool.",
+            "fill_nulls": "Error: fill_nulls must be a bool.",
             "optimize_class_probabilities": "Error: optimize_class_probabilities must be a bool.",
             "rank_confidence_enabled": "Error: rank_confidence_enabled must be a bool.",
             "class_reliability_enabled": "Error: class_reliability_enabled must be a bool.",
@@ -332,6 +336,17 @@ class ClassificationPipelineConfig:
 
     def _validate_interpolation_requirements(self) -> None:
         """Validate required interpolation arguments per selected method."""
+        if self.fill_nulls and self.spatial_interpolation_method is None:
+            raise ValueError("Error: fill_nulls=True requires spatial_interpolation_method ('nearest', 'idw', or 'kriging').")
+        # IQR outliers become nulls, so without filling every row with any outlier leaves the training set.
+        if self.apply_iqr and not self.fill_nulls:
+            warnings.warn(
+                "apply_iqr=True with fill_nulls=False: IQR outliers are replaced with nulls and not filled, so every "
+                "row with an outlier in any feature is excluded from train/validation/test (it is still predicted). "
+                "Set fill_nulls=True to fill these values instead.",
+                UserWarning,
+                stacklevel=2,
+            )
         interpolation_requirements = {
             "idw": (
                 self.spatial_interpolation_max_distance_in_meters is not None,

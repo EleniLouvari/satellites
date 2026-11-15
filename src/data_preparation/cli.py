@@ -41,7 +41,7 @@ def _read_config(args) -> dict:
     except (OSError, ValueError):
         raise ValueError("Error: Cannot read a valid JSON configuration file.") from None
     if not isinstance(config, dict):
-        raise ValueError("Error: Configuration must be a JSON object.")
+        raise ValueError("Error: Configuration must be a JSON object.")  # noqa: TRY004 - all invalid input is reported as ValueError (CLI exit code 2, HTTP 422)
     if args.output_dir is not None:
         config["output_dir"] = str(args.output_dir.resolve())
     return config
@@ -95,7 +95,7 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("Error: Interrupted. Use resume with the same run directory; remote jobs may still be running.", file=sys.stderr)
         return 130
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - CLI boundary: any failure becomes a redacted message and exit code
         print(_error_message(exc, accounts), file=sys.stderr)
         return 1 if running else 2
 

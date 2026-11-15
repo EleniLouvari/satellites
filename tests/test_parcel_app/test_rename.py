@@ -9,7 +9,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from parcel_app import runs
+from parcel_app.pipelines.parcel_stats import routes as runs
 
 
 @pytest.fixture

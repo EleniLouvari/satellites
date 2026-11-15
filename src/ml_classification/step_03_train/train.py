@@ -21,6 +21,7 @@ from ml_classification.shared.persistence import load_joblib, load_json, save_fr
 from ml_classification.shared.reports.report_index import write_index_report
 from ml_classification.step_03_train.libraries.oof_predictions import save_oof_probabilities
 from ml_classification.step_03_train.libraries.plots import save_cv_fold_comparison_plot, save_search_results_plot
+from ml_classification.step_03_train.libraries.progress import TrainingProgress
 from ml_classification.step_03_train.libraries.report import write_train_report
 from ml_classification.step_03_train.libraries.search import build_search, prepare_search_parameters, summarize_search
 from shared.io import read_data
@@ -326,6 +327,9 @@ class TrainStep(PipelineStepBase):
         best_fold_rows: list[dict[str, Any]] = []
         model_specs: dict[str, dict[str, Any]] = {}
         skipped_models: list[str] = []
+        names = [candidate.name for candidate in train_state["candidates"]]
+        selected = list(getattr(self.config, "selected_models", None) or [])
+        progress = TrainingProgress(self.config.train_dir, names, [name for name in selected if name not in names])
 
         for candidate in train_state["candidates"]:
             # Check if this model was already trained and we're not forcing retraining.
@@ -347,8 +351,11 @@ class TrainStep(PipelineStepBase):
                 if reused_summary is not None:
                     training_rows.append(reused_summary)
                 best_fold_rows.extend(reused_fold_rows)
+                progress.finish(candidate.name, "reused")
                 continue
 
+            progress.start(candidate.name)
+            started = time.perf_counter()
             summary, fold_rows, model_spec, failure = self._train_candidate(
                 candidate,
                 train_state["X_train"],
@@ -357,12 +364,16 @@ class TrainStep(PipelineStepBase):
                 train_state["numeric_features"],
                 train_state["categorical_features"],
             )
+            elapsed = time.perf_counter() - started
             if failure is not None:
                 failed_rows.append(failure)
+                progress.finish(candidate.name, "failed", elapsed, failure["error_message"])
                 continue
             training_rows.append(summary)
             best_fold_rows.extend(fold_rows)
             model_specs[candidate.name] = model_spec
+            progress.finish(candidate.name, "finished", elapsed)
+        progress.close()
 
         # Log incremental training summary.
         if skipped_models:

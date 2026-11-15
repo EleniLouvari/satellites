@@ -4,7 +4,7 @@ import logging
 
 import pytest
 
-from parcel_app.artifacts import sanitize_text
+from parcel_app.core.storage import sanitize_text
 
 
 def test_short_credentials_do_not_change_processing_values():
@@ -88,7 +88,7 @@ def test_repeated_redaction_preserves_markers_and_safe_text():
 
 def test_event_logging_uses_contextual_redaction(monkeypatch):
     """The record factory must not globally replace a short database password."""
-    from parcel_app.progress import event_logging
+    from parcel_app.pipelines.parcel_stats.progress import event_logging
 
     monkeypatch.setenv("POSTGRES_PASSWORD", "1")
     logger = logging.getLogger("redaction-regression")
@@ -99,7 +99,7 @@ def test_event_logging_uses_contextual_redaction(monkeypatch):
 
 def test_downloaded_log_keeps_scientific_values(tmp_path, monkeypatch):
     """Published diagnostics retain numbers while masking credentials and private paths."""
-    from parcel_app import artifacts
+    from parcel_app.pipelines.parcel_stats import artifacts
 
     (tmp_path / "satellite_acquisition.log").write_text(f"B11 1.5 1M password=1 {tmp_path}\n", encoding="utf-8")
     registered = []

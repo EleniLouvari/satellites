@@ -8,7 +8,7 @@ from fastapi import HTTPException
 
 def test_all_eda_options_are_exposed_or_explicitly_managed():
     from eda import EDAConfig
-    from parcel_app.eda_config import eda_schema
+    from parcel_app.pipelines.eda.config import eda_schema
 
     schema = eda_schema([{"name": "id"}, {"name": "NDVI"}])
     assert {f["name"] for f in schema["fields"]} | set(schema["managed"]) == {f.name for f in fields(EDAConfig)}
@@ -17,7 +17,7 @@ def test_all_eda_options_are_exposed_or_explicitly_managed():
 
 
 def test_eda_validates_selected_columns_types_and_managed_paths():
-    from parcel_app.eda_config import validate_eda
+    from parcel_app.pipelines.eda.config import validate_eda
 
     columns = ["id", "NDVI", "crop"]
     assert validate_eda({"target_column": "crop", "id_column": "id"}, columns, columns)["target_column"] == "crop"
@@ -38,7 +38,7 @@ def test_eda_validates_selected_columns_types_and_managed_paths():
 
 
 def test_eda_requires_completed_owned_parent(monkeypatch):
-    from parcel_app import eda_api
+    from parcel_app.pipelines.eda import routes as eda_api
 
     def foreign(*args, **kwargs):
         raise HTTPException(404, "Error: Analysis not found.")
@@ -58,8 +58,8 @@ def test_real_eda_uses_only_selected_columns_and_keeps_source(tmp_path):
     import json
     from zipfile import ZipFile
     import pandas as pd
-    from parcel_app.artifacts import checksum
-    from parcel_app.eda_task import run_eda_files
+    from parcel_app.core.storage import checksum
+    from parcel_app.pipelines.eda.tasks import run_eda_files
 
     source = tmp_path / "parcel-result.parquet"
     pd.DataFrame({"id": list(range(20)), "value": [n * 0.1 for n in range(20)], "excluded": ["private"] * 20}).to_parquet(source)
@@ -86,8 +86,8 @@ def test_geometry_is_preserved_only_when_selected(tmp_path):
     """GeoParquet inputs work both with and without geospatial diagnostics."""
     import geopandas as gpd
     from shapely.geometry import Point
-    from parcel_app.eda_api import source_columns
-    from parcel_app.eda_task import load_selected
+    from parcel_app.pipelines.eda.routes import source_columns
+    from parcel_app.pipelines.eda.tasks import load_selected
 
     path = tmp_path / "source.parquet"
     gpd.GeoDataFrame({"value": [1, 2]}, geometry=[Point(1, 2), Point(3, 4)], crs=4326).to_parquet(path)
@@ -100,7 +100,7 @@ def test_geometry_is_preserved_only_when_selected(tmp_path):
 
 def test_browser_report_is_private_sandboxed_and_self_contained(tmp_path, monkeypatch):
     """Only registered plots are embedded; inline report scripts cannot access the app."""
-    from parcel_app import eda_api
+    from parcel_app.pipelines.eda import routes as eda_api
 
     (tmp_path / "report.html").write_text("<img src='plots/a.png'><img src='../secret.png'>", encoding="utf-8")
     (tmp_path / "plots").mkdir()
@@ -126,7 +126,7 @@ def test_eda_failure_preserves_diagnostic_traceback(tmp_path, monkeypatch):
     """The worker must leave diagnostic evidence instead of losing the exception."""
     import pandas as pd
     from eda import EDAPipeline
-    from parcel_app.eda_task import run_eda_files
+    from parcel_app.pipelines.eda.tasks import run_eda_files
 
     source = tmp_path / "source.parquet"
     pd.DataFrame({"value": [1, 2]}).to_parquet(source)
@@ -143,7 +143,7 @@ def test_eda_failure_preserves_diagnostic_traceback(tmp_path, monkeypatch):
 
 def test_failed_eda_log_is_downloadable_and_redacted(tmp_path, monkeypatch):
     """Failed-run diagnostics must not expose passwords or require successful publication."""
-    from parcel_app import eda_api
+    from parcel_app.pipelines.eda import routes as eda_api
 
     (tmp_path / "eda.log").write_text("ValueError: password=secret https://example.invalid/token", encoding="utf-8")
     monkeypatch.setattr(eda_api, "owned_eda", lambda *a: {"status": "failed", "output_dir": str(tmp_path)})

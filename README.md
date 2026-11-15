@@ -9,7 +9,8 @@ Parcel Studio provides immediate registration, login, private Copernicus account
 parcel uploads, the full processing configuration form, persistent per-user run
 history in PostgreSQL, background execution, and downloadable results and logs.
 Completed runs can launch EDA with selected columns and configurable reports;
-each EDA analysis keeps its own history and downloadable report bundle.
+each EDA analysis keeps its own history and downloadable report bundle. A completed
+EDA analysis can start ML classification scenarios, run step by step or all at once.
 
 ```powershell
 .\scripts\run_web_app.bat build
@@ -31,14 +32,14 @@ password setup for existing application users and HTTPS deployment for a team.
 | `src/eda/` | EDA, feature-screening diagnostics, plots, and HTML reports |
 | `src/ml_classification/` | Check, prepare, train, evaluate, predict, and seed sensitivity |
 | `src/shared/` | Reusable I/O, geometry, database, and data-cleaning utilities |
-| `src/parcel_app/` | Web API, authentication, PostgreSQL history and background worker |
-| `web/` | React interface and nginx container |
+| `src/parcel_app/` | Parcel Studio web API: `core/`, `auth/`, `jobs/` (queue and worker), `sources/` (data providers), `pipelines/` (analyses) |
+| `web/` | React interface (`src/components/`, `src/features/`) and nginx container |
 | `notebooks/projects/neuro/` | Numbered project workflow notebooks |
 | `notebooks/experiments/` | Exploratory ML and sensitivity notebooks |
 | `notebooks/maintenance/` | openEO job inspection and code-quality notebooks |
 | `tests/` | Tests grouped by source-code responsibility |
 | `docs/` | Architecture, pipeline guides, manuals, and diagrams |
-| `scripts/` | Development checks |
+| `scripts/` | Development checks, Docker and web-app launchers |
 | `outputs/` | Generated run artifacts and quality reports, ignored by Git |
 
 Classification source is organized into `step_01_check/` through `step_05_predict/`,
@@ -147,11 +148,15 @@ receive its own dedicated run subdirectory. They create output folders themselve
 
 ```powershell
 python -m pytest
-scripts\run_code_checks.bat
+scripts\run_code_checks.bat          # add "db" to include the PostgreSQL integration tests
 scripts\run_quality_checks.bat
 ```
 
 Tests use `tests/`; generated reports go to `outputs/quality/`. The check scripts
 use the active environment. `run_code_checks.bat` runs Ruff with `--fix`, so it
-can modify Python source; `run_quality_checks.bat` writes Radon metrics. See the [documentation index](docs/README.md) and
+can modify Python source. Arguments, in any order: a Python executable, `live` or `file`
+(pytest output), and `db`. With `db`, Docker starts a throwaway `postgres:16-alpine` container on
+127.0.0.1:55439 (override with `PARCEL_TEST_DB_PORT`), all database settings from `.env` are
+overridden to point at it, and the container is removed after pytest. Without `db`, the 22 web-app
+database tests are skipped. `run_quality_checks.bat` writes Radon metrics. See the [documentation index](docs/README.md) and
 [migration notes](docs/repository_structure.md) for compatibility and validation details.

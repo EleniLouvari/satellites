@@ -16,8 +16,13 @@ def apply_iqr_filter(
     """Optionally replace numeric IQR outliers with null values."""
     # Work on a copy of the dataset to avoid mutating caller-owned frames.
     result = dataset.copy()
-    # Restrict the IQR process to numeric features only.
-    numeric_features = [column for column in feature_columns if pd.api.types.is_numeric_dtype(result[column])]
+    # Restrict the IQR process to numeric features. True/False flags count as numeric in pandas,
+    # but IQR fences are meaningless for them and could blank out every value of the rarer state.
+    numeric_features = [
+        column
+        for column in feature_columns
+        if pd.api.types.is_numeric_dtype(result[column]) and not OutlierAnalysis.is_boolean(result[column])
+    ]
     summary: dict[str, Any] = {
         "applied": config.apply_iqr,
         "lower_quantile": config.iqr_lower_quantile,

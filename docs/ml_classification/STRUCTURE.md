@@ -117,6 +117,7 @@ project_dir/
 |-- 03_train/
 |   |-- training_summary.csv
 |   |-- training_failed_models.csv
+|   |-- training_progress.json
 |   |-- best_cv_fold_scores.csv
 |   |-- model_specs.json
 |   |-- schema_manifest.json
@@ -233,6 +234,7 @@ project_dir/
 | `training_summary.csv` | One row per model with mean CV score, fold standard deviation, selection score, ranking method, and probability support. This is the authoritative ranking input for Step 4. |
 | `best_cv_fold_scores.csv` | Best candidate's validation score for every model and fold. |
 | `training_failed_models.csv` | Candidate failures isolated so remaining models can continue. |
+| `training_progress.json` | Live state of every selected model (pending, running, finished, failed, reused, unavailable) with durations; rewritten as each model starts and ends, and read by Parcel Studio's run view. |
 | `model_specs.json` | Best parameters and metadata needed to reconstruct estimators. |
 | `models/<model>/best_model.joblib` | Best fitted search estimator for evaluation and incremental reuse. |
 | `models/<model>/cv_results.csv` | Full hyperparameter-search results for the model. |

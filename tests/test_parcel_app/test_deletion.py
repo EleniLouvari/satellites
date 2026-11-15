@@ -14,7 +14,7 @@ clients = _clients_fixture
 
 def seed_run(client, root, upload=None):
     """Create an owned completed run with real temporary files and dependent records."""
-    from parcel_app import db
+    from parcel_app.core import db
 
     user_id = client.get("/api/auth/me").json()["app_user_id"]
     if upload is None:
@@ -60,7 +60,7 @@ def seed_run(client, root, upload=None):
 
 
 def test_delete_run_owner_csrf_cascade_and_shared_input(clients, tmp_path):
-    from parcel_app import db
+    from parcel_app.core import db
 
     owner, stranger = clients
     run, upload, eda_id, eda_output = seed_run(owner, tmp_path)
@@ -93,7 +93,7 @@ def test_delete_eda_keeps_parent_and_input(clients, tmp_path):
 
 @pytest.mark.parametrize("kind,status", [("run", "running"), ("bundle", "pending"), ("eda", "running")])
 def test_delete_blocks_active_related_work(clients, tmp_path, kind, status):
-    from parcel_app import db
+    from parcel_app.core import db
 
     owner, _ = clients
     run, _, eda_id, output = seed_run(owner, tmp_path)
@@ -106,7 +106,7 @@ def test_delete_blocks_active_related_work(clients, tmp_path, kind, status):
 
 
 def test_delete_rejects_escaped_path_before_touching_files(clients, tmp_path):
-    from parcel_app import db
+    from parcel_app.core import db
 
     owner, _ = clients
     run, _, _, _ = seed_run(owner, tmp_path)
@@ -119,13 +119,14 @@ def test_delete_rejects_escaped_path_before_touching_files(clients, tmp_path):
 
 
 def test_remote_failure_preserves_files_and_retry_is_durable(clients, tmp_path, monkeypatch):
-    from parcel_app import db, deletion
+    from parcel_app.core import db
+    from parcel_app.pipelines.parcel_stats import deletion
 
     owner, _ = clients
     run, _, _, output = seed_run(owner, tmp_path)
     manifest = {"jobs": [{"username": "test", "job_id": "one"}], "remote_deleted": 0, "remote_complete": False}
     db.execute("UPDATE analysis_runs SET deletion_manifest=%s WHERE run_id=%s", (Json(manifest), str(run["run_id"])))
-    monkeypatch.setattr(deletion, "_credentials", lambda r: [("test", "password")])
+    monkeypatch.setattr(deletion, "run_credentials", lambda r: [("test", "password")])
     remote = Mock(side_effect=RuntimeError("private password=secret"))
     monkeypatch.setattr(deletion, "delete_jobs", remote)
     link = f"/api/runs/{run['run_id']}"
@@ -140,7 +141,7 @@ def test_remote_failure_preserves_files_and_retry_is_durable(clients, tmp_path, 
 
 
 def test_filesystem_failure_is_retryable(clients, tmp_path, monkeypatch):
-    from parcel_app import deletion
+    from parcel_app.pipelines.parcel_stats import deletion
 
     owner, _ = clients
     run, _, _, _ = seed_run(owner, tmp_path)
@@ -155,14 +156,15 @@ def test_filesystem_failure_is_retryable(clients, tmp_path, monkeypatch):
 
 def test_shared_upload_removed_when_other_run_is_deleted_during_remote_cleanup(clients, tmp_path, monkeypatch):
     """Recheck references at finalization, after a different deletion has finished."""
-    from parcel_app import db, deletion
+    from parcel_app.core import db
+    from parcel_app.pipelines.parcel_stats import deletion
 
     owner, _ = clients
     first, upload, _, _ = seed_run(owner, tmp_path)
     second, _, _, _ = seed_run(owner, tmp_path, upload)
     manifest = {"jobs": [{"username": "test", "job_id": "one"}], "remote_deleted": 0, "remote_complete": False}
     db.execute("UPDATE analysis_runs SET deletion_manifest=%s WHERE run_id=%s", (Json(manifest), str(first["run_id"])))
-    monkeypatch.setattr(deletion, "_credentials", lambda r: [("test", "password")])
+    monkeypatch.setattr(deletion, "run_credentials", lambda r: [("test", "password")])
 
     def interleaved(*args, **kwargs):
         assert owner.delete(f"/api/runs/{second['run_id']}").status_code == 200
@@ -175,7 +177,7 @@ def test_shared_upload_removed_when_other_run_is_deleted_during_remote_cleanup(c
 
 def test_completed_run_with_missing_remote_records_is_not_deleted(clients, tmp_path):
     """An empty directory scan cannot prove that a submitted run has no remote jobs."""
-    from parcel_app import db
+    from parcel_app.core import db
 
     owner, _ = clients
     run, _, _, _ = seed_run(owner, tmp_path)

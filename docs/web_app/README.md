@@ -202,7 +202,9 @@ The **EDA** action appears beside Open in the run list and in each run's header.
 It becomes available only when parcel processing has completed. The server also
 checks completion and ownership before exposing columns or accepting an EDA job.
 
-The dialog has Setup and History views. Setup reads columns from the registered
+The dialog opens on a start view: **New EDA analysis** opens Setup, and the list of
+previous analyses (title, date, column count, live status) opens one analysis's
+details. **← All analyses** returns to the start view. Setup reads columns from the registered
 final statistics Parquet. Search columns, select all or numeric columns, and
 choose exactly which inputs to analyse. Set optional target and ID roles from the
 selected columns; numeric class codes should use `target_task=classification`.
@@ -215,17 +217,17 @@ directory; it never clears parcel outputs or an earlier EDA directory. Saved
 configurations and selected columns can be reused for another analysis.
 
 EDA uses the heavy worker queue and continues when the dialog/browser closes.
-History shows queued/running/complete/failed/interrupted status, timestamps,
+An analysis's details show queued/running/complete/failed/interrupted status, timestamps,
 duration, the saved request and downloads. Results include the HTML report (when
 enabled), diagnostic tables, plots, annotated data, configuration and a log.
 When an analysis completes while its EDA window is open, the report appears
-automatically in the **Report** tab. **Open report** in History opens it directly
+automatically in the **Report** view. **Open report** in the details opens it directly
 in a new browser tab, including for previously completed analyses. These actions
 appear only when HTML reporting was enabled. Browser reports embed their plots
 and run in a sandbox isolated from application sessions. Ownership checks apply.
 The ZIP still includes the original report and plots for offline use: extract it
 and open `report.html`. Failed analyses offer a diagnostic log when available;
-new failures retain the exception traceback and show its type in History.
+new failures retain the exception traceback and show its type in the analysis details.
 
 The additive migration creates `eda_runs`, linked to `analysis_runs` and
 `app_users`, with input checksum, selected columns, configuration, status,
@@ -243,6 +245,40 @@ a fresh analysis. EDA proposals are exploratory diagnostics; final feature
 selection requires train-only validation, as explained in the
 [EDA guide](../eda/README.md).
 
+## ML classification
+
+Every completed EDA analysis has an **ML classification** button in its details. It opens
+a page that starts with **New scenario** beside the list of saved scenarios (date, features,
+steps done, status); pick one to open it. There you create *scenarios*: one combination of features, models and settings. An EDA
+analysis can have any number of scenarios, so different models or search grids can be compared.
+
+1. **Name** the scenario.
+2. **Choose the features.** Columns analysed in EDA are listed first and the ones EDA proposed
+   are pre-selected. Columns calculated by EDA (for example `is_outlier`) are listed but not
+   selected. The remaining parcel-result columns follow. The model input is always the parcel
+   result; `is_outlier` is attached for inspection priority even when it is not a feature.
+3. **Review the settings.** Every `ClassificationPipelineConfig` option is shown in a group
+   with a short explanation and starts at its default. Hyperparameter grids are edited per
+   model as JSON in the last group. Settings can be exported and imported as JSON. The web
+   app starts from its own defaults for a few settings: spatial split `by_row` (only when the
+   result has geometry), the five best models vote (fewer when fewer are selected), and class
+   probabilities are optimised over five passes.
+4. **Run** all five steps, or only the first one.
+
+The steps are Check, Prepare, Train, Evaluate and Predict. In a scenario's details each step shows
+whether it is done and links to its report. A waiting scenario offers **Run next step** and
+**Run all remaining steps**. After a failure or a worker interruption, **Retry step** continues
+from the step that stopped; finished steps and already trained models are reused. A scenario's
+settings cannot be changed afterwards: use **Use as a new scenario** to start from them.
+
+A finished scenario offers the final dashboard, the prediction table (CSV), a ZIP of all
+outputs and the log. ML uses the heavy worker queue, like parcel runs and EDA, so a long
+training occupies that queue; it cannot be stopped from the browser. The worker image needs
+the `ml` extra (`xgboost`, `lightgbm`, `imbalanced-learn`, `shap`); models whose library is
+missing are skipped. `n_jobs` is limited by `PARCEL_MAX_BATCH_WORKERS`.
+
+Run `python -m parcel_app.manage migrate` once to create `ml_runs` (`003_ml.sql`).
+
 ## Stored history
 
 `analysis_runs` stores each user's draft/submitted request, processing JSON,
@@ -251,7 +287,7 @@ validation revision, summary, status, error and timestamps. `run_accounts` freez
 the submitted identities/order. Related tables are `parcel_uploads`, `web_jobs`,
 `run_events`, `run_artifacts`, and `app_sessions`.
 
-The migration SQL is [src/parcel_app/schema.sql](../../src/parcel_app/schema.sql).
+The migration SQL files are in [src/parcel_app/migrations/](../../src/parcel_app/migrations/); `migrate` applies them in name order.
 Existing CLI run directories are not automatically imported into web history.
 All runs created through this application are saved in PostgreSQL.
 
@@ -288,8 +324,11 @@ worker honor the new stop request.
 
 Remote JVM out-of-memory failures can now retry with a larger executor heap.
 New-run settings under **Tiles and execution** expose `openeo_job_options` as a
-JSON object (for example `{"executor-memory":"2G","max-executors":20}`),
-`openeo_auto_memory_retry` and `openeo_max_executor_memory` (default `8G`). Only
+JSON object (form default `{"executor-memory":"4G","max-executors":20}`),
+`openeo_auto_memory_retry`, `openeo_max_executor_memory` (form default `12G`) and
+`openeo_memory_reference_area_km2` (form default 1000; tiles larger than this start
+with more executor memory, up to the maximum; blank disables). These form defaults
+are larger than the engine defaults used by notebooks and the CLI (2G, 8G, 625). Only
 confirmed JVM memory errors increase the heap; generic shuffle failures do not.
 The full [retry policy](../data_preparation/openeo/SCHEDULING.md#failure-aware-remote-resources)
 explains supported evidence, saved per-batch history and terminal failures.
@@ -354,13 +393,14 @@ Install the `web`, `database`, `credentials`, `acquisition`, and `interpolation`
 extras in a project virtual environment. Use the same PostgreSQL environment
 variables and a private `PARCEL_STORAGE_ROOT`. Start the API with
 `python -m uvicorn parcel_app.app:app --port 8000`, workers with
-`python -m parcel_app.worker --lane run` and `--lane small`, and frontend with
+`python -m parcel_app.jobs.worker --lane run` and `--lane small`, and frontend with
 `npm ci` / `npm run dev` under `web/`. Set the allowed origin to the Vite URL and
 disable Secure cookies only for localhost development.
 
 Tests in `tests/test_parcel_app/` default to skipping database integration unless
 `PARCEL_TEST_DB=1` is set with **disposable PostgreSQL credentials**. Run migrations
-there first. They cover registration, isolation, CSRF, uploads, validation,
+there first. `scripts\run_code_checks.bat db` does this automatically: it starts a throwaway
+Docker PostgreSQL, points every database setting at it, migrates, runs all tests and removes it. They cover registration, isolation, CSRF, uploads, validation,
 submission idempotency, worker fencing, output redaction, synthetic real local
 statistics, authorized downloads/bundles and checkpoint resume. They do not submit
 live openEO work. Frontend: `npm test` and `npm run build`.

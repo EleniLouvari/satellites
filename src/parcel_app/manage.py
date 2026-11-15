@@ -4,16 +4,19 @@ import argparse
 from getpass import getpass
 from importlib.resources import files
 
-from . import db
-from .security import hash_password
+from parcel_app.core import db
+from parcel_app.core.security import hash_password
 
 
 def migrate():
-    """Apply the packaged, idempotent additive schema in one transaction."""
-    schema = files("parcel_app").joinpath("schema.sql").read_text(encoding="utf-8")
-    with db.connection() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(schema)
+    """Apply every packaged, idempotent additive migration in name order, in one transaction."""
+    scripts = sorted(
+        (item for item in files("parcel_app").joinpath("migrations").iterdir() if item.name.endswith(".sql")),
+        key=lambda item: item.name,
+    )
+    with db.connection() as conn, conn.cursor() as cursor:
+        for script in scripts:
+            cursor.execute(script.read_text(encoding="utf-8"))
 
 
 def set_password(username: str):

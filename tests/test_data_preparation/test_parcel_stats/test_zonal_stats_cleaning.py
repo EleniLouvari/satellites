@@ -790,6 +790,37 @@ def test_raster_native_nearest_fills_from_closest_observed_pixel() -> None:
     np.testing.assert_array_equal(filled, [[1.0, 1.0, 9.0, 9.0]])
 
 
+def test_raster_native_nearest_leaves_gaps_beyond_maximum_distance() -> None:
+    extractor = _extractor(interpolation_max_distance_in_meters=10)
+    layer = np.array([[1.0, np.nan, np.nan, np.nan, np.nan]])
+    eligible_mask = np.ones(layer.shape, dtype=bool)
+
+    filled = extractor._fill_nearest_raster(layer, eligible_mask, from_origin(0, 10, 10, 10))
+
+    np.testing.assert_array_equal(filled, [[1.0, 1.0, np.nan, np.nan, np.nan]])
+
+
+def test_temporal_fill_skips_steps_without_any_observation_of_the_variable() -> None:
+    """Another sensor's dates on a merged time axis must not block or receive temporal fills."""
+    extractor = _extractor(
+        temporal_fill_mode="bidirectional", temporal_fill_window_sizes=(3,), minimum_observed_fraction_for_fill=0.0
+    )
+    extractor._interpolate_interval_layer = lambda layer, *_args: layer
+    # Steps 1 and 3 hold no observation at all; step 2 has one cloudy pixel.
+    values = np.full((5, 1, 2), np.nan)
+    values[0] = [[0.2, 0.2]]
+    values[2] = [[np.nan, 0.9]]
+    values[4] = [[0.6, 0.6]]
+
+    filled, counts = extractor._fill_variable_cube(
+        values, np.ones((1, 2), dtype=bool), None, None, return_null_counts=True
+    )
+
+    np.testing.assert_allclose(filled[2, 0], [0.4, 0.9])
+    np.testing.assert_array_equal(counts["after_temporal_fill"], [0, 2, 0, 2, 0])
+    expect_true(np.isnan(filled[[1, 3]]).all())
+
+
 def test_nulls_are_filled_per_variable_and_time_before_parcel_reduction() -> None:
     extractor = _extractor(fill_nulls=True, remove_outliers=False, minimum_observed_fraction_for_fill=0.0)
     extractor.sentinel2_bands = ("B02", "B03")

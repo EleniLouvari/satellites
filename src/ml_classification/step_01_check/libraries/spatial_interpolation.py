@@ -19,7 +19,8 @@ def interpolate_spatial_nulls(
     result = dataset.copy()
     # Record per-column null counts prior to any filling so summaries are informative.
     null_counts_before = {column: int(result[column].isna().sum()) for column in feature_columns if result[column].isna().any()}
-    method = config.spatial_interpolation_method
+    # Filling runs only when explicitly enabled; otherwise nulls are reported and dropped by the check step.
+    method = config.spatial_interpolation_method if config.fill_nulls else None
     skipped: dict[str, str] = {}
 
     if method:

@@ -1,0 +1,98 @@
+# Satellites project dependencies.
+# Versions pinned from the working "axhub_spatial" environment (Python 3.13).
+#
+# Recommended install (conda, Windows) - verified as "parcel_env":
+#   1. Compiled GIS/NetCDF stack from conda-forge (never let pip replace these):
+#        conda create -n parcel_env -c conda-forge --override-channels python=3.13 pip ^
+#          numpy=2.3.3 pandas=2.3.3 scipy=1.18.0 scikit-learn=1.8.0 matplotlib-base=3.10.8 ^
+#          gdal rasterio=1.4.4 fiona=1.10.1 pyproj=3.7.2 shapely=2.1.2 geopandas=1.1.3 ^
+#          netcdf4=1.7.4 h5py=3.14 h5netcdf psycopg2=2.9.11 joblib=1.5.3 networkx=3.6.1 ^
+#          requests=2.32.5 folium=0.20.0
+#   2. conda activate parcel_env
+#   3. Everything else with pip (skip psycopg2-binary: conda's psycopg2 provides it):
+#        pip install -r requirements.txt     (after deleting the psycopg2-binary line)
+#   4. pip install -e . --no-deps            (makes the src/ packages importable)
+#
+# Plain venv (no conda): pip install -r requirements.txt && pip install -e . --no-deps
+#
+# Notes: tensorflow 2.21 requires h5py<3.15. Installing a second copy of numpy,
+# netCDF4 or scikit-learn over the conda one breaks DLL loading and warning behaviour.
+
+# --- Core ---
+numpy==2.3.3
+pandas==2.3.3
+geopandas==1.1.3
+pyarrow==23.0.1
+shapely==2.1.2
+pyproj==3.7.2
+scipy==1.18.0
+scikit-learn==1.8.0
+matplotlib==3.10.8
+seaborn==0.13.2
+joblib==1.5.3
+rasterio==1.4.4
+rioxarray==0.20.0
+xarray==2025.1.1
+requests==2.32.5
+psutil==7.2.0
+tqdm==4.67.1
+
+# --- Imagery acquisition (openEO / STAC / NetCDF) ---
+openeo==0.54.0
+boto3==1.42.49
+pystac-client==0.9.0
+netCDF4==1.7.4
+h5netcdf
+dask[array]==2025.12.0
+openpyxl==3.1.5
+
+# --- Database ---
+psycopg2-binary==2.9.11
+sqlalchemy==2.0.45
+
+# --- Credentials ---
+cryptography==46.0.3
+
+# --- Web app (Parcel Studio) ---
+fastapi==0.162.2
+uvicorn==0.54.0
+argon2-cffi==25.1.0
+httpx2==2.16.0
+pydantic==2.12.5
+
+# --- ML classification ---
+xgboost==3.2.0
+lightgbm==4.6.0
+imbalanced-learn==0.14.2
+shap==0.51.0
+tensorflow==2.21.0
+pykrige==1.7.2
+
+# --- Interactive maps / reports ---
+folium==0.20.0
+plotly==6.5.0
+
+# --- Notebooks ---
+jupyterlab==4.5.1
+ipykernel==7.1.0
+python-dotenv==1.2.4
+ipython==9.8.0
+
+# --- GIS / statistics utilities ---
+networkx==3.6.1
+dill==0.4.0
+fiona==1.10.1
+skimpy==0.0.20
+libpysal==4.14.1
+esda==2.8.2
+splot==1.1.7
+statsmodels==0.14.6
+ruptures
+
+# --- Development / code checks ---
+pytest==9.0.2
+pytest-cov==7.1.0
+ruff==0.17.5
+radon==6.0.1
+pydocstyle==6.3.0
+bandit==1.9.2

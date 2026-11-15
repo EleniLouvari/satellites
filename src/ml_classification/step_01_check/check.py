@@ -12,6 +12,7 @@ from ml_classification.shared.config.base import PipelineStepBase
 # The check stage validates inputs before any expensive fitting or artifact generation occurs.
 from ml_classification.shared.logging import print_formatted_txt, time_decorator
 from ml_classification.shared.mapping import save_label_map
+from ml_classification.shared.models.modeling_context import EXCLUDED_FROM_TRAINING_COLUMN, training_rows_mask
 from ml_classification.shared.persistence import (
     load_joblib,
     load_json,
@@ -67,17 +68,42 @@ class CheckStep(PipelineStepBase):
                 f"Error: Modeling data must contain one row per {self.config.id_column}. Duplicate examples: {duplicates.tolist()}."
             )
         # Check that each class has at least `cv_folds` labeled examples for cross-validation.
-        counts = dataset.loc[dataset[self.config.target_column].notna(), self.config.target_column].astype(str).value_counts()
+        counts = dataset.loc[training_rows_mask(dataset, self.config), self.config.target_column].astype(str).value_counts()
         insufficient = counts[counts < self.config.cv_folds]
         if not insufficient.empty:
             raise ValueError(f"Error: Each class needs at least cv_folds distinct parcels. Found: {insufficient.to_dict()}")
+
+    def _flag_null_rows(self, dataset: pd.DataFrame, requested_features: list[str]) -> tuple[pd.DataFrame, int]:
+        # All-null features are rejected later in the summary, so they must not flag every row here.
+        checked = [name for name in requested_features if not dataset[name].isna().all()]
+        null_mask = dataset[checked].isna()
+        rows_with_nulls = null_mask.any(axis=1)
+        # Flagged rows stay in the dataset so the final model still predicts them.
+        dataset = dataset.copy()
+        dataset[EXCLUDED_FROM_TRAINING_COLUMN] = rows_with_nulls & (not self.config.fill_nulls)
+        if not rows_with_nulls.any():
+            print_formatted_txt("No nulls found in feature columns.", "INFO")
+            return dataset, 0
+        print_formatted_txt(f"{int(rows_with_nulls.sum())} {self.config.id_column} values have null features:", "WARNING")
+        for row_id, row_nulls in zip(dataset.loc[rows_with_nulls, self.config.id_column], null_mask[rows_with_nulls].to_numpy()):
+            null_columns = [name for name, is_null in zip(checked, row_nulls) if is_null]
+            print_formatted_txt(f"{self.config.id_column}={row_id}: {null_columns}", "INFO")
+        if self.config.fill_nulls:
+            return dataset, 0
+        excluded = int(rows_with_nulls.sum())
+        print_formatted_txt(
+            f"fill_nulls=False: excluding {excluded} rows with null features from train/validation/test; "
+            "they are still predicted by the final model.",
+            "WARNING",
+        )
+        return dataset, excluded
 
     def _build_summary(self, dataset, requested_features, iqr_summary, interpolation_summary):
         # Separate numeric vs categorical requested features by dtype.
         numeric = [name for name in requested_features if pd.api.types.is_numeric_dtype(dataset[name])]
         categorical = [name for name in requested_features if name not in numeric]
-        # Build labeled subset mask and frame for class statistics.
-        labeled_mask = dataset[self.config.target_column].notna()
+        # Build labeled subset mask (training-eligible rows only) and frame for class statistics.
+        labeled_mask = training_rows_mask(dataset, self.config)
         labeled = dataset.loc[labeled_mask]
         # Detect features that are entirely null or constant among labeled rows.
         all_null = [name for name in requested_features if dataset[name].isna().all()]
@@ -90,7 +116,7 @@ class CheckStep(PipelineStepBase):
         summary = {
             "rows_total": len(dataset),
             "rows_labeled": int(labeled_mask.sum()),
-            "rows_unknown_target": int((~labeled_mask).sum()),
+            "rows_unknown_target": int(dataset[self.config.target_column].isna().sum()),
             "n_features_requested": len(requested_features),
             "n_features_active": len(active),
             "numeric_features": numeric,
@@ -153,6 +179,7 @@ class CheckStep(PipelineStepBase):
         # Normalize and validate the raw DataFrame (IDs, required columns, types).
         dataset = self._normalize_and_validate_input(df)
         requested_features = list(self.config.feature_columns)
+
         # Optionally apply IQR-based filtering to remove outlier extreme values per feature.
         dataset, iqr_summary = apply_iqr_filter(dataset, requested_features, self.config)
         print_formatted_txt(f"IQR feature filtering: {iqr_summary}", "INFO")
@@ -165,6 +192,10 @@ class CheckStep(PipelineStepBase):
             f"Feature nulls after spatial interpolation: {interpolation_summary['null_counts_after_interpolation']}", "INFO"
         )
         print_formatted_txt(f"Requested features: {requested_features}", "INFO")
+        # Report parcels with remaining nulls; exclude them from training unless null filling is enabled.
+        dataset, interpolation_summary["rows_excluded_from_training_with_nulls"] = self._flag_null_rows(
+            dataset, requested_features
+        )
 
         # Validate entity-level constraints (unique IDs, class counts) and optimize memory/dtypes.
         self._validate_entities(dataset)
@@ -197,7 +228,7 @@ class CheckStep(PipelineStepBase):
         requested_features = [name for name in self.config.feature_columns if name in dataset.columns]
         if not requested_features:
             requested_features = list(summary.get("active_features", []))
-        labeled_df = dataset.loc[dataset[self.config.target_column].notna()].copy()
+        labeled_df = dataset.loc[training_rows_mask(dataset, self.config)].copy()
         self._save_check_plots(dataset, labeled_df, requested_features)
         write_check_report(self.config, summary, feature_profile)
         return str(self.config.check_dir / "report.html")

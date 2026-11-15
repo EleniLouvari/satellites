@@ -11,7 +11,11 @@ from ml_classification.shared.config.base import PipelineStepBase
 from ml_classification.shared.logging import print_formatted_txt, time_decorator
 
 # Prediction reloads persisted training artifacts so inference matches the fitted feature space.
-from ml_classification.shared.models.modeling_context import load_modeling_context
+from ml_classification.shared.models.modeling_context import (
+    EXCLUDED_FROM_TRAINING_COLUMN,
+    load_modeling_context,
+    training_rows_mask,
+)
 from ml_classification.shared.persistence import load_joblib, load_json, save_frame_csv, save_joblib, save_json
 from ml_classification.shared.reports.final_dashboard import write_pipeline_final_dashboard
 from ml_classification.shared.reports.report_index import write_index_report
@@ -124,6 +128,7 @@ class PredictStep(PipelineStepBase):
             self.config.inspection_data_reliability_column,
             self.config.inspection_geometry_complexity_column,
             "is_outlier",
+            EXCLUDED_FROM_TRAINING_COLUMN,
             *INSPECTION_OUTPUT_COLUMNS,
         ]
         preview_columns.extend(column for column in optional_confidence_columns if column in final_df.columns)
@@ -181,8 +186,8 @@ class PredictStep(PipelineStepBase):
         categorical_features = context["categorical_features"]
         label_encoder = context["label_encoder"]
 
-        # Build a labeled subset to fit any selected strategies that require re-fitting.
-        labeled_df = dataset.loc[dataset[self.config.target_column].notna(), :].copy()
+        # Refit only on training-eligible labeled rows; X_all below still predicts every row, including excluded ones.
+        labeled_df = dataset.loc[training_rows_mask(dataset, self.config), :].copy()
         labeled_df[self.config.target_column] = labeled_df[self.config.target_column].astype(str)
 
         # Execute the chosen selection strategy (may refit models using all labeled data) to obtain predictions and probabilities.

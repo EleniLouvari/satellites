@@ -1,32 +1,35 @@
 @echo off
 setlocal enabledelayedexpansion
-REM Optional first argument: Python executable.
+REM Optional arguments, in any order:
+REM   <python.exe>  Python executable to use (default: python)
+REM   live | file   pytest output in the terminal (default) or in outputs\quality\pytest.txt
+REM   db            also run the parcel_app PostgreSQL integration tests against a throwaway
+REM                 Docker container (postgres:16-alpine on 127.0.0.1:%PARCEL_TEST_DB_PORT%, default 55439)
+REM Capture the script folder before "shift", which also shifts %0.
+set "SCRIPT_DIR=%~dp0"
 set "CHECK_PYTHON=python"
 set "PYTEST_OUTPUT_MODE=live"
-set "ARG1=%~1"
-set "ARG2=%~2"
+set "DB_TESTS=0"
+set "PYTHON_ARG_SET=0"
 
-if /I "%ARG1%"=="live" (
-    set "PYTEST_OUTPUT_MODE=live"
-) else if /I "%ARG1%"=="file" (
-    set "PYTEST_OUTPUT_MODE=file"
-) else if not "%ARG1%"=="" (
-    set "CHECK_PYTHON=%ARG1%"
-)
-
-if not "%ARG2%"=="" (
-    if /I "%ARG2%"=="live" (
-        set "PYTEST_OUTPUT_MODE=live"
-    ) else if /I "%ARG2%"=="file" (
-        set "PYTEST_OUTPUT_MODE=file"
-    ) else (
-        echo Error: Invalid pytest output mode "%ARG2%". Use "live" or "file".
-        exit /b 2
-    )
-)
+:parse_args
+if "%~1"=="" goto :args_done
+if /I "%~1"=="live" (set "PYTEST_OUTPUT_MODE=live" & goto :next_arg)
+if /I "%~1"=="file" (set "PYTEST_OUTPUT_MODE=file" & goto :next_arg)
+if /I "%~1"=="db" (set "DB_TESTS=1" & goto :next_arg)
+if not "%PYTHON_ARG_SET%"=="0" goto :invalid_arg
+REM Set outside a parenthesized block so paths such as "Program Files (x86)" stay intact.
+set "CHECK_PYTHON=%~1"
+set "PYTHON_ARG_SET=1"
+:next_arg
+shift
+goto :parse_args
+:invalid_arg
+echo Error: Invalid argument "%~1". Use a Python executable, "live", "file" or "db".
+exit /b 2
+:args_done
 
 REM Resolve repository root relative to this script location
-set "SCRIPT_DIR=%~dp0"
 set "REPO_ROOT=%SCRIPT_DIR%.."
 cd /d "%REPO_ROOT%" || exit /b 2
 
@@ -94,6 +97,19 @@ if %ERRORLEVEL% NEQ 0 (
     echo Bandit passed with no issues.
 )
 
+if "%DB_TESTS%"=="1" (
+    echo.
+    echo ===== Throwaway test database ^(Docker^) =====
+    call :start_test_db
+)
+if "%DB_TESTS%"=="1" if errorlevel 1 (
+    call :stop_test_db
+    echo Error: Database integration tests could not start; no tests were run.
+    exit /b 2
+)
+if "%DB_TESTS%"=="0" echo.
+if "%DB_TESTS%"=="0" echo Database integration tests are skipped; add the "db" argument to run them.
+
 echo.
 echo ===== Pytest with Coverage =====
 set "SATELLITES_DISABLE_HTML_REPORT_OPEN=1"
@@ -106,6 +122,7 @@ if /I "%PYTEST_OUTPUT_MODE%"=="file" (
     "%CHECK_PYTHON%" -m coverage run --rcfile="%REPO_ROOT%\pyproject.toml" -m pytest "%TEST_DIR%" --maxfail=1 --junitxml="%REPORT_DIR%\junit.xml"
 )
 set "PYTEST_EXIT_CODE=%ERRORLEVEL%"
+if "%DB_TESTS%"=="1" call :stop_test_db
 if not "%PYTEST_EXIT_CODE%"=="0" (
     echo [WARN] Pytest reported failures.
 )
@@ -145,3 +162,59 @@ if "%CHECK_FAILED%"=="0" (
     echo Error: Code checks completed with failures.
 )
 endlocal & exit /b %CHECK_FAILED%
+
+
+REM ---------------------------------------------------------------------------
+REM Throwaway PostgreSQL for the parcel_app integration tests. The tests create
+REM and delete rows, so they must never reach the database configured in .env:
+REM every database setting is overridden to point at this container only.
+REM ---------------------------------------------------------------------------
+:start_test_db
+if not defined PARCEL_TEST_DB_PORT set "PARCEL_TEST_DB_PORT=55439"
+set "TEST_DB_CONTAINER=satellites-code-checks-db"
+docker version >nul 2>&1
+if errorlevel 1 (
+    echo Error: Docker is not available. Start Docker Desktop, or run without "db".
+    exit /b 1
+)
+REM Remove a container left behind by an interrupted earlier run.
+docker rm -f %TEST_DB_CONTAINER% >nul 2>&1
+docker run -d --rm --name %TEST_DB_CONTAINER% -p 127.0.0.1:%PARCEL_TEST_DB_PORT%:5432 -e POSTGRES_PASSWORD=code-checks postgres:16-alpine >nul
+if errorlevel 1 (
+    echo Error: Could not start the test database container on port %PARCEL_TEST_DB_PORT%. Set PARCEL_TEST_DB_PORT to a free port.
+    exit /b 1
+)
+REM The image initializes first; TCP connections are accepted only by the final server.
+set /a "TEST_DB_WAIT=0"
+:wait_test_db
+docker exec %TEST_DB_CONTAINER% pg_isready -U postgres -h 127.0.0.1 >nul 2>&1
+if not errorlevel 1 goto :test_db_ready
+set /a "TEST_DB_WAIT+=1"
+if %TEST_DB_WAIT% GEQ 60 (
+    echo Error: The test database did not become ready within 60 seconds.
+    exit /b 1
+)
+REM ping is used as a delay because timeout fails when input is redirected.
+ping -n 2 127.0.0.1 >nul
+goto :wait_test_db
+:test_db_ready
+set "PARCEL_TEST_DB=1"
+set "POSTGRES_HOST=127.0.0.1"
+set "POSTGRES_PORT=%PARCEL_TEST_DB_PORT%"
+set "POSTGRES_USER=postgres"
+set "POSTGRES_PASSWORD=code-checks"
+set "POSTGRES_DB=postgres"
+set "DB_NAME=postgres"
+"%CHECK_PYTHON%" -m parcel_app.manage migrate
+if errorlevel 1 (
+    echo Error: Applying the parcel_app migrations to the test database failed.
+    exit /b 1
+)
+echo Test database ready on 127.0.0.1:%PARCEL_TEST_DB_PORT% ^(container %TEST_DB_CONTAINER%^).
+exit /b 0
+
+:stop_test_db
+REM Started with --rm, so stopping also deletes the container and its data.
+docker stop %TEST_DB_CONTAINER% >nul 2>&1
+echo Test database container removed.
+exit /b 0

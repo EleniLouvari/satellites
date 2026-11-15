@@ -40,8 +40,8 @@ satellites parcel-stats resume --run-dir C:/work/run --app-user-id 42 --retry-ex
 
 This explicitly permits higher executor-memory tiers up to the saved cap, without
 resetting retry counts or changing the saved science configuration. New runs can
-set `processing.openeo_job_options`, `openeo_auto_memory_retry` and
-`openeo_max_executor_memory`. The recovery switch itself is a resume argument,
+set `processing.openeo_job_options`, `openeo_auto_memory_retry`,
+`openeo_max_executor_memory` and `openeo_memory_reference_area_km2`. The recovery switch itself is a resume argument,
 not an accepted `processing` field. See [remote retry policy](SCHEDULING.md#failure-aware-remote-resources).
 
 The equivalent module invocation is `python -m data_preparation.cli parcel-stats ...`.

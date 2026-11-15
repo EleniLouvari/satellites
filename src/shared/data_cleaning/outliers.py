@@ -79,6 +79,24 @@ class OutlierAnalysis:
         # as the caller's input so any boolean masks produced by methods can be
         # aligned back to the original rows without reindexing.
 
+    @staticmethod
+    def is_boolean(series: pd.Series) -> bool:
+        """Return True for True/False flags, including nullable and object columns holding only booleans.
+
+        Flags such as ``is_outlier`` are excluded from every outlier calculation: quantiles,
+        z-scores and distances are meaningless for a two-state value.
+        """
+        if pd.api.types.is_bool_dtype(series):
+            return True
+        if series.dtype != object:
+            return False
+        values = series.dropna()
+        return not values.empty and all(isinstance(value, (bool, np.bool_)) for value in values)
+
+    def _analysable(self, columns: Sequence[str]) -> list[str]:
+        """Drop boolean flags from a requested column list, keeping the order."""
+        return [column for column in columns if column not in self.df or not self.is_boolean(self.df[column])]
+
     def _numeric_columns(self) -> list[str]:
         """Return numeric, non-geometry columns in their original order."""
         # Select numeric dtypes but exclude a column named 'geometry' which is
@@ -93,6 +111,9 @@ class OutlierAnalysis:
         """
         if column not in self.df.columns:
             raise KeyError(f"Error: Column not found: {column}")
+        # Boolean flags are never analysed; an empty series gives undefined bounds and no outliers.
+        if self.is_boolean(self.df[column]):
+            return pd.Series(dtype="float64")
         # Coerce non-numeric strings to NaN so calculations operate on floats.
         series = pd.to_numeric(self.df[column], errors="coerce")
         # Remove NaN and infinite values since they cannot participate safely in
@@ -173,7 +194,7 @@ class OutlierAnalysis:
         # position so that duplicate index labels (if present) do not inflate
         # counts.
         rows = []
-        for column in columns if columns is not None else self.numeric_columns:
+        for column in self._analysable(columns if columns is not None else self.numeric_columns):
             clean = self._clean_numeric(column)
             if clean.empty:
                 continue
@@ -228,7 +249,8 @@ class OutlierAnalysis:
         """
         # Select features in the requested order but cap to the configured
         # maximum to avoid excessively large covariance matrices.
-        selected = list(columns if columns is not None else self.numeric_columns)[: self.max_multivariate_features]
+        # Boolean flags are removed before the cap so they never take a feature slot.
+        selected = self._analysable(columns if columns is not None else self.numeric_columns)[: self.max_multivariate_features]
         if not selected:
             return pd.DataFrame(index=self.df.index)
 
@@ -307,7 +329,10 @@ class OutlierAnalysis:
         Forest, PCA/DBSCAN and Mahalanobis each run once on the prepared matrix.
         PLS requires a response and is deliberately excluded. Unavailable votes
         are nullable, and a strict majority of at least two available methods
-        is required. ``is_outlier`` records the majority decision.
+        is required. ``is_outlier`` records the majority decision and is never
+        null: rows with fewer than two available methods are not outliers
+        (False); ``eda_outlier_methods_available`` shows how many methods voted.
+        Boolean columns are never used as outlier features.
         ``plot`` is retained for compatibility; this method only calculates.
         """
         matrix = self.prepared_numeric_matrix()
@@ -346,7 +371,9 @@ class OutlierAnalysis:
         result["is_outlier"] = pd.array(
             result["eda_outlier_votes"].to_numpy() > available.to_numpy() / 2, dtype="boolean"
         )
-        result.loc[available < 2, "is_outlier"] = pd.NA
+        # Too little evidence is not an outlier: the flag defaults to False and is never null.
+        result.loc[available < 2, "is_outlier"] = False
+        result["is_outlier"] = result["is_outlier"].astype(bool)
         result["mahalanobis_distance"] = distances["mahalanobis_distance"].reindex(votes.index).to_numpy()
         result["mahalanobis_pvalue"] = distances["pvalue"].reindex(votes.index).to_numpy()
         self.results = result

@@ -9,7 +9,7 @@
 !src/
 !src/**/
 !src/**/*.py
-!src/parcel_app/schema.sql
+!src/parcel_app/migrations/*.sql
 
 # Do not include cached/packaged source copies underneath src either.
 **/__pycache__/

@@ -112,6 +112,8 @@ class ParcelStatsBase(
         ``(3,)`` uses only the immediately previous/next step at the same pixel,
         subject to ``temporal_fill_mode``. Wider windows retry remaining gaps
         using original observations. ``None`` preserves unlimited search.
+        Steps on which a variable has no observation in the whole layer, such
+        as Sentinel-1 dates for a Sentinel-2 band, are not counted as steps.
     keep_cleaned_checkpoint:
         Retain the intermediate physical-band checkpoint after the final
         bands-and-indices checkpoint commits. Defaults to ``False``.
@@ -137,7 +139,9 @@ class ParcelStatsBase(
         Final pixel-level interpolation applied per variable and temporal period.
         Choose ``'nearest'``, ``'idw'`` or ``'kriging'``.
     interpolation_max_distance_in_meters:
-        Required maximum search distance in metres when using IDW.
+        Maximum search distance in metres. Required for IDW. Optional for
+        ``'nearest'``: gaps farther than this from every observed pixel stay
+        null; ``None`` leaves nearest filling unlimited.
     interpolation_variogram_lags, interpolation_variogram_max_distance_in_meters:
         Kriging variogram configuration; maximum distance is expressed in metres.
     batch_workers:

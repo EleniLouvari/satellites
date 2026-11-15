@@ -21,7 +21,7 @@ class ParcelStatisticsCheckpointMixin:
     def _cleaning_checkpoint_signature(self) -> str:
         """Fingerprint local operations without invalidating reusable raw downloads."""
         configuration = {
-            "checkpoint_format": "cleaned_plus_fill_provenance_v3",
+            "checkpoint_format": "cleaned_plus_fill_provenance_v4",
             "remove_outliers": self.remove_outliers,
             "iqr_quantiles": self.iqr_quantiles,
             "iqr_multiplier": self.iqr_multiplier,

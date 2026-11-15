@@ -273,6 +273,49 @@ def test_temporal_fill_reads_configured_strips(tmp_path, monkeypatch, block_rows
     expect_equal(heights, expected_heights)
 
 
+def test_streamed_temporal_fill_skips_dates_without_any_observation(tmp_path):
+    """A band's empty dates on a merged sensor axis neither block nor receive temporal fills."""
+    extractor = _extractor(tmp_path, fill_nulls=True, temporal_fill_mode="bidirectional", temporal_fill_window_sizes=(3,))
+    values = np.full((5, 1, 2), np.nan, dtype="float32")
+    values[0] = [[0.2, 0.2]]
+    values[2] = [[np.nan, 0.9]]
+    values[4] = [[0.6, 0.6]]
+    observed_counts = np.isfinite(values).sum(axis=(1, 2))[:, None]
+    allowed = observed_counts / 2 >= 0.5
+    with extractor._new_streamed_checkpoint(tmp_path / "merged.nc", list("abcde"), ["B04"], (1, 2)) as checkpoint:
+        checkpoint.variables["cleaned"][:, 0] = values
+        counts = (~np.isfinite(values)).sum(axis=(1, 2))[:, None]
+        extractor._stream_temporal_fill(checkpoint, allowed, counts, observed_counts > 0)
+        stored = np.asarray(checkpoint.variables["cleaned"][:, 0])
+        np.testing.assert_allclose(stored[2, 0], [0.4, 0.9], rtol=1e-6)
+        expect_true(np.isnan(stored[[1, 3]]).all())
+        np.testing.assert_array_equal(checkpoint.variables["temporal_filled_mask"][:, 0, 0, 0], [0, 0, 1, 0, 0])
+        np.testing.assert_array_equal(counts[:, 0], [0, 2, 0, 2, 0])
+
+
+def test_streamed_temporal_fill_uses_only_adjacent_dates_of_the_same_band(tmp_path):
+    """Window 3: mean of previous/next, the single available side, or null; never another band."""
+    extractor = _extractor(tmp_path, fill_nulls=True, temporal_fill_mode="bidirectional", temporal_fill_window_sizes=(3,))
+    nan = np.nan
+    # Date 2 pixel columns: both neighbours, previous only, next only, neither, observed.
+    b04 = np.array(
+        [[0.1, 0.1, nan, nan, 0.1], [nan, nan, nan, nan, 0.2], [0.3, nan, 0.3, nan, 0.3], [0.4] * 5, [0.5] * 5], dtype="float32"
+    )
+    b08 = np.full((5, 5), 0.9, dtype="float32")
+    values = np.stack([b04, b08], axis=1).reshape(5, 2, 1, 5)
+    observed_counts = np.isfinite(values).sum(axis=(2, 3))
+    with extractor._new_streamed_checkpoint(tmp_path / "bands.nc", list("abcde"), ["B04", "B08"], (1, 5)) as checkpoint:
+        checkpoint.variables["cleaned"][:] = values
+        counts = (~np.isfinite(values)).sum(axis=(2, 3))
+        extractor._stream_temporal_fill(checkpoint, np.ones((5, 2), dtype=bool), counts, observed_counts > 0)
+        stored = np.asarray(checkpoint.variables["cleaned"][:])
+        np.testing.assert_allclose(stored[1, 0, 0], [0.2, 0.1, 0.3, nan, 0.2], rtol=1e-6, equal_nan=True)
+        # Fills read original observations only: date 3 takes date 4, never a value just filled into date 2.
+        np.testing.assert_allclose(stored[2, 0, 0], [0.3, 0.4, 0.3, 0.4, 0.3], rtol=1e-6)
+        np.testing.assert_array_equal(stored[:, 1, 0], b08)
+        np.testing.assert_array_equal(counts[:, 0], [2, 1, 0, 0, 0])
+
+
 def test_streamed_path_never_selects_the_complete_raw_cube(tmp_path, monkeypatch):
     extractor = _extractor(tmp_path)
     path = _write_cube(

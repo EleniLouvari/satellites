@@ -16,7 +16,7 @@ def clients(monkeypatch, tmp_path):
     from fastapi.testclient import TestClient
     from parcel_app.app import create_app
     from parcel_app.settings import get_settings
-    from parcel_app.security import cipher
+    from parcel_app.core.security import cipher
 
     monkeypatch.setenv("PARCEL_STORAGE_ROOT", str(tmp_path))
     monkeypatch.setenv("PARCEL_COOKIE_SECURE", "false")
@@ -43,7 +43,7 @@ def clients(monkeypatch, tmp_path):
 
 def test_unknown_processing_and_excess_workers_rejected():
     """Browser configuration cannot smuggle server paths or exceed worker limits."""
-    from parcel_app.config import check_processing
+    from parcel_app.pipelines.parcel_stats.config import check_processing
 
     with pytest.raises(ValueError):
         check_processing({"start_date": "2024-01-01", "end_date": "2024-01-31", "output_dir": "/etc"})
@@ -53,7 +53,7 @@ def test_unknown_processing_and_excess_workers_rejected():
 
 def test_temporal_fill_block_rows_web_configuration():
     """Expose optional numeric tuning and preserve it only when filling is enabled."""
-    from parcel_app.config import check_processing, configuration
+    from parcel_app.pipelines.parcel_stats.config import check_processing, configuration
 
     fields = {field["name"]: field for field in configuration(user={})["fields"]}
     field = fields["temporal_fill_block_rows"]
@@ -71,7 +71,7 @@ def test_temporal_fill_block_rows_web_configuration():
 
 def test_public_config_hides_paths():
     """Only portable, non-secret configuration is returned to browsers."""
-    from parcel_app.runs import public_run
+    from parcel_app.pipelines.parcel_stats.routes import public_run
 
     row = {
         "run_id": "x",
@@ -87,7 +87,7 @@ def test_public_config_hides_paths():
 def test_duration_uses_processing_start_and_freezes_at_completion():
     """Queue time is excluded and records without a start do not invent durations."""
     from datetime import datetime, timedelta, timezone
-    from parcel_app.runs import public_run
+    from parcel_app.pipelines.parcel_stats.routes import public_run
 
     start = datetime(2026, 1, 1, tzinfo=timezone.utc)
     result = public_run({"started_at": start, "updated_at": start + timedelta(seconds=125), "status": "complete"})
@@ -99,7 +99,7 @@ def test_duration_uses_processing_start_and_freezes_at_completion():
 def test_form_covers_runner_options_and_nullable_values():
     """A new engine option must remain editable without manually updating UI fields."""
     from data_preparation.parcel_stats.run_config import _processing_parameters
-    from parcel_app.config import configuration, check_processing
+    from parcel_app.pipelines.parcel_stats.config import configuration, check_processing
 
     schema = configuration(user={})
     fields = {field["name"]: field for field in schema["fields"]}
@@ -112,7 +112,7 @@ def test_form_covers_runner_options_and_nullable_values():
 
 def test_grouped_configuration_dependencies_and_defaults():
     """Every current option has a panel and scientifically accurate dependencies."""
-    from parcel_app.config import configuration
+    from parcel_app.pipelines.parcel_stats.config import configuration
 
     schema = configuration(user={})
     fields = {field["name"]: field for field in schema["fields"]}
@@ -124,7 +124,7 @@ def test_grouped_configuration_dependencies_and_defaults():
     assert fields["temporal_fill_mode"]["enabled_when"] == {"fill_nulls": [True]}
     assert fields["interpolation_max_distance_in_meters"]["enabled_when"] == {
         "fill_nulls": [True],
-        "interpolation_method": ["idw"],
+        "interpolation_method": ["idw", "nearest"],
     }
     assert fields["interpolation_variogram_lags"]["enabled_when"] == {"fill_nulls": [True], "interpolation_method": ["kriging"]}
     assert not fields["temporal_period"]["enabled_when"]
@@ -132,7 +132,7 @@ def test_grouped_configuration_dependencies_and_defaults():
 
 def test_inactive_settings_do_not_block_web_validation():
     """Inactive IDW and unfinished IQR inputs must not invalidate an unrelated run."""
-    from parcel_app.config import check_processing
+    from parcel_app.pipelines.parcel_stats.config import check_processing
 
     options = check_processing(
         {
@@ -177,7 +177,7 @@ def test_oversized_stream_does_not_leave_upload(clients, monkeypatch):
 
 def test_run_owner_and_submit_revision(clients):
     """A run is private; stale or unvalidated submissions do not start jobs."""
-    from parcel_app import db
+    from parcel_app.core import db
     from psycopg2.extras import Json
 
     owner, stranger = clients
@@ -224,7 +224,7 @@ def test_run_owner_and_submit_revision(clients):
 
 def test_artifact_path_escape_blocked(clients):
     """Even a corrupted database artifact cannot expose a path outside its run."""
-    from parcel_app.files import contained_artifact
+    from parcel_app.pipelines.parcel_stats.files import contained_artifact
 
     with pytest.raises(ValueError):
         contained_artifact({"output_dir": "/safe/run"}, {"storage_path": "/etc/passwd"})
@@ -239,8 +239,8 @@ def test_full_pipeline_queue_download_and_resume(clients, tmp_path, monkeypatch)
     import pandas as pd
     import xarray as xr
     from shapely.geometry import box
-    from parcel_app import db
-    from parcel_app.tasks import execute_task
+    from parcel_app.core import db
+    from parcel_app.jobs.dispatch import execute_task
 
     owner, stranger = clients
     path = tmp_path / "original.gpkg"
@@ -348,7 +348,7 @@ def test_full_pipeline_queue_download_and_resume(clients, tmp_path, monkeypatch)
 
 def test_openeo_parallel_jobs_form_and_server_limit():
     """The form offers only supported per-account slots and the server enforces the cap."""
-    from parcel_app.config import check_processing, configuration
+    from parcel_app.pipelines.parcel_stats.config import check_processing, configuration
 
     schema = configuration(user={})
     field = next(field for field in schema["fields"] if field["name"] == "openeo_parallel_jobs")
@@ -367,9 +367,10 @@ def test_eda_submission_queue_isolation_and_download(clients, tmp_path):
     import io
     from zipfile import ZipFile
     import pandas as pd
-    from parcel_app import db
-    from parcel_app.artifacts import checksum, register_file
-    from parcel_app.tasks import execute_task
+    from parcel_app.core import db
+    from parcel_app.core.storage import checksum
+    from parcel_app.pipelines.parcel_stats.artifacts import register_file
+    from parcel_app.jobs.dispatch import execute_task
 
     owner, stranger = clients
     user_id = owner.get("/api/auth/me").json()["app_user_id"]

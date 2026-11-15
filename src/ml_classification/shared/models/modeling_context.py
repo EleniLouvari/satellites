@@ -4,11 +4,23 @@ from __future__ import annotations
 
 from typing import Any
 
+import pandas as pd
 from sklearn.preprocessing import LabelEncoder
 
 from ml_classification.shared.config.config import ClassificationPipelineConfig
 from ml_classification.shared.persistence import load_json
 from shared.io import read_data
+
+# Rows flagged by the check step: kept for final prediction, excluded from train/validation/test.
+EXCLUDED_FROM_TRAINING_COLUMN = "excluded_from_training"
+
+
+def training_rows_mask(dataset: pd.DataFrame, config: ClassificationPipelineConfig) -> pd.Series:
+    """Return labeled rows that may be used for splitting, tuning, and refitting."""
+    mask = dataset[config.target_column].notna()
+    if EXCLUDED_FROM_TRAINING_COLUMN in dataset.columns:
+        mask &= ~dataset[EXCLUDED_FROM_TRAINING_COLUMN].astype(bool)
+    return mask
 
 
 def load_modeling_context(config: ClassificationPipelineConfig) -> dict[str, Any]:

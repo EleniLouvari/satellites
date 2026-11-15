@@ -60,7 +60,7 @@ def file_sha256(path: Path) -> str:
 def _object(value, allowed: set[str], name: str) -> dict:
     """Reject unrecognized keys rather than silently ignoring settings."""
     if not isinstance(value, dict):
-        raise ValueError(f"Error: {name} must be an object.")
+        raise ValueError(f"Error: {name} must be an object.")  # noqa: TRY004 - all invalid input is reported as ValueError (CLI exit code 2, HTTP 422)
     if set(value).difference(allowed):
         raise ValueError(f"Error: {name} contains unsupported fields; see the CLI configuration guide.")
     return dict(value)
@@ -99,13 +99,13 @@ def _processing(value) -> dict:
         from datetime import date
 
         date.fromisoformat(options[name])
-    for name, value in options.items():
+    for name, option in options.items():
         default = parameters[name].default
-        if isinstance(default, bool) and not isinstance(value, bool):
-            raise ValueError(f"Error: {name} must be a boolean.")
+        if isinstance(default, bool) and not isinstance(option, bool):
+            raise ValueError(f"Error: {name} must be a boolean.")  # noqa: TRY004 - all invalid input is reported as ValueError (CLI exit code 2, HTTP 422)
         # This optional integer accepts explicit null for automatic sizing even
         # when the configured constructor default is a concrete row count.
-        if type(default) is int and name != "temporal_fill_block_rows" and type(value) is not int:
+        if type(default) is int and name != "temporal_fill_block_rows" and type(option) is not int:
             raise ValueError(f"Error: {name} must be an integer.")
     if options.get("openeo_parallel_jobs", 2) not in (1, 2):
         raise ValueError("Error: openeo_parallel_jobs must be 1 or 2 per account.")

@@ -11,12 +11,14 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import cross_val_predict
 
 from ml_classification.shared.config.config import ClassificationPipelineConfig
+from ml_classification.shared.models.modeling_context import EXCLUDED_FROM_TRAINING_COLUMN, training_rows_mask
 from ml_classification.shared.models.models import ContiguousLabelClassifier, build_model_candidates
 from ml_classification.shared.models.tensorflow_lstm_models import TemporalTensorBuilder
+from ml_classification.step_01_check.check import CheckStep
 from ml_classification.step_03_train.train import TrainStep
 from ml_classification.step_04_evaluate.evaluate import EvaluateStep
 from ml_classification.step_04_evaluate.libraries.feature_importance import extract_feature_importance_frame
-from tests.utils import expect_equal, expect_false, expect_not_in, expect_subset, expect_true
+from tests.utils import expect_equal, expect_false, expect_in, expect_not_in, expect_subset, expect_true
 
 
 def test_model_tune_params_can_be_overridden_per_model():
@@ -160,6 +162,75 @@ def test_config_rejects_non_bool_apply_iqr():
             apply_iqr=1,
             cv_folds=2,
         )
+
+
+def test_config_requires_interpolation_method_when_fill_nulls_is_enabled():
+    with np.testing.assert_raises_regex(ValueError, "fill_nulls=True requires spatial_interpolation_method"):
+        ClassificationPipelineConfig(
+            project_dir="test_project",
+            target_column="label",
+            feature_columns=["feature"],
+            fill_nulls=True,
+            cv_folds=2,
+        )
+
+
+def test_config_warns_when_iqr_nulls_are_not_filled():
+    with pytest.warns(UserWarning, match="apply_iqr=True with fill_nulls=False"):
+        ClassificationPipelineConfig(
+            project_dir="test_project",
+            target_column="label",
+            feature_columns=["feature"],
+            apply_iqr=True,
+            feature_importance_top_n=1,
+            cv_folds=2,
+        )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        ClassificationPipelineConfig(
+            project_dir="test_project",
+            target_column="label",
+            feature_columns=["feature"],
+            apply_iqr=True,
+            fill_nulls=True,
+            spatial_interpolation_method="nearest",
+            feature_importance_top_n=1,
+            cv_folds=2,
+        )
+
+
+def test_check_excludes_null_rows_from_training_but_keeps_them_for_prediction(tmp_path, capsys):
+    data = pd.DataFrame(
+        {
+            "row_id": ["a", "b", "c", "d"],
+            "label": ["x", "y", "x", None],
+            "feature": [1.0, np.nan, 3.0, np.nan],
+            "other": [1.0, 2.0, np.nan, 4.0],
+            "empty": [np.nan] * 4,
+        }
+    )
+    features = ["feature", "other", "empty"]
+    config = ClassificationPipelineConfig(
+        project_dir=str(tmp_path),
+        target_column="label",
+        feature_columns=features,
+        feature_importance_top_n=len(features),
+        cv_folds=2,
+    )
+    flagged, excluded = CheckStep(config)._flag_null_rows(data, features)
+    expect_equal(excluded, 3)
+    expect_equal(len(flagged), 4)
+    expect_equal(flagged[EXCLUDED_FROM_TRAINING_COLUMN].tolist(), [False, True, True, True])
+    expect_equal(flagged.loc[training_rows_mask(flagged, config), "row_id"].tolist(), ["a"])
+    output = capsys.readouterr().out
+    expect_in("row_id=b: ['feature']", output)
+    expect_in("row_id=c: ['other']", output)
+
+    config.fill_nulls = True
+    flagged, excluded = CheckStep(config)._flag_null_rows(data, features)
+    expect_equal(excluded, 0)
+    expect_false(flagged[EXCLUDED_FROM_TRAINING_COLUMN].any())
+    expect_equal(flagged.loc[training_rows_mask(flagged, config), "row_id"].tolist(), ["a", "b", "c"])
 
 
 def test_config_rejects_empty_selected_models():

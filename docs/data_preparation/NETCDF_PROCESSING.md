@@ -140,6 +140,9 @@ In this streamed path, the eligible area is the full rectangular raster grid.
    `past_only` uses the nearest previous observation. `bidirectional` uses the
    average of the nearest previous and next observations when both exist, or
    the available side otherwise; this is not a time-distance-weighted average.
+   Time steps on which the band has no observation in the whole layer (another
+   sensor's dates on a merged time axis) are skipped as neighbours and are
+   never temporally filled.
    Optional `temporal_fill_window_sizes` limit the search in time steps, not
    calendar days. The default `None` imposes no window limit.
 5. **Fill from spatial neighbors.** Apply mean neighborhoods sequentially,
@@ -147,8 +150,9 @@ In this streamed path, the eligible area is the full rectangular raster grid.
    finite values. Earlier fills can supply later spatial passes.
 6. **Interpolate remaining gaps.** Use the configured `nearest`, `idw`, or
    `kriging` method. Default nearest filling uses the nearest finite raster
-   cell and has no maximum-distance cutoff in this implementation. Unfilled
-   values remain missing.
+   cell. When `interpolation_max_distance_in_meters` is set, gaps farther than
+   that distance stay missing; `None` applies no cutoff. Unfilled values remain
+   missing.
 
 Both `remove_outliers` and `fill_nulls` default to **False**. When disabled,
 their stages do not alter observations, but the pipeline still writes

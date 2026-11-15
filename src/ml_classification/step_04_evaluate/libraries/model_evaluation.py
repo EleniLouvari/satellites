@@ -204,7 +204,7 @@ def evaluate_base_models(config, inputs):
                 caches[split_name][model_name] = probabilities
         # Save a per-model classification report and evaluation plots for the test split.
         test_predictions, test_probabilities = split_values["test"]
-        report = pd.DataFrame(classification_report(inputs["y_test"], test_predictions, output_dict=True)).T.reset_index()
+        report = pd.DataFrame(classification_report(inputs["y_test"], test_predictions, output_dict=True, zero_division=0)).T.reset_index()
         report.rename(columns={"index": "label"}, inplace=True)
         save_frame_csv(report, config.evaluate_dir / "reports" / f"{model_name}_classification_report.csv")
         save_model_evaluation_plot(config, model_name, inputs["y_test"], test_predictions, test_probabilities, labels)

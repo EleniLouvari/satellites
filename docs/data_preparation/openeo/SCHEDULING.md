@@ -299,8 +299,19 @@ config.update(
     openeo_job_options={"executor-memory": "2G", "max-executors": 20},
     openeo_auto_memory_retry=True,
     openeo_max_executor_memory="8G",
+    openeo_memory_reference_area_km2=625,
 )
 ```
+
+The configured `executor-memory` is the base for a tile of up to
+`openeo_memory_reference_area_km2` (default 625 km², 25 × 25 km), measured on the
+buffered tile extent. A larger tile is submitted with the heap doubled each time its
+area doubles, capped at `openeo_max_executor_memory`. For example, with a 4G base
+and an 8G cap, a 2 × 2 km tile uses 4G and a 30 × 30 km tile uses 8G. Other options,
+including `max-executors`, are unchanged. The size is chosen once, when the batch's
+options are first saved, and later OOM retries double from it. Rows that already
+have saved options keep them, so resuming an existing run does not resize its
+batches. Set the setting to `None` to submit every tile with the configured options.
 
 Only confirmed JVM memory evidence (such as `exit code 52 (JVM OOM)` or
 `java.lang.OutOfMemoryError`) increases the executor heap: normally 2G, then 4G,

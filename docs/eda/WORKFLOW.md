@@ -211,8 +211,8 @@ and known prior EDA diagnostics.
 | Diagnostic | Subset and internal preparation |
 | --- | --- |
 | Normality / univariate outliers | Numeric features excluding target, configured ID and known diagnostic columns. |
-| VIF | First `max_features_per_plot` numeric candidates in plot order, default 12. |
-| PCA | First `max_multivariate_features` numeric columns in input order, default 8. |
+| VIF | First `max_features_per_plot` numeric candidates in plot order, default 30. |
+| PCA | First `max_multivariate_features` numeric columns in input order, default 15. |
 | Mahalanobis | First `max_multivariate_features` numeric features after excluding target, ID and known diagnostics. |
 
 VIF, PCA and Mahalanobis internally replace nonfinite values with missing, drop
@@ -236,7 +236,8 @@ chi-square degrees of freedom and requires at least two usable features and
 
 The annotated copy preserves rows, attributes, geometry and duplicate indices.
 `is_outlier` now means a strict majority of available detector votes,
-with at least two methods required. Ties are false; unavailable results are null.
+with at least two methods required. Ties are false, and rows with fewer than two
+available methods are false: the flag is never null. Boolean columns are never outlier features.
 The flag records the majority decision, not a combined confidence estimate.
 Individual nullable votes and counts are stored in `eda_outlier_*` columns;
 Mahalanobis distance and p-value remain separate diagnostics.
@@ -265,7 +266,7 @@ message and calls `create_eda_plots()`:
 - `include_plots=False` returns an empty `plot_paths` map.
 - Otherwise, applicable missingness, quality, distribution, QQ, correlation,
   target, VIF, PCA and geometry images are written under `plots/`.
-- Feature charts use `max_features_per_plot` (default 12). Category/target-level
+- Feature charts use `max_features_per_plot` (default 30). Category/target-level
   limits and statistical prerequisites can further restrict a chart.
 - CSVs retain computed results, subject to each diagnostic's own calculation
   limits. Missing prerequisites can skip individual images.

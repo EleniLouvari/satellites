@@ -182,14 +182,16 @@ def _create_association_correlation_plots(
         )
         plot_paths["missingness_target_associations"] = missing_target_path
 
+    # A pair needs two features; with one, the masked matrix is empty and the image would be blank.
+    has_pairs = len(selected_numeric) >= 2
     pearson = artifacts["correlation_matrices"]["pearson"]
-    if not pearson.empty and selected_numeric:
+    if not pearson.empty and has_pairs:
         corr_path = plots_dir / "pearson_correlation_heatmap.png"
         _plot_correlation_heatmap(pearson.loc[selected_numeric, selected_numeric], corr_path, "Pearson Correlation Heatmap")
         plot_paths["pearson_correlation_heatmap"] = corr_path
 
     spearman = artifacts["correlation_matrices"]["spearman"]
-    if not spearman.empty and selected_numeric:
+    if not spearman.empty and has_pairs:
         spearman_path = plots_dir / "spearman_correlation_heatmap.png"
         _plot_correlation_heatmap(
             spearman.loc[selected_numeric, selected_numeric], spearman_path, "Spearman Correlation Heatmap"

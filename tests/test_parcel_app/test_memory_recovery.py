@@ -10,7 +10,7 @@ from tests.test_parcel_app.test_routes import clients  # noqa: F401
 @pytest.mark.parametrize("enabled", [False, True])
 def test_owned_resume_persists_only_recovery_flag(clients, tmp_path, enabled):  # noqa: F811
     """Resume accepts only an explicit boolean and never overwrites the science snapshot."""
-    from parcel_app import db
+    from parcel_app.core import db
     from tests.test_parcel_app.test_deletion import seed_run
 
     owner, stranger = clients

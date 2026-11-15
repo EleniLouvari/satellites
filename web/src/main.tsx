@@ -1,14 +1,15 @@
 import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { api, setCsrf, type Run, type User } from "./api";
-import { Brand, Notice } from "./ui";
-import Auth from "./Auth";
-import Accounts from "./Accounts";
-import Dashboard from "./Dashboard";
-import Wizard from "./Wizard";
-import RunDetail from "./RunDetail";
-import EdaWindow from "./EdaWindow";
-import "./style.css";
+import { Brand, Notice } from "./components/ui";
+import Auth from "./features/auth/Auth";
+import Accounts from "./features/sources/openeo/Accounts";
+import Dashboard from "./features/parcel-stats/Dashboard";
+import Wizard from "./features/parcel-stats/Wizard";
+import RunDetail from "./features/parcel-stats/RunDetail";
+import EdaPage from "./features/eda/EdaPage";
+import MlPage, { type MlSource } from "./features/ml/MlPage";
+import "./styles/style.css";
 function App() {
   const [user, setUser] = useState<User>(),
     [loading, setLoading] = useState(true),
@@ -18,6 +19,8 @@ function App() {
     [error, setError] = useState(""),
     [expired, setExpired] = useState(false);
   const [edaRun, setEdaRun] = useState<Run>();
+  const [edaReturn, setEdaReturn] = useState("My runs");
+  const [mlSource, setMlSource] = useState<MlSource>();
   useEffect(() => {
     api<User>("/auth/me")
       .then((u) => {
@@ -40,6 +43,11 @@ function App() {
     setError("");
     if (p === "New analysis") setDraft(undefined);
     window.scrollTo(0, 0);
+  }
+  function openEda(r: Run) {
+    setEdaRun(r);
+    setEdaReturn(page);
+    navigate("Exploratory data analysis");
   }
   function open(r: Run) {
     setRun(r);
@@ -143,7 +151,7 @@ function App() {
             <Dashboard
               onNew={() => navigate("New analysis")}
               onOpen={open}
-              onEda={setEdaRun}
+              onEda={openEda}
             />
           )}
           {page === "My runs" && (
@@ -151,7 +159,7 @@ function App() {
               history
               onNew={() => navigate("New analysis")}
               onOpen={open}
-              onEda={setEdaRun}
+              onEda={openEda}
             />
           )}
           {page === "Copernicus accounts" && <Accounts />}
@@ -162,27 +170,38 @@ function App() {
               onOpen={open}
             />
           )}
+          {page === "Exploratory data analysis" && edaRun && (
+            <EdaPage
+              key={edaRun.run_id}
+              run={edaRun}
+              onBack={() => navigate(edaReturn)}
+              onMl={(source) => {
+                setMlSource(source);
+                navigate("ML classification");
+              }}
+            />
+          )}
+          {page === "ML classification" && mlSource && (
+            <MlPage
+              key={mlSource.edaId}
+              source={mlSource}
+              onBack={() => navigate("My runs")}
+            />
+          )}
           {page === "Run detail" && run && (
             <RunDetail
               key={run.run_id}
               initial={run}
               onDeleted={() => {
                 setRun(undefined);
-                setPage("My analyses");
+                setPage("My runs");
               }}
               onOpen={open}
               onEdit={edit}
-              onEda={setEdaRun}
+              onEda={openEda}
             />
           )}
         </div>
-        {edaRun && (
-          <EdaWindow
-            key={edaRun.run_id}
-            run={edaRun}
-            onClose={() => setEdaRun(undefined)}
-          />
-        )}
         <footer className="workspace-footer">
           PARCEL STUDIO <span>Satellite observations. Grounded insight.</span>
         </footer>
