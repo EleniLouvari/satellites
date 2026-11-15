@@ -14,11 +14,17 @@ export default function ConfigForm({
   value,
   onChange,
   onValidityChange,
+  exportExtras,
+  onImportExtras,
 }: {
   schema: Schema;
   value: Record<string, unknown>;
   onChange: (v: Record<string, unknown>) => void;
   onValidityChange?: (valid: boolean) => void;
+  /** Page-owned values (e.g. ML features) saved next to the settings as {processing, ...extras}. */
+  exportExtras?: Record<string, unknown>;
+  /** Receives the imported file and the settings it produced, to restore page-owned values. */
+  onImportExtras?: (raw: Record<string, unknown>, config: Record<string, unknown>) => void;
 }) {
   const [error, setError] = useState("");
   const [arrayDrafts, setArrayDrafts] = useState<Record<string, string>>({});
@@ -257,7 +263,9 @@ export default function ConfigForm({
         <Button
           onClick={() =>
             downloadJson(
-              sanitizeConfig(effective, schema),
+              exportExtras
+                ? { ...exportExtras, processing: sanitizeConfig(effective, schema) }
+                : sanitizeConfig(effective, schema),
               "parcel-settings.json",
             )
           }
@@ -274,10 +282,12 @@ export default function ConfigForm({
               if (!file) return;
               try {
                 const raw = JSON.parse(await file.text());
-                onChange({
+                const imported = {
                   ...schema.defaults,
                   ...sanitizeConfig(raw.processing ?? raw, schema),
-                });
+                };
+                onChange(imported);
+                onImportExtras?.(raw, imported);
                 setArrayDrafts({});
                 onValidityChange?.(true);
                 setError("");

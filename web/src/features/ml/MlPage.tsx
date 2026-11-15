@@ -124,6 +124,17 @@ export default function MlPage({
     [options],
   );
   const proposed = selectable.filter((column) => column.proposed);
+  // Columns matching the search box, excluding the target and ID columns.
+  const matches = useMemo(() => {
+    const term = search.trim().toLowerCase();
+    if (!term) return [];
+    return withoutRoles(
+      selectable
+        .filter((column) => column.name.toLowerCase().includes(term))
+        .map((column) => column.name),
+      config,
+    );
+  }, [search, selectable, config]);
 
   function choose(features: string[]) {
     requestId.current = crypto.randomUUID();
@@ -285,12 +296,37 @@ export default function MlPage({
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
               />
+              {search.trim() && (
+                <div className="actions">
+                  <Button
+                    disabled={!matches.length}
+                    onClick={() => choose(matches)}
+                  >
+                    Select only matches ({matches.length})
+                  </Button>
+                  <Button
+                    disabled={!matches.length}
+                    onClick={() => choose([...selected, ...matches])}
+                  >
+                    Add matches
+                  </Button>
+                  <Button
+                    disabled={!matches.some((n) => selectedSet.has(n))}
+                    onClick={() => {
+                      const drop = new Set(matches);
+                      choose(selected.filter((n) => !drop.has(n)));
+                    }}
+                  >
+                    Remove matches
+                  </Button>
+                </div>
+              )}
               {SECTIONS.map((section) => {
                 const members = selectable.filter(
                   (column) => column.source === section.source,
                 );
                 const visible = members.filter((column) =>
-                  column.name.toLowerCase().includes(search.toLowerCase()),
+                  column.name.toLowerCase().includes(search.trim().toLowerCase()),
                 );
                 if (!members.length) return null;
                 const count = members.filter((c) =>
@@ -363,6 +399,16 @@ export default function MlPage({
                 value={config}
                 onChange={changeConfig}
                 onValidityChange={setValid}
+                exportExtras={{ features: selected }}
+                onImportExtras={(raw, imported) => {
+                  if (!Array.isArray(raw.features)) return;
+                  // Keep only columns this EDA analysis offers.
+                  const known = new Set(selectable.map((column) => column.name));
+                  const features = raw.features.filter(
+                    (f): f is string => typeof f === "string" && known.has(f),
+                  );
+                  setSelected(withoutRoles([...new Set(features)], imported));
+                }}
               />
             </section>
 
