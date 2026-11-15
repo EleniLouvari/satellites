@@ -152,6 +152,11 @@ The submitted run keeps its normalized configuration and account order. Adding
 accounts later does not change a run that may need to resume. A referenced account
 cannot be deleted. Account passwords can be replaced without changing identity.
 
+**Help** in the top bar opens guidance for parcel statistics, EDA and ML
+classification, with the workflow diagrams. It opens on the topic of the current
+page. The diagrams are copies in `web/src/features/help/images/` (the frontend
+image is built from `web/` only); update them there when the originals in `docs/` change.
+
 ## Progress and permanent deletion
 
 Run lists and run details show saved remote-job completion, local batch processing,

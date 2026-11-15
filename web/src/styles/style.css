@@ -1763,3 +1763,15 @@ details summary {
 .chooser-row > i { color: var(--muted); font-style: normal; }
 .view-back { display: inline-block; margin-bottom: 18px; font-size: 13px; }
 @media (max-width: 760px) { .chooser { grid-template-columns: 1fr; } }
+/* Help dialog. */
+.topbar-actions { display: flex; align-items: center; gap: 18px; }
+.help-button { padding: 6px 14px; font-size: 12px; }
+.help-dialog { width: min(960px, calc(100vw - 32px)); max-height: calc(100vh - 48px); }
+.help-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.help-body { line-height: 1.6; }
+.help-body ol, .help-body ul { padding-left: 22px; margin: 12px 0; }
+.help-body li { margin: 4px 0; }
+.help-note { padding: 10px 14px; border-radius: 10px; background: var(--paper); color: var(--muted); }
+.help-figure { margin: 22px 0 0; }
+.help-figure img { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 12px; background: #fff; }
+.help-figure figcaption { margin-top: 6px; font-size: 12px; color: var(--muted); }

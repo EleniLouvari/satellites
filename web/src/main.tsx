@@ -9,6 +9,7 @@ import Wizard from "./features/parcel-stats/Wizard";
 import RunDetail from "./features/parcel-stats/RunDetail";
 import EdaPage from "./features/eda/EdaPage";
 import MlPage, { type MlSource } from "./features/ml/MlPage";
+import Help from "./features/help/Help";
 import "./styles/style.css";
 function App() {
   const [user, setUser] = useState<User>(),
@@ -143,7 +144,18 @@ function App() {
           <span>
             Workspace <i>/</i> <strong>{page}</strong>
           </span>
-          <span className="private-label">PERSONAL WORKSPACE</span>
+          <span className="topbar-actions">
+            <Help
+              initial={
+                page === "Exploratory data analysis"
+                  ? "EDA"
+                  : page === "ML classification"
+                    ? "ML classification"
+                    : "Parcel statistics"
+              }
+            />
+            <span className="private-label">PERSONAL WORKSPACE</span>
+          </span>
         </header>
         <div className="content">
           <Notice message={error} />
