@@ -4,7 +4,7 @@ Parcel Studio has two extension points:
 
 - **Data sources** (`src/parcel_app/sources/<provider>/`): everything specific to one
   imagery provider, such as accounts, connection tests and remote job cleanup.
-  Today: `openeo`. Planned: HUB, Planet.
+  Today: `openeo`. Planned: HUB.
 - **Pipelines** (`src/parcel_app/pipelines/<pipeline>/`): one analysis the user can run.
   Today: `uploads`, `parcel_stats`, `eda`, `ml`.
 
@@ -50,7 +50,7 @@ Rules that keep the worker safe:
 - Set `stoppable=True` only if the handler runs in a stoppable process group and its
   record supports the stop/resume states.
 
-## Checklist: adding a data provider (for example HUB or Planet)
+## Checklist: adding a data provider (for example HUB)
 
 1. **Library first.** Add or reuse the acquisition adapter in
    `src/data_preparation/sources/<provider>/`. `parcel_stats/core/` must stay independent

@@ -103,7 +103,7 @@ Each `sources/*` and `pipelines/*` package declares its background job kinds
 (`JOBS`) and API routers (`ROUTERS`) in its `__init__.py`; `jobs/registry.py`
 lists the enabled packages. The worker lanes, job dispatch, failure handling,
 interrupted-job recovery and the API routes are all derived from that list.
-To add a data provider (HUB, Planet) or a pipeline (ML), follow
+To add a data provider (HUB) or a pipeline (ML), follow
 [Extending Parcel Studio](web_app/EXTENDING.md).
 
 The React frontend in `web/src/` mirrors this split: `api.ts` (API client and

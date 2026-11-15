@@ -1,6 +1,6 @@
 """The one list of data sources and pipelines that Parcel Studio exposes.
 
-To add a data source (for example HUB or Planet) or a pipeline (for example ML),
+To add a data source (for example HUB) or a pipeline (for example ML),
 create its package under ``parcel_app.sources`` or ``parcel_app.pipelines`` and add
 it to ``PACKAGES``. Each package's ``__init__`` declares:
 
