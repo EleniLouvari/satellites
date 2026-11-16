@@ -1,6 +1,7 @@
 """Storage-boundary, checksum and log-redaction helpers shared by every pipeline."""
 
 import hashlib
+import os
 import re
 import shutil
 from pathlib import Path
@@ -18,6 +19,35 @@ def contained(root, value):
     return path
 
 
+def run_directory(user_id, run_id) -> Path:
+    """Return a run's folder: ``input/``, ``output/`` and its analyses in ``eda/``."""
+    return get_settings().storage_root / "users" / str(user_id) / "runs" / str(run_id)
+
+
+def eda_directory(user_id, run_id, eda_id) -> Path:
+    """Return an EDA analysis folder: ``output/`` and its ML runs in ``ml/``."""
+    return run_directory(user_id, run_id) / "eda" / str(eda_id)
+
+
+def ml_directory(user_id, run_id, eda_id, ml_id) -> Path:
+    """Return an ML run's output folder."""
+    return eda_directory(user_id, run_id, eda_id) / "ml" / str(ml_id)
+
+
+def link_or_copy(source, destination) -> Path:
+    """Place an immutable file at ``destination``, hard-linked when the filesystem allows."""
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(destination.name + ".partial")
+    temporary.unlink(missing_ok=True)
+    try:
+        os.link(source, temporary)
+    except OSError:
+        shutil.copyfile(source, temporary)
+    temporary.replace(destination)
+    return destination
+
+
 def checksum(path):
     """Hash a file with bounded memory."""
     with Path(path).open("rb") as stream:
@@ -28,7 +58,13 @@ def storage_available(reserve: int = 0) -> bool:
     """Check configured used-storage and physical free-space ceilings."""
     root = get_settings().storage_root
     root.mkdir(parents=True, exist_ok=True)
-    used = sum(p.stat().st_size for p in root.rglob("*") if p.is_file() and not p.is_symlink())
+    sizes = {}
+    for path in root.rglob("*"):
+        if path.is_file() and not path.is_symlink():
+            stat = path.stat()
+            # A run's input is usually a hard link to its upload; count shared data once.
+            sizes[(stat.st_dev, stat.st_ino) if stat.st_ino else path] = stat.st_size
+    used = sum(sizes.values())
     return used + reserve <= get_settings().storage_limit_bytes and shutil.disk_usage(root).free > reserve + 64 * 1024**2
 
 

@@ -10,6 +10,8 @@ INSPECTION_OUTPUT_COLUMNS = (
     "confidence_risk",
     "data_risk",
     "geometry_risk",
+    "inspection_data_reliability_low_threshold",
+    "inspection_data_reliability_medium_threshold",
     "inspection_score",
     "inspection_need_base",
     "inspection_need",
@@ -70,6 +72,55 @@ def _label_prediction_status(data: pd.DataFrame, config) -> pd.Series:
     return status
 
 
+def effective_data_reliability_thresholds(reliability: pd.Series, config) -> tuple[float, float]:
+    """Return the LOW and MEDIUM data-reliability boundaries applied to this prediction population.
+
+    Absolute mode returns the configured thresholds unchanged. Percentile mode relaxes each boundary to the
+    matching percentile of the valid scores when that percentile is lower, so a season with ordinary cloud
+    gaps does not send most parcels to the low-evidence rules. Percentile mode is never stricter than the
+    absolute thresholds.
+    """
+    low = float(config.inspection_low_data_reliability_threshold)
+    medium = float(config.inspection_medium_data_reliability_threshold)
+    # Configurations written before the mode existed keep their absolute behaviour.
+    if getattr(config, "inspection_data_reliability_threshold_mode", "absolute") != "percentile":
+        return low, medium
+    valid = pd.to_numeric(reliability, errors="coerce")
+    valid = valid[valid.between(0.0, 1.0)]
+    # Without any usable score there is no distribution to calibrate against.
+    if valid.empty:
+        return low, medium
+    low_percentile = float(getattr(config, "inspection_low_data_reliability_percentile", 0.05))
+    medium_percentile = float(getattr(config, "inspection_medium_data_reliability_percentile", 0.25))
+    # Taking the minimum keeps the absolute value as an upper bound for populations with good coverage.
+    return min(low, float(valid.quantile(low_percentile))), min(medium, float(valid.quantile(medium_percentile)))
+
+
+def saved_data_reliability_thresholds(data: pd.DataFrame, config) -> tuple[float, float]:
+    """Read the boundaries saved with scored rows; older runs fall back to the absolute configuration."""
+    saved = []
+    for column, fallback in [
+        ("inspection_data_reliability_low_threshold", config.inspection_low_data_reliability_threshold),
+        ("inspection_data_reliability_medium_threshold", config.inspection_medium_data_reliability_threshold),
+    ]:
+        # Reports must reuse the scored boundaries instead of recomputing them from live configuration.
+        values = pd.to_numeric(data[column], errors="coerce").dropna() if column in data else pd.Series(dtype=float)
+        saved.append(float(fallback) if values.empty else float(values.iloc[0]))
+    return saved[0], saved[1]
+
+
+def _assign_check_type(status: pd.Series, need: pd.Series, config) -> pd.Series:
+    """Map each priority to its operational check, keeping agreement without strong contrary evidence out of the queue."""
+    check_type = pd.Series("INSUFFICIENT_EO_EVIDENCE", index=need.index, dtype="string")
+    check_type.loc[need.isin(["VERY_LOW", "LOW"])] = "NONE"
+    # A matching declaration with inconclusive evidence gives no reason to doubt it, so by default it is not
+    # inspected; the legacy behaviour that reviewed these rows stays available as an explicit option.
+    if not getattr(config, "inspection_check_matching_declarations", False):
+        check_type.loc[status.eq("SAME") & need.isin(["LOW_MEDIUM", "MEDIUM"])] = "NONE"
+    check_type.loc[status.eq("DIFFERENT") & need.isin(["VERY_HIGH", "HIGH", "MEDIUM_HIGH"])] = "DECLARATION_CONFLICT"
+    return check_type
+
+
 def _apply_label_aware_policy(
     result: pd.DataFrame, confidence: pd.Series, reliability: pd.Series, config
 ) -> tuple[pd.Series, pd.Series]:
@@ -87,7 +138,8 @@ def _apply_label_aware_policy(
     # Disabled reliability bypasses its condition, without changing the recorded class evidence.
     class_high = ~enabled | class_level.eq("HIGH")
     class_medium = enabled & class_level.eq("MEDIUM")
-    high_data = reliability > config.inspection_medium_data_reliability_threshold
+    # Use the boundary frozen for this population; direct callers without it get the absolute threshold.
+    high_data = reliability > saved_data_reliability_thresholds(result, config)[1]
     good_geometry = geometry < config.inspection_medium_geometry_risk_threshold
     high_rank, medium_rank = confidence.eq("HIGH"), confidence.eq("MEDIUM")
     conditions = [
@@ -121,10 +173,7 @@ def _apply_label_aware_policy(
     rule.loc[unavailable] = "REQUIRED_EVIDENCE_UNAVAILABLE"
     result["inspection_rule"] = rule
     result["inspection_class_reliability_applied"] = enabled & eligible
-    check_type = pd.Series("INSUFFICIENT_EO_EVIDENCE", index=result.index, dtype="string")
-    check_type.loc[need.isin(["VERY_LOW", "LOW"])] = "NONE"
-    check_type.loc[status.eq("DIFFERENT") & need.isin(["VERY_HIGH", "HIGH", "MEDIUM_HIGH"])] = "DECLARATION_CONFLICT"
-    return need, check_type
+    return need, _assign_check_type(status, need, config)
 
 
 def _apply_outlier_adjustment(result: pd.DataFrame, config) -> None:
@@ -207,14 +256,24 @@ def _append_confidence_reasons(reasons: list[str], confidence: str | float) -> N
         reasons.append("INVALID_MODEL_CONFIDENCE")
 
 
-def _append_data_reliability_reasons(reasons: list[str], reliability: float, config) -> None:
-    """Append reliability reasons using configured threshold bands."""
+def _append_data_reliability_reasons(reasons: list[str], reliability: float, low: float, medium: float) -> None:
+    """Append reliability reasons using the boundaries applied to the scored population."""
     if pd.isna(reliability):
         reasons.append("MISSING_DATA_RELIABILITY")
-    elif reliability < config.inspection_low_data_reliability_threshold:
+    elif reliability < low:
         reasons.append("LOW_DATA_RELIABILITY")
-    elif reliability <= config.inspection_medium_data_reliability_threshold:
+    elif reliability <= medium:
         reasons.append("MEDIUM_DATA_RELIABILITY")
+
+
+def _row_data_reliability_thresholds(row: pd.Series, config) -> tuple[float, float]:
+    """Return one row's saved boundaries, using the absolute configuration when none were saved."""
+    low = row.get("inspection_data_reliability_low_threshold", np.nan)
+    medium = row.get("inspection_data_reliability_medium_threshold", np.nan)
+    return (
+        float(config.inspection_low_data_reliability_threshold if pd.isna(low) else low),
+        float(config.inspection_medium_data_reliability_threshold if pd.isna(medium) else medium),
+    )
 
 
 def _append_geometry_reasons(reasons: list[str], geometry_risk: float, config) -> None:
@@ -240,7 +299,7 @@ def _inspection_reasons(row: pd.Series, config) -> str:
 
     _append_label_alignment_reasons(reasons, label_status, check_type, row["inspection_need"])
     _append_confidence_reasons(reasons, confidence)
-    _append_data_reliability_reasons(reasons, reliability, config)
+    _append_data_reliability_reasons(reasons, reliability, *_row_data_reliability_thresholds(row, config))
     _append_geometry_reasons(reasons, geometry_risk, config)
 
     if row.get("inspection_rule") == "CLASS_RELIABILITY_UNAVAILABLE":
@@ -290,6 +349,10 @@ def calculate_inspection_metrics(data: pd.DataFrame, config) -> pd.DataFrame:
     result["confidence_risk"] = confidence.map({"HIGH": 0.0, "MEDIUM": 0.5, "LOW": 1.0}).astype(float)
     result["data_risk"] = 1.0 - reliability
     result["geometry_risk"] = complexity.rank(method="average", pct=True)
+    # Freeze the data-reliability boundaries so the rules, reasons, and reports all use the same values.
+    low_threshold, medium_threshold = effective_data_reliability_thresholds(reliability, config)
+    result["inspection_data_reliability_low_threshold"] = low_threshold
+    result["inspection_data_reliability_medium_threshold"] = medium_threshold
     # Keep the requested 60/25/15 weighted score label-independent and reproducible.
     result["inspection_score"] = 100.0 * (
         config.inspection_model_weight * result["confidence_risk"]

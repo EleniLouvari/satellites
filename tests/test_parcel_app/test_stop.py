@@ -1,6 +1,7 @@
 """Stop requests preserve ownership, worker isolation and completed checkpoints."""
 
 from contextlib import nullcontext
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -249,7 +250,7 @@ def test_stop_api_ownership_csrf_reconciliation_and_resume(clients, tmp_path):  
     assert stopped["status"] == "interrupted"
     assert stopped["stop_requested"] is False
     assert "Stopped by request" in stopped["error"]
-    assert (tmp_path / "users" / str(run["app_user_id"]) / "runs" / run_id / "result.txt").read_text() == "result"
+    assert (Path(run["output_dir"]) / "result.txt").read_text() == "result"
     assert owner.post(f"{link}/stop").status_code == 202
     resumed = owner.post(f"{link}/resume")
     assert resumed.status_code == 202, resumed.text

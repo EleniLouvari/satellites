@@ -323,7 +323,7 @@ def test_ml_scenarios_of_an_eda_run_step_by_step_through_the_queue(clients, tmp_
     db.execute("UPDATE parcel_uploads SET status='ready' WHERE upload_id=%s", (upload["upload_id"],))
     db.execute("UPDATE web_jobs SET status='done' WHERE target_id=%s", (upload["upload_id"],))
     run_id = str(uuid4())
-    output = tmp_path / "users" / str(user_id) / "runs" / run_id
+    output = tmp_path / "users" / str(user_id) / "runs" / run_id / "output"
     output.mkdir(parents=True)
     source, unused = write_sources(output)
     unused.unlink()
@@ -395,7 +395,8 @@ def test_ml_scenarios_of_an_eda_run_step_by_step_through_the_queue(clients, tmp_
     assert (state()["status"], state()["steps_done"]) == ("paused", 2)
 
     # A step that fails keeps the finished steps; retrying continues from the failed one.
-    prepared = tmp_path / "users" / str(user_id) / "ml" / ml_id / "02_prepare"
+    ml_root = output.parent / "eda" / eda_id / "ml"  # runs/<run>/eda/<eda>/ml/<ml>
+    prepared = ml_root / ml_id / "02_prepare"
     prepared.rename(prepared.with_name("moved"))
     assert owner.post(f"{link}/continue", json={"through": 5}).status_code == 202
     execute_task(claim("ml", ml_id))
@@ -441,7 +442,7 @@ def test_ml_scenarios_of_an_eda_run_step_by_step_through_the_queue(clients, tmp_
     assert db.one("SELECT status FROM ml_runs WHERE ml_id=%s", (third,))["status"] == "failed"
     assert owner.get(archive_link).status_code == 200
 
-    ml_output = tmp_path / "users" / str(user_id) / "ml" / ml_id
+    ml_output = ml_root / ml_id
     assert owner.delete(f"/api/eda/{eda_id}").status_code == 409  # still used by ML runs
     assert stranger.delete(link).status_code == 404
     assert owner.delete(link, headers={"X-CSRF-Token": "wrong"}).status_code == 403
@@ -451,7 +452,7 @@ def test_ml_scenarios_of_an_eda_run_step_by_step_through_the_queue(clients, tmp_
     assert owner.delete(f"/api/runs/{run_id}").status_code == 200  # the run removes its EDA and ML records
     assert not db.one("SELECT 1 FROM ml_runs WHERE run_id=%s", (run_id,))
     assert not db.one("SELECT 1 FROM web_jobs WHERE target_id=ANY(%s)", ([ml_id, second, third],))
-    assert not (tmp_path / "users" / str(user_id) / "ml" / second).exists()
+    assert not output.parent.exists()
 
 
 def test_interrupted_ml_job_can_be_continued(clients, tmp_path):

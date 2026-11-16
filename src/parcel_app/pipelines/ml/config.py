@@ -52,6 +52,7 @@ CHOICES = {
     "selection_type": ["soft_voting", "single_model"],
     "lstm_temporal_frequency": [None, "monthly"],
     "lstm_class_balancing_method": ["balanced_class_weight", "none"],
+    "inspection_data_reliability_threshold_mode": ["percentile", "absolute"],
 }
 def _when(rule, *names):
     """Give several dependent fields the same parent rule."""
@@ -94,17 +95,24 @@ ENABLED_WHEN = {
     **_when(
         {"inspection_scoring_enabled": [True]},
         "inspection_include_outlier",
+        "inspection_check_matching_declarations",
         "inspection_data_reliability_column",
         "inspection_geometry_complexity_column",
         "inspection_model_weight",
         "inspection_data_weight",
         "inspection_geometry_weight",
+        "inspection_data_reliability_threshold_mode",
         "inspection_low_data_reliability_threshold",
         "inspection_medium_data_reliability_threshold",
         "inspection_medium_geometry_risk_threshold",
         "inspection_high_geometry_risk_threshold",
         "inspection_medium_score_threshold",
         "inspection_high_score_threshold",
+    ),
+    **_when(
+        {"inspection_scoring_enabled": [True], "inspection_data_reliability_threshold_mode": ["percentile"]},
+        "inspection_low_data_reliability_percentile",
+        "inspection_medium_data_reliability_percentile",
     ),
     "shap_sample_size": {"interpretability_include_shap": [True]},
 }
@@ -243,6 +251,9 @@ GROUPS = (
             "inspection_scoring_enabled": "Calculate an inspection priority for every predicted parcel.",
             "inspection_include_outlier": "After the rule table, raise the priority one band (for example Low to "
             "Low–Medium) for parcels the selected EDA analysis flagged as outliers. Very High stays Very High.",
+            "inspection_check_matching_declarations": "Off (default): a parcel whose declaration matches the "
+            "prediction is queued only when an outlier raises it. On: matching parcels with Low–Medium or Medium "
+            "priority are also queued as INSUFFICIENT_EO_EVIDENCE, which usually queues most parcels.",
             "inspection_data_reliability_column": "Column with the 0-1 data reliability score: the share of the parcel's "
             "pixel values that were observed rather than filled. Inspection is skipped when the column is absent.",
             "inspection_geometry_complexity_column": "Column with the shape complexity score (0 = simple compact shape, "
@@ -250,11 +261,19 @@ GROUPS = (
             "inspection_model_weight": "Weight w_model of the confidence risk in the diagnostic score.",
             "inspection_data_weight": "Weight w_data of the data risk in the diagnostic score.",
             "inspection_geometry_weight": "Weight w_geometry of the geometry risk. The three weights must sum to 1.",
+            "inspection_data_reliability_threshold_mode": "percentile (default) lowers each data reliability "
+            "threshold to the matching percentile of the predicted parcels when that percentile is lower, so normal "
+            "cloud gaps do not mark most parcels as weak evidence. absolute applies the two thresholds as written.",
             "inspection_low_data_reliability_threshold": "Reason codes only: data reliability below this value is "
-            "reported as LOW_DATA_RELIABILITY.",
+            "reported as LOW_DATA_RELIABILITY. In percentile mode this is the upper limit of the applied value.",
             "inspection_medium_data_reliability_threshold": "Rule table and reason codes: data reliability must be "
             "strictly above this value to count as high. At or below it, rules R10/R20 give Medium; between the low "
-            "threshold and this one the reason is MEDIUM_DATA_RELIABILITY.",
+            "threshold and this one the reason is MEDIUM_DATA_RELIABILITY. In percentile mode this is the upper "
+            "limit of the applied value.",
+            "inspection_low_data_reliability_percentile": "Percentile mode only: share of predicted parcels (0-1) "
+            "allowed below the low threshold. 0.05 reports about the weakest 5% as LOW_DATA_RELIABILITY.",
+            "inspection_medium_data_reliability_percentile": "Percentile mode only: share of predicted parcels (0-1) "
+            "allowed at or below the medium threshold. 0.25 treats about the best 75% as high data reliability.",
             "inspection_medium_geometry_risk_threshold": "Rule table and reason codes: geometry risk (0-1 percentile) "
             "below this value counts as favourable. At or above it the parcel drops one band in the rules and gets "
             "the reason MEDIUM_GEOMETRY_COMPLEXITY.",
@@ -402,6 +421,10 @@ SUBGROUPS = {
                 "or Low; disagreement backed by strong evidence gives High or Very High; weak evidence gives Medium."),
                 ("Parcels without a declared class get Medium (rule NO_DECLARATION). Parcels with missing or "
                 "invalid evidence get Unknown. The optional EDA outlier flag is applied last."),
+                ("The inspection queue holds parcels whose inspection_check_type is not NONE: declaration conflicts "
+                "(prediction differs, strong evidence) and insufficient evidence (prediction differs with weak "
+                "evidence, no declaration, missing evidence, or an outlier increase). A matching declaration is "
+                "not queued unless the matching-declarations option is on."),
                 ("Output: inspection_need, inspection_priority_label, the matched inspection_rule, "
                 "inspection_check_type and pipe-separated inspection_reasons for every parcel."),
             ),
@@ -409,6 +432,7 @@ SUBGROUPS = {
             (
                 "inspection_scoring_enabled",
                 "inspection_include_outlier",
+                "inspection_check_matching_declarations",
                 "inspection_data_reliability_column",
                 "inspection_geometry_complexity_column",
             ),
@@ -444,6 +468,9 @@ SUBGROUPS = {
                 "reliability and medium geometry risk thresholds affect the final priority, through the rule table. "
                 "The low data reliability and high geometry risk thresholds only add explanation codes to "
                 "inspection_reasons. The two score thresholds only band the diagnostic score into inspection_need_base."),
+                ("In percentile mode the two data reliability thresholds adapt to the predicted parcels: the applied "
+                "value is the smaller of the threshold and the chosen percentile of the scores. The applied values "
+                "are saved with the predictions and shown in predict_summary.json."),
             ),
             ("Threshold                       Compared with          Used in\n"
             "low data reliability   (0.60)   data reliability       reasons\n"
@@ -453,11 +480,18 @@ SUBGROUPS = {
             "medium score           (25)     inspection_score       inspection_need_base\n"
             "high score             (50)     inspection_score       inspection_need_base\n"
             "\n"
-            "Rule table: high data = reliability > medium threshold;\n"
-            "            favourable geometry = geometry risk < medium threshold"),
+            "Rule table: high data = reliability > applied medium threshold;\n"
+            "            favourable geometry = geometry risk < medium threshold\n"
+            "\n"
+            "Percentile mode: applied threshold = min(threshold, percentile of the scores)\n"
+            "Example  scores with 25th percentile 0.72, medium threshold 0.80, medium percentile 0.25\n"
+            "         applied medium threshold = min(0.80, 0.72) = 0.72"),
             (
+                "inspection_data_reliability_threshold_mode",
                 "inspection_low_data_reliability_threshold",
                 "inspection_medium_data_reliability_threshold",
+                "inspection_low_data_reliability_percentile",
+                "inspection_medium_data_reliability_percentile",
                 "inspection_medium_geometry_risk_threshold",
                 "inspection_high_geometry_risk_threshold",
                 "inspection_medium_score_threshold",

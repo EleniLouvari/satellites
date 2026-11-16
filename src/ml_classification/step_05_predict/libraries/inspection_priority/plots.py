@@ -9,6 +9,7 @@ import pandas as pd
 import seaborn as sns
 
 from ml_classification.shared.reports.plotting import _save_figure
+from ml_classification.step_05_predict.libraries.inspection_priority.scoring import saved_data_reliability_thresholds
 
 
 def save_inspection_relationship_plot(data: pd.DataFrame, output_path: str | Path, config) -> bool:
@@ -62,8 +63,9 @@ def save_inspection_relationship_plot(data: pd.DataFrame, output_path: str | Pat
         ax=ax,
         **scatter_options,
     )
-    ax.axvline(config.inspection_low_data_reliability_threshold, color="#8D99AE", linestyle="--", linewidth=1)
-    ax.axvline(config.inspection_medium_data_reliability_threshold, color="#8D99AE", linestyle="--", linewidth=1)
+    # Draw the boundaries saved with the scored rows, which differ from the configuration in percentile mode.
+    for threshold in saved_data_reliability_thresholds(data, config):
+        ax.axvline(threshold, color="#8D99AE", linestyle="--", linewidth=1)
     ax.axhline(config.inspection_medium_score_threshold, color="#6C757D", linestyle=":", linewidth=1)
     ax.axhline(config.inspection_high_score_threshold, color="#6C757D", linestyle=":", linewidth=1)
     ax.set_xlim(0.0, 1.0)

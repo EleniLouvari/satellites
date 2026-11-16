@@ -1,0 +1,7 @@
+confidence_metric,Correct,Needs check,Needs check minus Correct
+Maximum predicted probability,0.91,0.7150000000000001,-0.19499999999999995
+Borda winner margin,18.0,9.0,-9.0
+Mean Borda score,8.5,6.75,-1.75
+Rank range (lower is better),1.0,3.5,2.5
+Top-1 model agreement,1.0,0.75,-0.25
+OOF precision of predicted class,0.93,0.835,-0.09500000000000008

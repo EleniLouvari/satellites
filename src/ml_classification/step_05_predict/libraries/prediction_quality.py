@@ -219,6 +219,13 @@ def add_inspection_metrics(config, final_df: pd.DataFrame) -> tuple[pd.DataFrame
         },
         "inspection_policy_method": "decision_table_v2_optional_outlier",
         "inspection_include_outlier": bool(getattr(config, "inspection_include_outlier", False)),
+        "inspection_check_matching_declarations": bool(getattr(config, "inspection_check_matching_declarations", False)),
+        # Record the boundaries actually applied, which percentile mode derives from this prediction population.
+        "inspection_data_reliability_thresholds": {
+            "mode": getattr(config, "inspection_data_reliability_threshold_mode", "absolute"),
+            "low": float(scored["inspection_data_reliability_low_threshold"].iloc[0]) if len(scored) else None,
+            "medium": float(scored["inspection_data_reliability_medium_threshold"].iloc[0]) if len(scored) else None,
+        },
         "inspection_outlier_column_available": "is_outlier" in scored,
         "inspection_outlier_adjusted_count": int(scored["inspection_outlier_adjusted"].sum()),
         "class_reliability_applied_to_inspection_policy": bool(scored["inspection_class_reliability_applied"].any()),

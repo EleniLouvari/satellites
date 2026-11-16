@@ -340,6 +340,12 @@ def test_full_pipeline_queue_download_and_resume(clients, tmp_path, monkeypatch)
     execute("run", run_id)
     result = owner.get(f"/api/runs/{run_id}").json()
     assert result["status"] == "complete"
+    # The run processed its own copy of the upload, kept beside its outputs.
+    stored = db.one("SELECT output_dir,config FROM analysis_runs WHERE run_id=%s", (run_id,))
+    home = Path(stored["output_dir"]).parent
+    assert Path(stored["output_dir"]) == home / "output" and home.name == run_id
+    assert Path(stored["config"]["input"]["path"]) == home / "input" / "source.gpkg"
+    assert (home / "input" / "source.gpkg").read_bytes() == path.read_bytes()
     assert result["started_at"]
     assert result["finished_at"]
     assert result["duration_seconds"] >= 0

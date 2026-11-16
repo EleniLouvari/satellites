@@ -12,8 +12,12 @@ from tests.test_parcel_app.test_routes import clients as _clients_fixture
 clients = _clients_fixture
 
 
-def seed_run(client, root, upload=None):
-    """Create an owned completed run with real temporary files and dependent records."""
+def seed_run(client, root, upload=None, legacy=False):
+    """Create an owned completed run with real temporary files and dependent records.
+
+    ``legacy`` uses the layout saved before nesting: outputs directly in ``runs/<id>/``
+    and the EDA analysis in ``users/<user>/eda/<id>``.
+    """
     from parcel_app.core import db
 
     user_id = client.get("/api/auth/me").json()["app_user_id"]
@@ -28,8 +32,12 @@ def seed_run(client, root, upload=None):
             (upload_id, user_id, str(source)),
         )
     run_id = str(uuid4())
-    output = root / "users" / str(user_id) / "runs" / run_id
+    home = root / "users" / str(user_id) / "runs" / run_id
+    output = home if legacy else home / "output"
     output.mkdir(parents=True)
+    if not legacy:
+        (home / "input").mkdir()
+        (home / "input" / "source.geojson").write_text("{}")
     (output / "result.txt").write_text("result")
     run = db.one(
         "INSERT INTO analysis_runs(run_id,app_user_id,name,upload_id,parcel_id_field,processing,account_ids,output_dir,status) "
@@ -43,7 +51,7 @@ def seed_run(client, root, upload=None):
         (str(uuid4()), run_id, str(output / "result.txt")),
     )
     eda_id = str(uuid4())
-    eda_output = root / "users" / str(user_id) / "eda" / eda_id
+    eda_output = root / "users" / str(user_id) / "eda" / eda_id if legacy else home / "eda" / eda_id / "output"
     eda_output.mkdir(parents=True)
     (eda_output / "report.html").write_text("report")
     db.execute(
@@ -89,6 +97,26 @@ def test_delete_eda_keeps_parent_and_input(clients, tmp_path):
     assert not output.exists()
     assert Path(run["output_dir"]).exists() and Path(upload["storage_path"]).exists()
     assert owner.get(f"/api/runs/{run['run_id']}/eda").json() == []
+
+
+def test_delete_accepts_eda_saved_before_nesting(clients, tmp_path):
+    owner, _ = clients
+    run, _, eda_id, output = seed_run(owner, tmp_path, legacy=True)
+    assert owner.delete(f"/api/eda/{eda_id}").status_code == 200
+    assert not output.exists() and Path(run["output_dir"]).exists()
+    run, _, _, output = seed_run(owner, tmp_path, legacy=True)
+    assert owner.delete(f"/api/runs/{run['run_id']}").status_code == 200
+    assert not output.exists() and not Path(run["output_dir"]).exists()
+
+
+def test_delete_removes_whole_run_folder(clients, tmp_path):
+    owner, _ = clients
+    run, _, eda_id, output = seed_run(owner, tmp_path)
+    home = Path(run["output_dir"]).parent
+    assert owner.delete(f"/api/eda/{eda_id}").status_code == 200
+    assert not output.parent.exists() and (home / "output").exists()
+    assert owner.delete(f"/api/runs/{run['run_id']}").status_code == 200
+    assert not home.exists()
 
 
 @pytest.mark.parametrize("kind,status", [("run", "running"), ("bundle", "pending"), ("eda", "running")])

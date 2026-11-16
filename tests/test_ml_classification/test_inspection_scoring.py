@@ -10,6 +10,8 @@ from ml_classification.step_05_predict.libraries.inspection_priority.scoring imp
     _apply_label_aware_policy,
     _inspection_reasons,
     calculate_inspection_metrics,
+    effective_data_reliability_thresholds,
+    saved_data_reliability_thresholds,
 )
 from ml_classification.step_05_predict.predict import PredictStep
 from tests.utils import expect_equal, expect_false, expect_in, expect_is_not_none, expect_startswith, expect_subset, expect_true
@@ -142,11 +144,13 @@ def test_label_aware_policy_reproduces_operational_examples() -> None:
             "NONE",
             "DECLARATION_CONFLICT",
             "INSUFFICIENT_EO_EVIDENCE",
-            "INSUFFICIENT_EO_EVIDENCE",
+            # A matching declaration with weak evidence is Medium but is not queued by default.
+            "NONE",
             "INSUFFICIENT_EO_EVIDENCE",
             "DECLARATION_CONFLICT",
         ],
     )
+    expect_equal(result.loc[3, "inspection_reasons"], "LOW_MODEL_CONFIDENCE|LOW_DATA_RELIABILITY|HIGH_GEOMETRY_COMPLEXITY")
     expect_equal(result.loc[1, "inspection_reasons"], "STRONG_DECLARATION_CONFLICT")
     expect_startswith(result.loc[2, "inspection_reasons"], "DECLARATION_PREDICTION_DIFFERENCE|INSUFFICIENT_EO_EVIDENCE")
     expect_startswith(result.loc[5, "inspection_reasons"], "DECLARATION_CONFLICT|HIGH_GEOMETRY_COMPLEXITY")
@@ -194,6 +198,8 @@ def test_predict_step_attaches_inspection_outputs_and_summary() -> None:
 
     expect_true(summary["inspection_scoring_available"])
     expect_equal(summary["inspection_weights"], {"model": 0.60, "data": 0.25, "geometry": 0.15})
+    expect_equal(summary["inspection_data_reliability_thresholds"], {"mode": "absolute", "low": 0.60, "medium": 0.80})
+    expect_false(summary["inspection_check_matching_declarations"])
     expect_subset({
         "confidence_risk",
         "data_risk",
@@ -274,8 +280,9 @@ def test_predict_step_skips_inspection_scoring_when_inputs_are_absent() -> None:
     ],
 )
 @pytest.mark.parametrize("data_reliability", [0.0, 0.8, 0.800001, 1.0])
-def test_decision_table_covers_every_valid_combination(class_level, rank_level, expected, data_reliability):
-    """Cover all class/rank/status/geometry combinations and the strict data boundary."""
+@pytest.mark.parametrize("check_matching", [False, True])
+def test_decision_table_covers_every_valid_combination(class_level, rank_level, expected, data_reliability, check_matching):
+    """Cover all class/rank/status/geometry combinations, the strict data boundary, and both queue options."""
     frame = pd.DataFrame(
         {
             "label_prediction_status": ["SAME", "SAME", "DIFFERENT", "DIFFERENT"],
@@ -288,18 +295,153 @@ def test_decision_table_covers_every_valid_combination(class_level, rank_level, 
     confidence = pd.Series(rank_level, index=frame.index)
     data = pd.Series(data_reliability, index=frame.index)
 
-    need, check_type = _apply_label_aware_policy(frame, confidence, data, _config())
+    config = _config()
+    config.inspection_check_matching_declarations = check_matching
+
+    need, check_type = _apply_label_aware_policy(frame, confidence, data, config)
 
     expect_equal(need.tolist(), expected if data_reliability > 0.8 else ["MEDIUM"] * 4)
     expect_true(frame["inspection_class_reliability_applied"].all())
     expect_true(frame["inspection_rule"].str.match(r"R\d{2}").all())
-    for priority, check in zip(need, check_type, strict=True):
+    for status, priority, check in zip(frame["label_prediction_status"], need, check_type, strict=True):
         expected_check = "INSUFFICIENT_EO_EVIDENCE"
         if priority in {"VERY_LOW", "LOW"}:
             expected_check = "NONE"
         elif priority in {"VERY_HIGH", "HIGH", "MEDIUM_HIGH"}:
             expected_check = "DECLARATION_CONFLICT"
+        elif status == "SAME" and not check_matching:
+            # Inconclusive agreement stays out of the queue unless the legacy option is enabled.
+            expected_check = "NONE"
         expect_equal(check, expected_check)
+
+
+def test_matching_declarations_are_queued_only_when_requested_or_raised_by_outlier():
+    """Agreement with weak evidence is not inspected by default, but an outlier increase still enters review."""
+    parcels = pd.DataFrame(
+        {
+            "declared_crop": ["A", "A", "A", "A", None],
+            "predicted_crop": ["A", "A", "B", "A", "A"],
+            "prediction_confidence_level": ["LOW", "LOW", "LOW", "HIGH", "LOW"],
+            "prediction_class_reliability_level": ["HIGH"] * 5,
+            "prediction_class_reliability_valid": [True] * 5,
+            "data_reliability_score": [0.9] * 5,
+            "geom_shape_complexity_score": [1.0, 2.0, 3.0, 4.0, 5.0],
+            "is_outlier": [False, True, False, False, False],
+        }
+    )
+    config = _config()
+    config.inspection_include_outlier = True
+
+    default = calculate_inspection_metrics(parcels, config)
+    config.inspection_check_matching_declarations = True
+    legacy = calculate_inspection_metrics(parcels, config)
+
+    expect_equal(default["inspection_need"].tolist(), ["MEDIUM", "MEDIUM_HIGH", "MEDIUM", "LOW", "MEDIUM"])
+    expect_equal(
+        default["inspection_check_type"].tolist(),
+        ["NONE", "INSUFFICIENT_EO_EVIDENCE", "INSUFFICIENT_EO_EVIDENCE", "NONE", "INSUFFICIENT_EO_EVIDENCE"],
+    )
+    # Not queuing a row also removes the queue reason, while the evidence reasons remain for auditing.
+    expect_equal(default.loc[0, "inspection_reasons"], "LOW_MODEL_CONFIDENCE")
+    expect_in("OUTLIER_PRIORITY_INCREASE", default.loc[1, "inspection_reasons"])
+    expect_equal(legacy["inspection_check_type"].tolist(), ["INSUFFICIENT_EO_EVIDENCE"] * 3 + ["NONE", "INSUFFICIENT_EO_EVIDENCE"])
+    pd.testing.assert_series_equal(default["inspection_need"], legacy["inspection_need"])
+
+
+def _percentile_config() -> SimpleNamespace:
+    """Return the test configuration with percentile calibration switched on."""
+    config = _config()
+    config.inspection_data_reliability_threshold_mode = "percentile"
+    config.inspection_low_data_reliability_percentile = 0.05
+    config.inspection_medium_data_reliability_percentile = 0.25
+    return config
+
+
+def test_percentile_mode_relaxes_data_thresholds_to_the_population():
+    """Scores below the absolute thresholds are banded by percentile instead of all becoming weak evidence."""
+    scores = pd.Series(np.linspace(0.50, 0.79, 30))
+
+    expect_equal(effective_data_reliability_thresholds(scores, _config()), (0.60, 0.80))
+    low, medium = effective_data_reliability_thresholds(scores, _percentile_config())
+    expect_equal(low, pytest.approx(scores.quantile(0.05)))
+    expect_equal(medium, pytest.approx(scores.quantile(0.25)))
+
+    parcels = pd.DataFrame(
+        {
+            "declared_crop": ["A"] * 30,
+            "predicted_crop": ["A"] * 30,
+            "prediction_confidence_level": ["HIGH"] * 30,
+            "prediction_class_reliability_level": ["HIGH"] * 30,
+            "prediction_class_reliability_valid": [True] * 30,
+            "data_reliability_score": scores,
+            "geom_shape_complexity_score": [1.0] * 30,
+        }
+    )
+    absolute = calculate_inspection_metrics(parcels, _config())
+    relaxed = calculate_inspection_metrics(parcels, _percentile_config())
+
+    # Under the absolute threshold every parcel is rule R10; percentile mode keeps only the weakest quarter there.
+    expect_equal(absolute["inspection_rule"].unique().tolist(), ["R10"])
+    expect_equal(int(relaxed["inspection_rule"].eq("R10").sum()), 8)
+    expect_equal(int(relaxed["inspection_rule"].eq("R02").sum()), 22)
+    expect_equal(relaxed["inspection_data_reliability_medium_threshold"].unique().tolist(), [pytest.approx(medium)])
+    expect_equal(saved_data_reliability_thresholds(relaxed, _config()), (pytest.approx(low), pytest.approx(medium)))
+    expect_in("LOW_DATA_RELIABILITY", relaxed.loc[0, "inspection_reasons"])
+    expect_in("MEDIUM_DATA_RELIABILITY", relaxed.loc[5, "inspection_reasons"])
+    expect_equal(relaxed.loc[29, "inspection_reasons"], "MEDIUM_GEOMETRY_COMPLEXITY")
+
+
+@pytest.mark.parametrize("scores", [[0.90, 0.95, 0.99, 1.0], [None, 1.5, -0.2, "invalid"], []])
+def test_percentile_mode_is_never_stricter_than_absolute_thresholds(scores):
+    """Good coverage keeps the absolute boundaries, and unusable scores leave nothing to calibrate against."""
+    thresholds = effective_data_reliability_thresholds(pd.Series(scores, dtype=object), _percentile_config())
+    expect_equal(thresholds, (0.60, 0.80))
+
+
+def test_reports_band_data_reliability_with_saved_thresholds():
+    """Report bands follow the boundaries saved at scoring time, not the live configuration."""
+    from ml_classification.step_05_predict.libraries.inspection_priority.diagnostics import _evidence_quality_table
+
+    frame = pd.DataFrame({
+        "data_reliability_score": [0.50, 0.65, 0.75],
+        "inspection_data_reliability_low_threshold": [0.55] * 3,
+        "inspection_data_reliability_medium_threshold": [0.70] * 3,
+        "geometry_risk": [0.25] * 3,
+        "inspection_need": ["MEDIUM"] * 3,
+        "inspection_check_type": ["INSUFFICIENT_EO_EVIDENCE"] * 3,
+        "inspection_score": [50.0] * 3,
+    })
+    table = _evidence_quality_table(frame, _config()).set_index("data_reliability_level")
+    expect_equal(table["parcels"].to_dict(), {"LOW": 1, "MEDIUM": 1, "HIGH": 1})
+    # Rows saved before the boundaries existed use the absolute configuration.
+    legacy = frame.drop(columns=["inspection_data_reliability_low_threshold", "inspection_data_reliability_medium_threshold"])
+    expect_equal(saved_data_reliability_thresholds(legacy, _config()), (0.60, 0.80))
+
+
+def test_inspection_calibration_config_defaults_and_validation(tmp_path):
+    """The public calibration options default to the relaxed policy and reject invalid values."""
+    from ml_classification import ClassificationPipelineConfig
+
+    arguments = {"project_dir": tmp_path, "target_column": "crop", "feature_columns": ["x"], "feature_importance_top_n": 1}
+    config = ClassificationPipelineConfig(**arguments)
+    expect_equal(config.inspection_data_reliability_threshold_mode, "percentile")
+    expect_equal(config.inspection_low_data_reliability_percentile, 0.05)
+    expect_equal(config.inspection_medium_data_reliability_percentile, 0.25)
+    expect_false(config.inspection_check_matching_declarations)
+    expect_equal(
+        ClassificationPipelineConfig(
+            **arguments, inspection_data_reliability_threshold_mode="absolute"
+        ).inspection_data_reliability_threshold_mode,
+        "absolute",
+    )
+    with pytest.raises(ValueError, match="Error: inspection_data_reliability_threshold_mode must be either"):
+        ClassificationPipelineConfig(**arguments, inspection_data_reliability_threshold_mode="quantile")
+    with pytest.raises(ValueError, match="Error: Inspection data-reliability percentiles must satisfy"):
+        ClassificationPipelineConfig(
+            **arguments, inspection_low_data_reliability_percentile=0.5, inspection_medium_data_reliability_percentile=0.25
+        )
+    with pytest.raises(TypeError, match="Error: inspection_check_matching_declarations must be a bool"):
+        ClassificationPipelineConfig(**arguments, inspection_check_matching_declarations="false")
 
 
 def _reliable_parcels() -> pd.DataFrame:

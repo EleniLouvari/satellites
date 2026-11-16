@@ -17,10 +17,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from parcel_app.core import db
 from parcel_app.core.security import current_user
-from parcel_app.core.storage import contained, sanitize_text, storage_available
+from parcel_app.core.storage import contained, ml_directory, sanitize_text, storage_available
 from parcel_app.jobs.queue import enqueue
 from parcel_app.pipelines.eda.routes import completed_run, source_artifact, source_columns
-from parcel_app.settings import get_settings
 
 from .config import OUTLIER_COLUMN, ml_schema, validate_ml
 
@@ -191,7 +190,7 @@ def submit_ml(eda_id: UUID, body: MLSubmission, user: dict = Depends(current_use
             return public_ml(existing)
         if not storage_available(1024**3):
             raise HTTPException(507, "Error: Server storage limit reached.")
-        output = get_settings().storage_root / "users" / str(user_id) / "ml" / str(body.request_id)
+        output = ml_directory(user_id, run["run_id"], eda_id, body.request_id)
         row = db.one(
             "INSERT INTO ml_runs(ml_id,run_id,eda_id,app_user_id,name,feature_columns,config,input_sha256,eda_sha256,output_dir) "
             "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",

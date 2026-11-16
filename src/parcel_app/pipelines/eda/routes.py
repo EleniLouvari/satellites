@@ -13,10 +13,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from parcel_app.core import db
 from parcel_app.core.security import current_user
-from parcel_app.core.storage import contained, sanitize_text, storage_available
+from parcel_app.core.storage import contained, eda_directory, sanitize_text, storage_available
 from parcel_app.jobs.queue import enqueue
 from parcel_app.pipelines.parcel_stats.routes import owned_run
-from parcel_app.settings import get_settings
 
 from .config import eda_schema, validate_eda
 
@@ -138,7 +137,7 @@ def submit_eda(run_id: UUID, body: EDASubmission, user: dict = Depends(current_u
             raise HTTPException(422, str(error) if str(error).startswith("Error:") else "Error: Invalid EDA settings.") from None
         if not storage_available(64 * 1024**2):
             raise HTTPException(507, "Error: Server storage limit reached.")
-        output = get_settings().storage_root / "users" / str(user["app_user_id"]) / "eda" / str(body.request_id)
+        output = eda_directory(user["app_user_id"], run_id, body.request_id) / "output"
         row = db.one(
             "INSERT INTO eda_runs(eda_id,run_id,app_user_id,selected_columns,config,input_sha256,output_dir) "
             "VALUES(%s,%s,%s,%s,%s,%s,%s) RETURNING *",

@@ -8,7 +8,7 @@ from pathlib import Path
 from psycopg2.extras import Json
 
 from parcel_app.core import db
-from parcel_app.core.storage import checksum, contained, sanitize_text
+from parcel_app.core.storage import checksum, contained, link_or_copy, run_directory, sanitize_text
 from parcel_app.jobs.queue import owned_claim
 from parcel_app.settings import get_settings
 from parcel_app.sources.openeo.credentials import run_credentials
@@ -84,11 +84,29 @@ class _SecretFilter(logging.Filter):
         return True
 
 
+def _snapshot_input(job, run):
+    """Before the first start, give the run its own copy of the validated upload in ``input/``.
+
+    Runs allocated before the ``input/``/``output/`` split keep reading their upload in place.
+    """
+    root = Path(os.path.abspath(run_directory(run["app_user_id"], run["run_id"])))
+    source = Path(os.path.abspath(run["config"]["input"]["path"]))
+    output = Path(os.path.abspath(run["output_dir"]))
+    if output != root / "output" or (output / "run.json").is_file() or source.parent == root / "input":
+        return run
+    target = link_or_copy(source, root / "input" / source.name)
+    config = {**run["config"], "input": {**run["config"]["input"], "path": str(target)}}
+    with db.connection() as conn:
+        owned_claim(job, conn)
+        db.execute("UPDATE analysis_runs SET config=%s WHERE run_id=%s", (Json(config), job["target_id"]), conn=conn)
+    return {**run, "config": config}
+
+
 def _execute_run(job):
     """Execute the dictionary runner with immutable config and selected credentials."""
     from data_preparation.parcel_stats.runner import resume_parcel_stats, run_parcel_stats
 
-    run = _run(job)
+    run = _snapshot_input(job, _run(job))
     accounts = run_credentials(run)
     if checksum(Path(run["config"]["input"]["path"])) != run["summary"]["input_sha256"]:
         raise ValueError("Error: Uploaded file changed; restore the original file before resuming.")

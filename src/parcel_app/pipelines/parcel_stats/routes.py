@@ -10,10 +10,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from parcel_app.core import db
 from parcel_app.core.security import current_user
-from parcel_app.core.storage import storage_available
+from parcel_app.core.storage import run_directory, storage_available
 from parcel_app.jobs.queue import enqueue
 from parcel_app.pipelines.uploads.routes import owned_upload
-from parcel_app.settings import get_settings
 
 from .config import check_processing
 
@@ -144,7 +143,7 @@ def insert_draft(draft, user_id, *, conn):
     """Allocate an immutable server-owned output location for a fresh draft."""
     validate_draft(draft, user_id, conn=conn)
     run_id = str(uuid4())
-    output = get_settings().storage_root / "users" / str(user_id) / "runs" / run_id
+    output = run_directory(user_id, run_id) / "output"
     return db.one(
         "INSERT INTO analysis_runs(run_id,app_user_id,name,upload_id,layer,parcel_id_field,partition_field,processing,account_ids,output_dir,scheduling) "
         "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",

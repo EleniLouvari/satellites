@@ -148,8 +148,15 @@ class ClassificationPipelineConfig:
     inspection_model_weight: float = 0.60
     inspection_data_weight: float = 0.25
     inspection_geometry_weight: float = 0.15
+    # "percentile" relaxes the two data-reliability thresholds to the percentiles below when the predicted
+    # parcels score lower than the absolute values; "absolute" applies the thresholds exactly as written.
+    inspection_data_reliability_threshold_mode: str = "percentile"
     inspection_low_data_reliability_threshold: float = 0.60
     inspection_medium_data_reliability_threshold: float = 0.80
+    inspection_low_data_reliability_percentile: float = 0.05
+    inspection_medium_data_reliability_percentile: float = 0.25
+    # False keeps Low-Medium and Medium parcels whose declaration matches the prediction out of the queue.
+    inspection_check_matching_declarations: bool = False
     inspection_medium_geometry_risk_threshold: float = 0.50
     inspection_high_geometry_risk_threshold: float = 0.75
     inspection_medium_score_threshold: float = 25.0
@@ -296,6 +303,11 @@ class ClassificationPipelineConfig:
                 {None, "nearest", "idw", "kriging"},
                 "Error: spatial_interpolation_method must be None, 'nearest', 'idw', or 'kriging'.",
             ),
+            (
+                self.inspection_data_reliability_threshold_mode,
+                {"absolute", "percentile"},
+                "Error: inspection_data_reliability_threshold_mode must be either 'absolute' or 'percentile'.",
+            ),
         )
         for value, accepted_values, message in allowed_values:
             if value not in accepted_values:
@@ -331,6 +343,7 @@ class ClassificationPipelineConfig:
             "class_reliability_enabled": "Error: class_reliability_enabled must be a bool.",
             "inspection_scoring_enabled": "Error: inspection_scoring_enabled must be a bool.",
             "inspection_include_outlier": "Error: inspection_include_outlier must be a bool.",
+            "inspection_check_matching_declarations": "Error: inspection_check_matching_declarations must be a bool.",
         }
         for field_name, message in bool_validations.items():
             if not isinstance(getattr(self, field_name), bool):
@@ -513,6 +526,10 @@ class ClassificationPipelineConfig:
         data_medium = float(self.inspection_medium_data_reliability_threshold)
         if not 0.0 <= data_low <= data_medium <= 1.0:
             raise ValueError("Error: Inspection data-reliability thresholds must satisfy 0 <= LOW <= MEDIUM <= 1.")
+        percentile_low = float(self.inspection_low_data_reliability_percentile)
+        percentile_medium = float(self.inspection_medium_data_reliability_percentile)
+        if not 0.0 <= percentile_low <= percentile_medium <= 1.0:
+            raise ValueError("Error: Inspection data-reliability percentiles must satisfy 0 <= LOW <= MEDIUM <= 1.")
         geometry_medium = float(self.inspection_medium_geometry_risk_threshold)
         geometry_high = float(self.inspection_high_geometry_risk_threshold)
         if not 0.0 <= geometry_medium <= geometry_high <= 1.0:

@@ -13,6 +13,7 @@ import pandas as pd
 import seaborn as sns
 
 from ml_classification.step_05_predict.libraries.inspection_priority.plots import save_inspection_relationship_plot
+from ml_classification.step_05_predict.libraries.inspection_priority.scoring import saved_data_reliability_thresholds
 
 # Policy severity, rather than alphabetical order, determines the inspection queue and table order.
 _NEED_ORDER = ("VERY_HIGH", "HIGH", "MEDIUM_HIGH", "MEDIUM", "LOW_MEDIUM", "LOW", "VERY_LOW", "UNKNOWN")
@@ -94,19 +95,22 @@ def _declaration_conflict_matrix(data: pd.DataFrame, target_column: str, predict
     )
 
 
-def _data_reliability_levels(values: pd.Series, config) -> pd.Series:
+def _data_reliability_levels(data: pd.DataFrame, config) -> pd.Series:
     """Use strict HIGH and LOW boundaries consistently with policy and diagnostic reasons."""
+    values = data[config.inspection_data_reliability_column]
     numeric = pd.to_numeric(values, errors="coerce")
+    # Band with the boundaries saved at scoring time so percentile-calibrated runs report what was applied.
+    low, medium = saved_data_reliability_thresholds(data, config)
     levels = pd.Series("MEDIUM", index=values.index, dtype="string")
-    levels.loc[numeric < config.inspection_low_data_reliability_threshold] = "LOW"
-    levels.loc[numeric > config.inspection_medium_data_reliability_threshold] = "HIGH"
+    levels.loc[numeric < low] = "LOW"
+    levels.loc[numeric > medium] = "HIGH"
     return levels.where(numeric.between(0.0, 1.0))
 
 
 def _evidence_quality_table(data: pd.DataFrame, config) -> pd.DataFrame:
     """Cross data reliability and geometry risk using the configured policy thresholds."""
     working = data.copy()
-    working["data_reliability_level"] = _data_reliability_levels(working[config.inspection_data_reliability_column], config)
+    working["data_reliability_level"] = _data_reliability_levels(working, config)
     working["geometry_quality_level"] = pd.cut(
         pd.to_numeric(working["geometry_risk"], errors="coerce"),
         bins=[-np.inf, config.inspection_medium_geometry_risk_threshold, config.inspection_high_geometry_risk_threshold, np.inf],
@@ -157,7 +161,7 @@ def _outlier_priority_transitions(data: pd.DataFrame) -> pd.DataFrame:
 
 def _confidence_data_score_table(data: pd.DataFrame, config) -> pd.DataFrame:
     """Summarize median inspection score by confidence and reliability band."""
-    reliability_band = _data_reliability_levels(data[config.inspection_data_reliability_column], config)
+    reliability_band = _data_reliability_levels(data, config)
     confidence = data[config.prediction_confidence_level_column].astype("string").str.upper()
     return (
         data.assign(_confidence=confidence, _reliability_band=reliability_band)
@@ -418,8 +422,11 @@ def export_operational_inspection_diagnostics(
     )
     images.update({name: path for name, path in builders.items() if path is not None})
 
+    low_threshold, medium_threshold = saved_data_reliability_thresholds(data, config)
     summary = {
         "rows": len(data),
+        "data_reliability_low_threshold": low_threshold,
+        "data_reliability_medium_threshold": medium_threshold,
         "rows_requiring_operational_check": int(data["inspection_check_type"].ne("NONE").sum()),
         "declaration_conflicts": int(data["inspection_check_type"].eq("DECLARATION_CONFLICT").sum()),
         "insufficient_eo_evidence": int(data["inspection_check_type"].eq("INSUFFICIENT_EO_EVIDENCE").sum()),

@@ -11,6 +11,7 @@ from psycopg2.extras import Json
 
 from parcel_app.core import db
 from parcel_app.core.security import current_user
+from parcel_app.core.storage import eda_directory, ml_directory, run_directory
 from parcel_app.settings import get_settings
 from parcel_app.sources.openeo.credentials import run_credentials
 from parcel_app.sources.openeo.remote_cleanup import collect_jobs, delete_jobs
@@ -22,16 +23,32 @@ router = APIRouter()
 IDLE = {"draft", "ready", "complete", "failed", "interrupted", "cancelled", "deleting", "paused"}
 
 
-def owned_directory(user_id, kind, identifier, stored_path):
-    """Require the exact allocated directory, rejecting redirects through links/junctions."""
+def owned_directory(user_id, kind, identifier, stored_path, *allocated):
+    """Require an allocated directory of the record, rejecting redirects through links/junctions.
+
+    ``allocated`` lists the record's locations in the nested ``runs/<id>/...`` layout;
+    records saved before that layout keep ``users/<user>/<kind>/<id>``.
+    """
     root = get_settings().storage_root.resolve()
-    expected = root / "users" / str(user_id) / kind / str(identifier)
+    legacy = root / "users" / str(user_id) / kind / str(identifier)
+    allowed = {legacy, *(Path(os.path.abspath(path)) for path in allocated)}
     stored = Path(os.path.abspath(stored_path))
-    if stored != expected or expected.resolve() != expected or not expected.is_relative_to(root):
+    if stored not in allowed or stored.resolve() != stored or not stored.is_relative_to(root):
         raise HTTPException(409, "Error: The saved storage location is unsafe for deletion; contact the administrator.")
-    if expected.exists() and not expected.is_dir():
+    if stored.exists() and not stored.is_dir():
         raise HTTPException(409, "Error: The saved output directory is unavailable for deletion.")
-    return expected
+    return stored
+
+
+def eda_locations(user_id, eda):
+    """Return an EDA analysis's ``output/`` folder and the analysis folder holding it."""
+    home = eda_directory(user_id, eda["run_id"], eda["eda_id"])
+    return home / "output", home
+
+
+def ml_location(user_id, ml):
+    """Return an ML run's folder inside its EDA analysis."""
+    return ml_directory(user_id, ml["run_id"], ml["eda_id"], ml["ml_id"])
 
 
 def remove_directory(path):
@@ -73,12 +90,15 @@ def prepare_run(run_id, user_id, conn):
     mls = db.all_rows("SELECT * FROM ml_runs WHERE run_id=%s ORDER BY ml_id FOR UPDATE", (str(run_id),), conn=conn)
     targets = [str(run_id), *[str(row["eda_id"]) for row in edas], *[str(row["ml_id"]) for row in mls]]
     ensure_idle([run, *edas, *mls], targets, user_id, conn)
-    output = owned_directory(user_id, "runs", run_id, run["output_dir"])
-    directories = (
-        [owned_directory(user_id, "ml", row["ml_id"], row["output_dir"]) for row in mls]
-        + [owned_directory(user_id, "eda", row["eda_id"], row["output_dir"]) for row in edas]
-        + [output]
-    )
+    # Old runs stored their outputs directly in the run folder; new ones use output/.
+    home = owned_directory(user_id, "runs", run_id, run_directory(user_id, run_id))
+    output = owned_directory(user_id, "runs", run_id, run["output_dir"], home / "output")
+    directories = [
+        *[owned_directory(user_id, "ml", row["ml_id"], row["output_dir"], ml_location(user_id, row)) for row in mls],
+        *[owned_directory(user_id, "eda", row["eda_id"], row["output_dir"], *eda_locations(user_id, row)) for row in edas],
+        output,
+        home,
+    ]
     upload = db.one(
         "SELECT * FROM parcel_uploads WHERE upload_id=%s AND app_user_id=%s FOR UPDATE",
         (str(run["upload_id"]), user_id),
@@ -229,11 +249,14 @@ def delete_eda(eda_id: UUID, user: dict = Depends(current_user)):
         ensure_idle([eda], [str(eda_id)], user_id, conn)
         if db.one("SELECT 1 FROM ml_runs WHERE eda_id=%s LIMIT 1", (str(eda_id),), conn=conn):
             raise HTTPException(409, "Error: ML runs use this EDA analysis. Delete those ML runs first.")
-        output = owned_directory(user_id, "eda", eda_id, eda["output_dir"])
+        output_dir, home = eda_locations(user_id, eda)
+        output = owned_directory(user_id, "eda", eda_id, eda["output_dir"], output_dir, home)
+        home = owned_directory(user_id, "eda", eda_id, home, home)
         db.execute("UPDATE eda_runs SET status='deleting',error=NULL WHERE eda_id=%s", (str(eda_id),), conn=conn)
         conn.commit()
         try:
             remove_directory(output)
+            remove_directory(home)
             db.execute(
                 "DELETE FROM web_jobs WHERE target_id=%s AND kind='eda' AND app_user_id=%s", (str(eda_id), user_id), conn=conn
             )
@@ -259,7 +282,7 @@ def delete_ml(ml_id: UUID, user: dict = Depends(current_user)):
         if not ml:
             raise HTTPException(404, "Error: ML run not found.")
         ensure_idle([ml], [str(ml_id)], user_id, conn)
-        output = owned_directory(user_id, "ml", ml_id, ml["output_dir"])
+        output = owned_directory(user_id, "ml", ml_id, ml["output_dir"], ml_location(user_id, ml))
         db.execute("UPDATE ml_runs SET status='deleting',error=NULL WHERE ml_id=%s", (str(ml_id),), conn=conn)
         conn.commit()
         try:

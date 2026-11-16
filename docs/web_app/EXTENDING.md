@@ -43,9 +43,22 @@ Rules that keep the worker safe:
 - Inside a handler, call `parcel_app.jobs.queue.owned_claim(job, conn)` in the same
   transaction before every database write that publishes results. This fences stale or
   stopped workers.
-- Write files only beneath the directory allocated for the record, under
-  `PARCEL_STORAGE_ROOT/users/<app_user_id>/<kind>/<id>/`, and check paths with
-  `parcel_app.core.storage.contained`.
+- Write files only beneath the directory allocated for the record. Each run keeps its
+  input copy, outputs and dependent analyses together under
+  `PARCEL_STORAGE_ROOT/users/<app_user_id>/runs/<run_id>/`:
+
+  ```text
+  runs/<run_id>/input/                        copy (hard link) of the upload, made at run start
+  runs/<run_id>/output/                       parcel statistics
+  runs/<run_id>/eda/<eda_id>/output/          EDA analysis
+  runs/<run_id>/eda/<eda_id>/ml/<ml_id>/      ML run
+  ```
+
+  Uploads stay in `users/<app_user_id>/uploads/<upload_id>/` so the wizard can reuse
+  them. Allocate folders with the helpers in `parcel_app.core.storage`
+  (`run_directory`, `eda_directory`, `ml_directory`) and check paths with
+  `parcel_app.core.storage.contained`. Records saved before this layout keep their
+  original `users/<app_user_id>/<kind>/<id>/` folders.
 - Pass user-visible logs and errors through `parcel_app.core.storage.sanitize_text`.
 - Set `stoppable=True` only if the handler runs in a stoppable process group and its
   record supports the stop/resume states.
