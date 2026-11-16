@@ -159,7 +159,7 @@ def test_failed_atomic_write_preserves_existing_output(parcel_inputs, monkeypatc
     _, path, dem = parcel_inputs
     before = path.read_bytes()
 
-    def fail_write(frame, temporary):
+    def fail_write(frame, temporary, layer=None):
         """Simulate an interrupted write after producing a partial file."""
         Path(temporary).write_bytes(b"partial")
         raise OSError("interrupted")

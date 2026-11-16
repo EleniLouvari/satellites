@@ -71,9 +71,9 @@ class PrepareStep(PipelineStepBase):
             splitter,
         )
 
-    def _build_cv_folds(self, train_df, active_features, spatial_splitter):
-        # Disjoint CV targets 1 / cv_folds of the training rows per validation fold.
-        return build_cv_folds(self.config, train_df, active_features, spatial_splitter)
+    def _build_cv_folds(self, train_df, active_features, spatial_splitter, validation_method=None):
+        # Each validation fold targets 1 / cv_folds of the training rows.
+        return build_cv_folds(self.config, train_df, active_features, spatial_splitter, validation_method)
 
     def _balanced_spatial_cv_splits(self, train_df, active_features, groups):
         """Choose row-balanced whole-cell folds with every class retained in training."""
@@ -145,8 +145,12 @@ class PrepareStep(PipelineStepBase):
             "test_rows": len(test_df),
             "split_strategy": split_strategy,
             "target_labels": label_encoder.classes_.tolist(),
+            "cv_validation_method": self.config.cv_validation_method,
             "cv_folds": folds,
         }
+        if self.config.cv_validation_method == "overlapping":
+            # Out-of-fold probabilities need every row validated exactly once, so keep a disjoint partition for them.
+            prepare_summary["oof_folds"] = self._build_cv_folds(train_df, active_features, spatial_splitter, "disjoint")
 
         # Persist artifacts, produce plots, and write reports used by later stages.
         self._persist_prepare_artifacts(labeled_df, train_df, test_df, prepare_summary, label_encoder)

@@ -44,6 +44,7 @@ CHOICES = {
     "float_dtype": ["float32", "float64"],
     "spatial_interpolation_method": [None, "nearest", "idw", "kriging"],
     "spatial_split_method": ["by_row", "by_group"],
+    "cv_validation_method": ["disjoint", "overlapping"],
     "scoring_primary": SCORERS,
     "scoring_secondary": SCORERS,
     "cv_ranking_method": ["score_minus_std", "mean_score"],
@@ -154,6 +155,8 @@ GROUPS = (
         {
             "test_size": "Share of labelled parcels held out as the final test set (0.2 = 20%).",
             "cv_folds": "Number of cross-validation folds used to compare models. Every class needs at least this many parcels.",
+            "cv_validation_method": "disjoint validates every parcel exactly once; overlapping draws each validation fold "
+            "independently, so a parcel may be validated in several folds or in none.",
             "random_state": "Seed for splits, searches and models. The same seed and settings reproduce the same run.",
             "spatial_split": "Split by location instead of at random, so nearby parcels do not leak between train and test.",
             "spatial_split_method": "by_row spreads individual parcels across the area; by_group holds out complete grid cells.",

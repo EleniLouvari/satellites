@@ -178,6 +178,7 @@ class TrainStep(PipelineStepBase):
         X_train: pd.DataFrame,
         y_train: np.ndarray,
         cv: list[tuple[np.ndarray, np.ndarray]],
+        oof_cv: list[tuple[np.ndarray, np.ndarray]] | None = None,
     ) -> None:
         """Save the fitted estimator, diagnostics, plot, and optional OOF probabilities."""
         # Persist CV results table, the best-fitted estimator, and create a search results plot.
@@ -195,7 +196,8 @@ class TrainStep(PipelineStepBase):
                 save_json(temporal_schema, model_output_dir / "temporal_schema.json")
 
         # Optionally compute and save OOF probabilities for later optimization or confidence validation.
-        self._save_oof_probabilities(candidate, search.best_estimator_, X_train, y_train, cv, model_output_dir)
+        # Overlapping search folds are not a partition; OOF then uses the disjoint folds from prepare.
+        self._save_oof_probabilities(candidate, search.best_estimator_, X_train, y_train, oof_cv or cv, model_output_dir)
         save_search_results_plot(results_df, search_plot_path, self.config.scoring_primary)
         print_formatted_txt(
             f"Saved artifacts for {candidate.name}: model={best_model_path}, "
@@ -216,6 +218,7 @@ class TrainStep(PipelineStepBase):
         cv: list[tuple[np.ndarray, np.ndarray]],
         numeric_features: list[str],
         categorical_features: list[str],
+        oof_cv: list[tuple[np.ndarray, np.ndarray]] | None = None,
     ) -> tuple[dict | None, list[dict], dict | None, dict | None]:
         """Train one candidate and return either its artifacts or a structured failure."""
         # Top-level logging and timing for a single candidate training run.
@@ -229,7 +232,7 @@ class TrainStep(PipelineStepBase):
             param_distributions, effective_candidates = self._prepare_search_parameters(candidate, cv)
             search = self._fit_search(candidate, param_distributions, cv, effective_candidates, X_train, y_train)
             results_df = pd.DataFrame(search.cv_results_).sort_values("rank_test_score")
-            self._persist_search_artifacts(candidate, search, results_df, model_output_dir, X_train, y_train, cv)
+            self._persist_search_artifacts(candidate, search, results_df, model_output_dir, X_train, y_train, cv, oof_cv)
             summary, fold_rows = self._summarize_search(candidate, search, results_df)
             model_spec = {
                 "best_params": search.best_params_,
@@ -363,6 +366,7 @@ class TrainStep(PipelineStepBase):
                 train_state["cv"],
                 train_state["numeric_features"],
                 train_state["categorical_features"],
+                oof_cv=train_state["oof_cv"],
             )
             elapsed = time.perf_counter() - started
             if failure is not None:
@@ -395,12 +399,16 @@ class TrainStep(PipelineStepBase):
         x_train = train_df[active_features].copy()
         y_train = label_encoder.transform(train_df[self.config.target_column].astype(str))
         cv = [(np.array(fold["train_index"]), np.array(fold["valid_index"])) for fold in prepare_summary["cv_folds"]]
+        # Only overlapping CV stores separate disjoint folds for out-of-fold probabilities.
+        oof_folds = prepare_summary.get("oof_folds")
+        oof_cv = None if oof_folds is None else [(np.array(f["train_index"]), np.array(f["valid_index"])) for f in oof_folds]
         num_classes = len(prepare_summary["target_labels"])
         candidates = build_model_candidates(self.config, numeric_features, categorical_features, num_classes=num_classes)
         return {
             "X_train": x_train,
             "y_train": y_train,
             "cv": cv,
+            "oof_cv": oof_cv,
             "candidates": candidates,
             "numeric_features": numeric_features,
             "categorical_features": categorical_features,

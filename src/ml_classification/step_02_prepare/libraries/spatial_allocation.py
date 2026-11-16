@@ -222,9 +222,11 @@ def _joint_coverage_allocation(counts, stratum_class, stratum_cell, class_counts
     for part, size in enumerate(sizes):
         constraint(allocation_ids[:, part], np.ones(n_strata), size, size)
 
+    # Add class support and absolute deviation constraints to break coverage ties.
     _add_class_constraints(allocation_ids, stratum_class, class_counts, sizes, variable, constraint)
+    # Add coverage constraints for every occupied region at every scale.
     _add_coverage_constraints(allocation_ids, stratum_cell, counts, levels, variable, constraint)
-
+    # Solve the joint integer allocation problem with class support and multi-scale coverage constraints.
     matrix = coo_matrix((coefficients, (row_ids, column_ids)), shape=(len(lower), len(costs))).tocsc()
     costs = np.asarray(costs)
     lower, upper = np.asarray(lower), np.asarray(upper)
@@ -280,16 +282,20 @@ def allocate_spatial_rows(target: pd.Series, groups: pd.Series, partition_sizes:
             "Reduce cv_folds for class-complete validation folds.",
             stacklevel=2,
         )
-
+    # Factorize the (class, cell) pairs to get a unique stratum for each combination.
+    # Then count how many rows are in each stratum. This allows us to optimize the allocation at the stratum level rather than
+    # the individual row level, which is more efficient and ensures that class and spatial coverage constraints are respected.
     strata, pairs = pd.factorize(pd.MultiIndex.from_arrays((classes, cells)), sort=False)
     stratum_class = pairs.get_level_values(0).to_numpy()
     stratum_cell = pairs.get_level_values(1).to_numpy()
     counts = np.bincount(strata)
     levels = _coverage_regions(cell_labels)
+    # Try to attain the maximum coverage at every scale and optimal class balance.
     allocations = _maximal_coverage_allocation(counts, stratum_class, stratum_cell, class_counts, levels, sizes)
     if allocations is not None:
         return _materialize_allocations(strata, allocations, random_state)
-
+    # If the sequential maximum coverage allocation fails, fall back to a joint optimization that simultaneously considers
+    # class support and multi-scale coverage.
     allocations = _joint_coverage_allocation(counts, stratum_class, stratum_cell, class_counts, levels, sizes)
 
     # Randomness chooses the actual rows inside each class/cell, never trims away

@@ -13,7 +13,7 @@ from ml_classification.step_02_prepare.prepare import PrepareStep
 from tests.utils import expect_equal, expect_true
 
 
-def _folds(tmp_path, sizes, labels=None, method="by_group"):
+def _folds(tmp_path, sizes, labels=None, method="by_group", validation="disjoint", spatial=True):
     groups = np.repeat(np.arange(len(sizes)), sizes)
     frame = pd.DataFrame({
         "feature": np.arange(len(groups)),
@@ -22,10 +22,12 @@ def _folds(tmp_path, sizes, labels=None, method="by_group"):
     config = ClassificationPipelineConfig(
         project_dir=tmp_path, target_column="label", feature_columns=["feature"],
         feature_importance_top_n=1,
-        spatial_split=True, spatial_split_method=method, cv_folds=5, test_size=0.2,
+        spatial_split=spatial, spatial_split_method=method, cv_folds=5, test_size=0.2,
+        cv_validation_method=validation,
     )
-    spatial_splitter = Mock()
-    spatial_splitter.build_spatial_groups.return_value = pd.Series(groups, index=frame.index)
+    spatial_splitter = Mock() if spatial else None
+    if spatial:
+        spatial_splitter.build_spatial_groups.return_value = pd.Series(groups, index=frame.index)
     folds = PrepareStep(config)._build_cv_folds(frame, ["feature"], spatial_splitter)
     return folds, frame, groups
 
@@ -148,3 +150,41 @@ def test_by_row_cv_handles_uneven_fold_sizes(tmp_path):
         expect_equal(len(set(groups[valid])), 10)
         validation_rows.extend(valid)
     expect_equal(sorted(validation_rows), list(range(len(frame))))
+
+
+def _assert_overlapping(folds, frame, expected_valid):
+    """Each fold is a valid train/validation split; validation sets are not a partition."""
+    expect_equal(len(folds), 5)
+    validation_rows = []
+    for fold in folds:
+        train, valid = fold["train_index"], fold["valid_index"]
+        expect_true(set(train).isdisjoint(valid))
+        expect_equal(sorted(train + valid), list(range(len(frame))))
+        expect_equal(set(frame.iloc[train]["_target_encoded"]), set(frame["_target_encoded"]))
+        if expected_valid is not None:
+            expect_equal(len(valid), expected_valid)
+        validation_rows.extend(valid)
+    # Independent draws repeat some rows across validation folds.
+    expect_true(len(set(validation_rows)) < len(validation_rows))
+
+
+@pytest.mark.parametrize(
+    ("method", "spatial", "expected_valid"),
+    [("by_row", False, 20), ("by_row", True, 20), ("by_group", True, None)],
+)
+def test_overlapping_cv_draws_folds_independently(tmp_path, method, spatial, expected_valid):
+    sizes = [10] * 10
+    folds, frame, groups = _folds(tmp_path, sizes, method=method, validation="overlapping", spatial=spatial)
+    _assert_overlapping(folds, frame, expected_valid)
+    if spatial and method == "by_group":
+        for fold in folds:
+            expect_true(set(groups[fold["train_index"]]).isdisjoint(groups[fold["valid_index"]]))
+    repeated, _, _ = _folds(tmp_path, sizes, method=method, validation="overlapping", spatial=spatial)
+    expect_equal(folds, repeated)
+
+
+def test_cv_validation_method_rejects_unknown_value(tmp_path):
+    with pytest.raises(ValueError, match="cv_validation_method"):
+        ClassificationPipelineConfig(
+            project_dir=tmp_path, target_column="label", feature_columns=["feature"], cv_validation_method="bootstrap"
+        )

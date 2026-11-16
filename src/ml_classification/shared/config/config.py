@@ -55,6 +55,9 @@ class ClassificationPipelineConfig:
     # ================================================================================
     test_size: float = 0.2
     cv_folds: int = 5
+    # "disjoint": every training row is validated exactly once.
+    # "overlapping": each validation fold is drawn independently, so rows may recur across folds.
+    cv_validation_method: str = "disjoint"
     random_state: int = 42
 
     # ================================================================================
@@ -211,6 +214,7 @@ class ClassificationPipelineConfig:
         self.label_balancing_method = self.label_balancing_method.strip().lower()
         self.lstm_class_balancing_method = self.lstm_class_balancing_method.strip().lower()
         self.spatial_split_method = self.spatial_split_method.strip().lower()
+        self.cv_validation_method = self.cv_validation_method.strip().lower()
         if self.lstm_temporal_frequency is not None:
             self.lstm_temporal_frequency = self.lstm_temporal_frequency.strip().lower()
         if self.lstm_temporal_statistics is not None:
@@ -268,6 +272,11 @@ class ClassificationPipelineConfig:
                 self.spatial_split_method,
                 {"by_group", "by_row"},
                 "Error: spatial_split_method must be either 'by_group' or 'by_row'.",
+            ),
+            (
+                self.cv_validation_method,
+                {"disjoint", "overlapping"},
+                "Error: cv_validation_method must be either 'disjoint' or 'overlapping'.",
             ),
             (
                 self.lstm_temporal_frequency,

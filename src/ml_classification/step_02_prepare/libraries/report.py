@@ -13,7 +13,7 @@ def write_prepare_report(config, prepare_summary: dict[str, Any], train_df: pd.D
     """Write the step-2 preparation report with split and fold diagnostics."""
     # Build compact summary tables for split statistics and fold sizes.
     # Keep full fold index arrays out of the HTML summary; their sizes are shown below.
-    summary_kv = {key: value for key, value in prepare_summary.items() if key != "cv_folds"}
+    summary_kv = {key: value for key, value in prepare_summary.items() if key not in {"cv_folds", "oof_folds"}}
     folds_df = pd.DataFrame(
         [
             {
@@ -49,7 +49,10 @@ def write_prepare_report(config, prepare_summary: dict[str, Any], train_df: pd.D
                     "This matches test_size when test_size = 1 / cv_folds. "
                     "Spatial by_group CV keeps whole cells together, so large cells can prevent balanced fold sizes. "
                     "Spatial by_row CV balances fold sizes and prioritizes class presence and geographic coverage; "
-                    "cells may occur in both training and validation. Raw row indices are saved in prepare_summary.json."
+                    "cells may occur in both training and validation. "
+                    "With cv_validation_method='overlapping', each validation fold is drawn independently, so rows may "
+                    "be validated in several folds or in none; out-of-fold probabilities then use separate disjoint "
+                    "folds (oof_folds). Raw row indices are saved in prepare_summary.json."
                 ),
                 "table": folds_df,
             },

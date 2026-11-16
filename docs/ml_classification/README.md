@@ -354,11 +354,23 @@ row selection within the optimized class/cell counts. Optimization works on coun
 not individual rows; runtime depends on occupied class/cell combinations and folds.
 This evaluates predictions within the sampled area, not transfer to unseen regions.
 
-Cross-validation uses `cv_folds` disjoint validation subsets of the training data,
+Cross-validation uses `cv_folds` validation subsets of the training data,
 so the target validation fraction is `1 / cv_folds`. For `test_size=0.2`, use
 `cv_folds=5` to match the holdout fraction; `test_size` itself controls the outer
-train/test split. Every training row appears in validation exactly once, as
-required for out-of-fold probabilities.
+train/test split. With the default `cv_validation_method="disjoint"`, every
+training row appears in validation exactly once, as required for out-of-fold
+probabilities.
+
+With `cv_validation_method="overlapping"`, each of the `cv_folds` validation
+folds is drawn independently (about `1 / cv_folds` of the training rows each),
+so a row can be validated in several folds or in none. The draw follows the
+configured split mode: stratified random sampling without `spatial_split`,
+spatially spread rows for `by_row`, and whole grid cells for `by_group`; each
+fold uses seed `random_state + fold`. These folds are used for the
+hyperparameter search and CV scores. Out-of-fold probabilities (probability
+optimization, rank confidence) still need one prediction per row, so the
+prepare step also saves disjoint `oof_folds` in `prepare_summary.json` and
+training uses them for OOF predictions.
 
 With `by_row`, CV jointly allocates disjoint validation folds with sizes differing
 by at most one row, maximizing multiscale coverage in both validation and its

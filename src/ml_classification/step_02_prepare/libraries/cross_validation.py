@@ -3,15 +3,23 @@
 from __future__ import annotations
 
 import numpy as np
-from sklearn.model_selection import GroupKFold, StratifiedGroupKFold, StratifiedKFold
+from sklearn.model_selection import GroupKFold, StratifiedGroupKFold, StratifiedKFold, StratifiedShuffleSplit
 
 from ml_classification.step_02_prepare.libraries.spatial_allocation import allocate_spatial_rows
 
 
-def build_cv_folds(config, train_df, active_features, spatial_splitter):
-    """Build cross-validation folds using stratified or spatial splitters."""
-    # Disjoint CV targets 1 / cv_folds of the training rows per validation fold.
-    if spatial_splitter is None:
+def build_cv_folds(config, train_df, active_features, spatial_splitter, validation_method=None):
+    """Build cross-validation folds using stratified or spatial splitters.
+
+    ``validation_method`` overrides ``config.cv_validation_method``: ``"disjoint"``
+    validates every row exactly once; ``"overlapping"`` draws each validation fold
+    independently, so a row can be validated in several folds or in none.
+    """
+    # Both methods target 1 / cv_folds of the training rows per validation fold.
+    validation_method = validation_method or config.cv_validation_method
+    if validation_method == "overlapping":
+        split_iterator = overlapping_cv_splits(config, train_df, active_features, spatial_splitter)
+    elif spatial_splitter is None:
         splitter = StratifiedKFold(n_splits=config.cv_folds, shuffle=True, random_state=config.random_state)
         split_iterator = splitter.split(train_df[active_features], train_df["_target_encoded"])
     else:
@@ -83,3 +91,57 @@ def balanced_spatial_row_cv_splits(config, train_df, active_features, groups):
     sizes[: n_rows % n_folds] += 1
     assignments = allocate_spatial_rows(train_df["_target_encoded"], groups, sizes, config.random_state)
     return [(np.flatnonzero(assignments != fold), np.flatnonzero(assignments == fold)) for fold in range(n_folds)]
+
+
+def overlapping_cv_splits(config, train_df, active_features, spatial_splitter):
+    """Draw each validation fold independently with the configured split mode, so folds may share rows."""
+    target = train_df["_target_encoded"]
+    n_rows, n_folds = len(train_df), config.cv_folds
+    n_valid = max(1, round(n_rows / n_folds))
+    if spatial_splitter is None:
+        # Repeated stratified random subsampling.
+        splitter = StratifiedShuffleSplit(n_splits=n_folds, test_size=n_valid, random_state=config.random_state)
+        return list(splitter.split(train_df[active_features], target))
+    groups = spatial_splitter.build_spatial_groups(train_df)
+    if config.spatial_split_method == "by_row":
+        # One train/validation allocation per fold; the fold-specific seed changes the selected rows.
+        sizes = np.array([n_rows - n_valid, n_valid])
+        splits = []
+        for fold in range(n_folds):
+            assignments = allocate_spatial_rows(target, groups, sizes, config.random_state + fold)
+            splits.append((np.flatnonzero(assignments == 0), np.flatnonzero(assignments == 1)))
+        return splits
+    return _overlapping_group_cv_splits(config, train_df, active_features, target, groups)
+
+
+def _overlapping_group_cv_splits(config, train_df, active_features, target, groups):
+    """Hold out whole cells per fold, drawing every fold from a differently seeded grouped partition."""
+    if groups.nunique() < config.cv_folds:
+        raise ValueError("Error: Spatial CV requires at least cv_folds occupied grid cells. Increase spatial_split_grid_size.")
+    overall_distribution = target.value_counts(normalize=True)
+    all_labels = set(overall_distribution.index)
+    splits = []
+    for fold in range(config.cv_folds):
+        splitter = StratifiedGroupKFold(n_splits=config.cv_folds, shuffle=True, random_state=config.random_state + fold)
+        candidates = []
+        for train_idx, valid_idx in splitter.split(train_df[active_features], target, groups=groups):
+            if set(target.iloc[train_idx]) != all_labels:
+                continue
+            # Same priority as disjoint grouped CV: validation size first, class balance breaks ties.
+            size_error = abs(len(valid_idx) / len(train_df) - 1 / config.cv_folds)
+            class_error = float(
+                (
+                    target.iloc[valid_idx].value_counts(normalize=True).reindex(overall_distribution.index, fill_value=0.0)
+                    - overall_distribution
+                )
+                .abs()
+                .mean()
+            )
+            candidates.append(((size_error, class_error), train_idx, valid_idx))
+        if not candidates:
+            raise ValueError(
+                "Error: Spatial CV could not retain every class in every training fold. Increase spatial_split_grid_size, merge unsupported rare classes, or reduce cv_folds."
+            )
+        _, train_idx, valid_idx = min(candidates, key=lambda candidate: candidate[0])
+        splits.append((train_idx, valid_idx))
+    return splits
