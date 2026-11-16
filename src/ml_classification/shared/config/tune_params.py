@@ -15,7 +15,8 @@ def _default_tune_params() -> dict[str, dict[str, list]]:
             "logistic_regression": {
                 "model__C": [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0],
                 "model__solver": ["saga"],
-                "model__penalty": ["l1", "l2"],
+                # scikit-learn 1.8 deprecates `penalty`; l1_ratio=0.0 is L2 and l1_ratio=1.0 is L1.
+                "model__l1_ratio": [0.0, 1.0],
             },
             "linear_sgd_classifier": {"model__alpha": [1e-4, 1e-3, 1e-2, 1e-1], "model__l1_ratio": [0.0, 0.15, 0.5, 0.8, 1.0]},
             "support_vector_machine": {

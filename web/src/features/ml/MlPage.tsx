@@ -117,12 +117,16 @@ export default function MlPage({
     };
   }, [base]);
 
-  const roles = [config.target_column, config.id_column];
   const selectedSet = useMemo(() => new Set(selected), [selected]);
-  const selectable = useMemo(
-    () => options?.columns.filter((column) => !column.geometry) ?? [],
-    [options],
-  );
+  // Geometry, the target and the parcel ID can never be features, so they are not offered at all.
+  const selectable = useMemo(() => {
+    const roles = [config.target_column, config.id_column];
+    return (
+      options?.columns.filter(
+        (column) => !column.geometry && !roles.includes(column.name),
+      ) ?? []
+    );
+  }, [options, config.target_column, config.id_column]);
   const proposed = selectable.filter((column) => column.proposed);
   // Columns matching the search box, excluding the target and ID columns.
   const matches = useMemo(() => {
@@ -266,7 +270,8 @@ export default function MlPage({
                   <p>
                     {selected.length} selected. The model input is the parcel
                     result; EDA supplies the proposal and its calculated
-                    columns.
+                    columns. The parcel ID, the target and the geometry are
+                    left out automatically.
                   </p>
                 </div>
                 <div className="actions">
@@ -347,13 +352,11 @@ export default function MlPage({
                     </summary>
                     <div className="eda-column-list">
                       {visible.map((column) => {
-                        const role = roles.includes(column.name);
                         return (
                           <label key={column.name}>
                             <input
                               type="checkbox"
                               checked={selectedSet.has(column.name)}
-                              disabled={role}
                               onChange={(e) =>
                                 choose(
                                   e.target.checked
@@ -367,10 +370,7 @@ export default function MlPage({
                               {column.proposed && (
                                 <em className="ml-proposed">EDA proposed</em>
                               )}
-                              <small>
-                                {column.dtype}
-                                {role ? " · used as target or ID" : ""}
-                              </small>
+                              <small>{column.dtype}</small>
                             </span>
                           </label>
                         );
@@ -575,7 +575,7 @@ export default function MlPage({
                     onClick={() => {
                       requestId.current = crypto.randomUUID();
                       setConfig(run.config);
-                      setSelected(run.feature_columns);
+                      setSelected(withoutRoles(run.feature_columns, run.config));
                       setName(`${run.name} (copy)`);
                       setConfigKey((key) => key + 1);
                       setTab("New scenario");
