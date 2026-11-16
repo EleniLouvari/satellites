@@ -1,0 +1,6 @@
+data_reliability_level,geometry_quality_level,parcels,needs_check,median_inspection_score,needs_check_rate_percent
+HIGH,GOOD,3,0,7.0,0.0
+HIGH,MODERATE,1,1,12.0,100.0
+LOW,COMPLEX,2,2,86.935,100.0
+MEDIUM,MODERATE,1,1,45.88,100.0
+MEDIUM,COMPLEX,1,1,49.25,100.0

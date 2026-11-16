@@ -79,6 +79,9 @@ def test_all_ml_options_are_grouped_described_or_explicitly_managed():
     by_name = {field["name"]: field for field in schema["fields"]}
     assert by_name["target_column"]["choices"] == [None, "parcel_id", "crop"]
     assert by_name["smote_k_neighbors"]["enabled_when"] == {"label_balancing_method": ["smote"]}
+    assert by_name["exclude_outliers_from_training"]["group"] == "data"
+    assert by_name["exclude_outliers_from_training"]["type"] == "boolean"
+    assert schema["defaults"]["exclude_outliers_from_training"] is False
     assert by_name[f"{TUNE_PREFIX}random_forest"]["type"] == "object"
     assert schema["defaults"]["feature_importance_top_n"] == 15
     assert {name: schema["defaults"][name] for name in (

@@ -1,0 +1,7 @@
+model,fold,score
+base,0,0.7
+base,1,0.74
+other,0,0.62
+other,1,0.68
+unused,0,0.58
+unused,1,0.62

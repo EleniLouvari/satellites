@@ -233,6 +233,81 @@ def test_check_excludes_null_rows_from_training_but_keeps_them_for_prediction(tm
     expect_equal(flagged.loc[training_rows_mask(flagged, config), "row_id"].tolist(), ["a", "b", "c"])
 
 
+def _outlier_frame():
+    """Six parcels: two outliers (one labeled), one unlabeled row, and one outlier flag left null."""
+    return pd.DataFrame(
+        {
+            "row_id": ["a", "b", "c", "d", "e", "f"],
+            "label": ["x", "y", "x", "y", None, None],
+            "feature": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            "is_outlier": pd.array([False, True, None, False, True, False], dtype="boolean"),
+        }
+    )
+
+
+def _outlier_config(tmp_path, **overrides):
+    """Build a minimal configuration for the outlier-exclusion checks."""
+    return ClassificationPipelineConfig(
+        project_dir=str(tmp_path),
+        target_column="label",
+        feature_columns=["feature"],
+        feature_importance_top_n=1,
+        cv_folds=2,
+        **overrides,
+    )
+
+
+def test_check_keeps_outliers_in_training_by_default(tmp_path):
+    config = _outlier_config(tmp_path)
+    expect_false(config.exclude_outliers_from_training)
+    step = CheckStep(config)
+    flagged, _ = step._flag_null_rows(_outlier_frame(), ["feature"])
+    result, excluded = step._flag_outlier_rows(flagged)
+    expect_equal(excluded, 0)
+    expect_false(result[EXCLUDED_FROM_TRAINING_COLUMN].any())
+    expect_equal(result.loc[training_rows_mask(result, config), "row_id"].tolist(), ["a", "b", "c", "d"])
+
+
+def test_check_excludes_outliers_from_training_but_keeps_them_for_prediction(tmp_path, capsys):
+    config = _outlier_config(tmp_path, exclude_outliers_from_training=True)
+    step = CheckStep(config)
+    flagged, _ = step._flag_null_rows(_outlier_frame(), ["feature"])
+    result, excluded = step._flag_outlier_rows(flagged)
+    # Only the labeled outlier "b" is removed from training; "e" is an unlabeled outlier and null flags are not outliers.
+    expect_equal(excluded, 1)
+    expect_equal(len(result), 6)
+    expect_equal(result[EXCLUDED_FROM_TRAINING_COLUMN].tolist(), [False, True, False, False, True, False])
+    expect_equal(result.loc[training_rows_mask(result, config), "row_id"].tolist(), ["a", "c", "d"])
+    expect_in("excluding 1 labeled is_outlier=True rows", capsys.readouterr().out)
+    # The input frame is not mutated.
+    expect_false(flagged[EXCLUDED_FROM_TRAINING_COLUMN].any())
+
+
+def test_check_outlier_exclusion_combines_with_null_row_exclusion(tmp_path):
+    data = _outlier_frame()
+    data.loc[0, "feature"] = np.nan
+    config = _outlier_config(tmp_path, exclude_outliers_from_training=True)
+    step = CheckStep(config)
+    flagged, null_rows = step._flag_null_rows(data, ["feature"])
+    result, excluded = step._flag_outlier_rows(flagged)
+    expect_equal(null_rows, 1)
+    expect_equal(excluded, 1)
+    expect_equal(result.loc[training_rows_mask(result, config), "row_id"].tolist(), ["c", "d"])
+
+
+def test_check_outlier_exclusion_requires_the_outlier_column(tmp_path):
+    config = _outlier_config(tmp_path, exclude_outliers_from_training=True)
+    step = CheckStep(config)
+    flagged, _ = step._flag_null_rows(_outlier_frame().drop(columns="is_outlier"), ["feature"])
+    with np.testing.assert_raises_regex(ValueError, "Error: exclude_outliers_from_training=True requires a boolean 'is_outlier'"):
+        step._flag_outlier_rows(flagged)
+
+
+def test_config_rejects_non_boolean_outlier_exclusion(tmp_path):
+    with np.testing.assert_raises_regex(TypeError, "Error: exclude_outliers_from_training must be a bool."):
+        _outlier_config(tmp_path, exclude_outliers_from_training="yes")
+
+
 def test_config_rejects_empty_selected_models():
     with np.testing.assert_raises_regex(ValueError, "selected_models cannot be empty"):
         ClassificationPipelineConfig(

@@ -1,0 +1,5 @@
+predicted_class,parcels,needs_check,high_or_very_high,declaration_conflicts,insufficient_eo_evidence,median_inspection_score,needs_check_rate_percent
+B,3,3,1,1,2,45.88,100.0
+A,3,2,0,0,2,49.25,66.66666666666667
+1,1,0,0,0,0,7.0,0.0
+C,1,0,0,0,0,7.87,0.0

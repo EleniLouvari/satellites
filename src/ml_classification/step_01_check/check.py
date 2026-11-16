@@ -12,7 +12,7 @@ from ml_classification.shared.config.base import PipelineStepBase
 # The check stage validates inputs before any expensive fitting or artifact generation occurs.
 from ml_classification.shared.logging import print_formatted_txt, time_decorator
 from ml_classification.shared.mapping import save_label_map
-from ml_classification.shared.models.modeling_context import EXCLUDED_FROM_TRAINING_COLUMN, training_rows_mask
+from ml_classification.shared.models.modeling_context import EXCLUDED_FROM_TRAINING_COLUMN, OUTLIER_COLUMN, training_rows_mask
 from ml_classification.shared.persistence import (
     load_joblib,
     load_json,
@@ -95,6 +95,28 @@ class CheckStep(PipelineStepBase):
             f"fill_nulls=False: excluding {excluded} rows with null features from train/validation/test; "
             "they are still predicted by the final model.",
             "WARNING",
+        )
+        return dataset, excluded
+
+    def _flag_outlier_rows(self, dataset: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+        """Exclude ``is_outlier=True`` rows from training when configured; they are still predicted."""
+        if not self.config.exclude_outliers_from_training:
+            return dataset, 0
+        if OUTLIER_COLUMN not in dataset.columns:
+            raise ValueError(
+                f"Error: exclude_outliers_from_training=True requires a boolean '{OUTLIER_COLUMN}' column in the input data."
+            )
+        # A missing flag means "not an outlier", matching the inspection-priority adjustment.
+        outliers = dataset[OUTLIER_COLUMN].eq(True).fillna(False).astype(bool)
+        # Count only labeled rows not already excluded: these are the rows this option actually removes.
+        excluded = int((outliers & training_rows_mask(dataset, self.config)).sum())
+        # Flagged rows stay in the dataset so the final model still predicts them.
+        dataset = dataset.copy()
+        dataset[EXCLUDED_FROM_TRAINING_COLUMN] = dataset[EXCLUDED_FROM_TRAINING_COLUMN].astype(bool) | outliers
+        print_formatted_txt(
+            f"exclude_outliers_from_training=True: excluding {excluded} labeled {OUTLIER_COLUMN}=True rows from "
+            "train/validation/test; they are still predicted by the final model.",
+            "WARNING" if excluded else "INFO",
         )
         return dataset, excluded
 
@@ -196,12 +218,15 @@ class CheckStep(PipelineStepBase):
         dataset, interpolation_summary["rows_excluded_from_training_with_nulls"] = self._flag_null_rows(
             dataset, requested_features
         )
+        # Optionally leave EDA outliers out of training as well; they also remain in the final predictions.
+        dataset, outlier_rows_excluded = self._flag_outlier_rows(dataset)
 
         # Validate entity-level constraints (unique IDs, class counts) and optimize memory/dtypes.
         self._validate_entities(dataset)
         dataset = optimize_dataframe(dataset, self.config, requested_features)
         # Build summary metadata and labeled subset for reporting.
         summary, labeled_df = self._build_summary(dataset, requested_features, iqr_summary, interpolation_summary)
+        summary["rows_excluded_from_training_as_outliers"] = outlier_rows_excluded
         # Persist artifacts and create exploratory feature profile CSV.
         feature_profile = self._persist_check_artifacts(dataset, summary)
         # Save visual diagnostics for the check stage.

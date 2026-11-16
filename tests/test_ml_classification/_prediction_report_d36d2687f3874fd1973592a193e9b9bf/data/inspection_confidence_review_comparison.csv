@@ -1,0 +1,3 @@
+prediction_needs_review,VERY_HIGH,HIGH,MEDIUM_HIGH,MEDIUM,LOW_MEDIUM,LOW,VERY_LOW,UNKNOWN
+No confidence review,0,1,0,2,0,2,1,0
+Confidence review,0,0,1,1,0,0,0,0

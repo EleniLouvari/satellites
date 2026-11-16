@@ -114,6 +114,9 @@ places for source data or code.
   in the [inspection decision table](INSPECTION_PRIORITY_DECISION_TABLE.md).
   Defaults are HIGH at `>=0.80`, MEDIUM at `>=0.60`, and at least 100 OOF
   predictions for that exact class. Prediction confidence remains rank-only.
+- `exclude_outliers_from_training=False`: opt in with `True` to leave
+  `is_outlier=True` rows out of train/validation/test and the final refit; they
+  are still predicted and kept in the final output with `excluded_from_training=True`.
 - `inspection_include_outlier=False`: opt in with `True` to raise a scored
   `is_outlier=True` row by one inspection-priority band after the decision table.
   `UNKNOWN` and `VERY_HIGH` remain unchanged; confidence and the numeric score

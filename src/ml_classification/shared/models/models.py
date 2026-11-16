@@ -48,7 +48,12 @@ class ModelCandidate:
 
 
 class CalibratedSVC(ClassifierMixin, BaseEstimator):
-    """Calibrate SVC probabilities while retaining the existing flat tuning parameters."""
+    """Calibrate SVC probabilities while retaining the existing flat tuning parameters.
+
+    When a class has a single row (typical for the small unstratified subsamples of a successive-halving
+    search) stratified calibration is impossible, so that fit falls back to an uncalibrated SVC whose
+    probabilities are the softmax of its decision scores. ``calibrated_`` records which path was used.
+    """
 
     def __init__(
         self, *, C=1.0, kernel="rbf", degree=3, gamma="scale", coef0=0.0,
@@ -78,14 +83,24 @@ class CalibratedSVC(ClassifierMixin, BaseEstimator):
         if self.probability is not True:
             raise ValueError("Error: The SVM candidate requires probability=True for calibrated probability outputs.")
         _, counts = np.unique(y, return_counts=True)
-        if len(counts) < 2 or counts.min() < 2:
-            raise ValueError("Error: SVM probability calibration requires at least two samples per class and two classes.")
-        # Halving and outer CV can leave fewer than five examples of a class.
-        cv = StratifiedKFold(n_splits=min(5, int(counts.min())), shuffle=True, random_state=self.random_state)
+        if len(counts) < 2:
+            raise ValueError("Error: SVM probability calibration requires at least two classes.")
         svc_params = self.get_params(deep=False)
         # Never pass sklearn's deprecated probability parameter, including False.
         svc_params.pop("probability")
-        self.calibrator_ = CalibratedClassifierCV(SVC(**svc_params), cv=cv, ensemble=False, n_jobs=1)
+        # Stratified calibration needs two rows per class; a single-row class skips calibration for this fit.
+        self.calibrated_ = bool(counts.min() >= 2)
+        if self.calibrated_:
+            # Halving and outer CV can leave fewer than five examples of a class.
+            cv = StratifiedKFold(n_splits=min(5, int(counts.min())), shuffle=True, random_state=self.random_state)
+            self.calibrator_ = CalibratedClassifierCV(SVC(**svc_params), cv=cv, ensemble=False, n_jobs=1)
+        else:
+            logging.getLogger(__name__).debug(
+                "SVM probability calibration skipped: a class has a single row; using uncalibrated decision scores."
+            )
+            # One-vs-rest scores give one column per class, which the softmax fallback requires.
+            svc_params["decision_function_shape"] = "ovr"
+            self.calibrator_ = SVC(**svc_params)
         self.calibrator_.fit(X, y, sample_weight=sample_weight)
         self.classes_ = self.calibrator_.classes_
         self.n_features_in_ = self.calibrator_.n_features_in_
@@ -94,14 +109,26 @@ class CalibratedSVC(ClassifierMixin, BaseEstimator):
         return self
 
     def predict(self, X):
-        """Return the class with the highest calibrated probability."""
+        """Return the class with the highest probability (calibrated when calibration was possible)."""
         check_is_fitted(self, "calibrator_")
-        return self.calibrator_.predict(X)
+        # Models saved before the fallback existed have no calibrated_ flag and are always calibrated.
+        if getattr(self, "calibrated_", True):
+            return self.calibrator_.predict(X)
+        # Keep labels consistent with the fallback probabilities.
+        return self.classes_[self.predict_proba(X).argmax(axis=1)]
 
     def predict_proba(self, X):
-        """Return calibrated probabilities in classes_ order."""
+        """Return probabilities in classes_ order; uncalibrated fits use softmax-normalised decision scores."""
         check_is_fitted(self, "calibrator_")
-        return self.calibrator_.predict_proba(X)
+        if getattr(self, "calibrated_", True):
+            return self.calibrator_.predict_proba(X)
+        scores = np.asarray(self.calibrator_.decision_function(X), dtype=float)
+        if scores.ndim == 1:
+            # Binary SVC returns one signed score for classes_[1]; mirror it for classes_[0].
+            scores = np.column_stack([-scores / 2.0, scores / 2.0])
+        # Subtract the row maximum before exponentiating for numerical stability.
+        exponentials = np.exp(scores - scores.max(axis=1, keepdims=True))
+        return exponentials / exponentials.sum(axis=1, keepdims=True)
 
 
 class ContiguousLabelClassifier(ClassifierMixin, BaseEstimator):

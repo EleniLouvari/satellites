@@ -49,8 +49,13 @@ Probabilities use `CalibratedClassifierCV(SVC(), ensemble=False)` with sigmoid
 calibration instead of the deprecated `SVC(probability=True)` option. Internal
 stratified calibration uses up to five shuffled folds, seeded by `random_state`,
 and reduces the fold count for small classes. Each fit requires at least two
-classes and two samples per class, including within search subsamples and outer
-training folds. The base SVC is then refitted on all rows supplied to that fit.
+classes. Calibration needs two samples per class; when a class has a single row
+(common in the small, unstratified subsamples of the successive-halving search,
+especially with `label_balancing_method="none"`), that fit skips calibration and
+returns softmax-normalised SVC decision scores instead of failing the model. The
+fitted estimator records the path taken in `calibrated_`. The final refit on the
+full training data is calibrated whenever every class has at least two rows.
+The base SVC is then refitted on all rows supplied to that fit.
 Predicted labels follow the highest calibrated probability. Newly trained model
 probabilities and labels can therefore differ from the previous libsvm calibration.
 Existing saved models are not converted; retrain them to use this implementation.
@@ -143,6 +148,7 @@ config = ClassificationPipelineConfig(
     iqr_multiplier=1.5,
     # Works with the original input table as well as reshaped time-series data.
     fill_nulls=False,  # False excludes rows with null features from training; True fills them
+    exclude_outliers_from_training=False,  # True leaves is_outlier=True rows out of training; they are still predicted
     spatial_interpolation_method="nearest",  # None, nearest, idw, or kriging; used when fill_nulls=True
     spatial_interpolation_max_distance_in_meters=None,  # required for idw
     cv_ranking_method="score_minus_std",
@@ -198,6 +204,18 @@ final model in `run_predict` (the model pipelines impute remaining nulls).
 All-null feature columns are ignored for this check because they are rejected
 as features. IQR bounds, replacement counts, and
 `rows_excluded_from_training_with_nulls` are written to the check summary.
+
+Set `exclude_outliers_from_training=True` to treat EDA outliers the same way:
+rows with `is_outlier=True` get `excluded_from_training=True`, so they are left
+out of the train/test split, cross-validation, and the final refit, but
+`run_predict` still predicts them and they appear in `final_predictions` with
+all other parcels. The input must contain a boolean `is_outlier` column (a
+missing flag counts as not an outlier); otherwise `run_check` raises. The number
+of labeled rows removed is written to the check summary as
+`rows_excluded_from_training_as_outliers`. Every class must still have at least
+`cv_folds` non-outlier parcels. If `is_outlier` is also selected as a feature it
+becomes constant among the training rows and is dropped as a constant feature.
+The default is `False`; the option is independent of `inspection_include_outlier`.
 
 ML-ready satellite GeoParquet usage:
 

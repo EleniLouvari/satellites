@@ -48,6 +48,9 @@ class ClassificationPipelineConfig:
     spatial_interpolation_max_distance_in_meters: float | None = None
     spatial_interpolation_variogram_lags: int = 15
     spatial_interpolation_variogram_max_distance_in_meters: float | None = None
+    # When True, rows with is_outlier=True are left out of train/validation/test and the final refit,
+    # but are still predicted by the final model. Requires an is_outlier column in the input data.
+    exclude_outliers_from_training: bool = False
 
     # ================================================================================
     # Data Splitting & Cross-Validation
@@ -322,6 +325,7 @@ class ClassificationPipelineConfig:
             "lstm_require_complete_timesteps": "Error: lstm_require_complete_timesteps must be a bool.",
             "apply_iqr": "Error: apply_iqr must be a bool.",
             "fill_nulls": "Error: fill_nulls must be a bool.",
+            "exclude_outliers_from_training": "Error: exclude_outliers_from_training must be a bool.",
             "optimize_class_probabilities": "Error: optimize_class_probabilities must be a bool.",
             "rank_confidence_enabled": "Error: rank_confidence_enabled must be a bool.",
             "class_reliability_enabled": "Error: class_reliability_enabled must be a bool.",

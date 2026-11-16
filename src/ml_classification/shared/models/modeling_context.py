@@ -13,6 +13,8 @@ from shared.io import read_data
 
 # Rows flagged by the check step: kept for final prediction, excluded from train/validation/test.
 EXCLUDED_FROM_TRAINING_COLUMN = "excluded_from_training"
+# Boolean EDA flag; with exclude_outliers_from_training=True its True rows are flagged as excluded from training.
+OUTLIER_COLUMN = "is_outlier"
 
 
 def training_rows_mask(dataset: pd.DataFrame, config: ClassificationPipelineConfig) -> pd.Series:

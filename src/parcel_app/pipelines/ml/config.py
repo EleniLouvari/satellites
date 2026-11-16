@@ -121,6 +121,9 @@ GROUPS = (
             "id_column": "Column that identifies each parcel in the checks, reports and prediction table.",
             "exclude_target_values": "Classes to leave out completely, separated by commas (9999, 8888) or as a JSON "
             "list ([9999, 8888]). Parcels with these target values are neither trained on nor predicted.",
+            "exclude_outliers_from_training": "Leave parcels the selected EDA analysis flagged as outliers "
+            "(is_outlier = true) out of the train, validation and test sets and out of the final refit. They are still "
+            "predicted by the final model and appear in the prediction table with excluded_from_training = true.",
             "add_centroid_features": "Add each parcel's centroid coordinates (centroid_x, centroid_y, in metres) as two "
             "extra features, so models can learn regional patterns.",
             "enforce_unique_ids": "Stop the run when two rows share the same ID. Keep enabled: the pipeline expects one "

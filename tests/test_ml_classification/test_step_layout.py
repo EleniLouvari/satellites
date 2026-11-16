@@ -172,6 +172,63 @@ def test_numbered_steps_complete_resume_and_regenerate_reports(tmp_path, confide
         expect_true(Path(report["report"] if isinstance(report, dict) else report).is_file())
 
 
+@pytest.mark.parametrize("exclude_outliers", [False, True])
+def test_outliers_are_excluded_from_train_and_test_but_predicted_in_final_output(tmp_path, exclude_outliers):
+    """Outlier parcels skip train/test and the refit when requested, yet every parcel is predicted."""
+    rng = np.random.default_rng(42)
+    classes = np.tile(np.arange(3), 40)
+    data = pd.DataFrame(
+        {
+            "row_id": [f"parcel-{i}" for i in range(len(classes))],
+            "label": np.array([f"crop-{i}" for i in classes], dtype=object),
+            "feature": classes + rng.normal(0, 0.15, len(classes)),
+            "other_feature": rng.normal(size=len(classes)),
+            "is_outlier": np.arange(len(classes)) % 10 == 0,
+        }
+    )
+    data.loc[data.index[-6:], "label"] = None
+    outlier_ids = set(data.loc[data["is_outlier"], "row_id"])
+    labeled_outlier_ids = set(data.loc[data["is_outlier"] & data["label"].notna(), "row_id"])
+    config = ClassificationPipelineConfig(
+        project_dir=tmp_path / "run",
+        target_column="label",
+        feature_columns=["feature", "other_feature"],
+        cv_folds=2,
+        n_jobs=1,
+        selected_models=("logistic_regression", "decision_tree"),
+        max_search_candidates=2,
+        tune_params={
+            "logistic_regression": {"model__C": [1.0], "model__solver": ["lbfgs"]},
+            "decision_tree": {"model__max_depth": [3], "model__min_samples_leaf": [2]},
+        },
+        interpretability_top_models=0,
+        feature_importance_top_n=2,
+        inspection_scoring_enabled=False,
+        rank_confidence_enabled=False,
+        exclude_outliers_from_training=exclude_outliers,
+        open_html_report=False,
+        reset_project_dir_on_run_check=False,
+    )
+    summary = GeospatialClassificationPipeline(config).run_all(data)
+
+    expected_removed = len(labeled_outlier_ids) if exclude_outliers else 0
+    expect_equal(summary["check"]["rows_excluded_from_training_as_outliers"], expected_removed)
+    expect_equal(summary["check"]["rows_labeled"], int(data["label"].notna().sum()) - expected_removed)
+    train = joblib.load(config.prepare_dir / "train_dataset.joblib")
+    test = joblib.load(config.prepare_dir / "test_dataset.joblib")
+    modeled_ids = set(train["row_id"]) | set(test["row_id"])
+    expect_equal(len(modeled_ids), summary["check"]["rows_labeled"])
+    expect_equal(modeled_ids & outlier_ids, set() if exclude_outliers else labeled_outlier_ids)
+
+    # The final output still holds every parcel, outliers included, each with a prediction.
+    predictions = joblib.load(config.predict_dir / "final_predictions.joblib")
+    expect_equal(predictions["row_id"].tolist(), data["row_id"].tolist())
+    expect_true(predictions[config.prediction_column].notna().all())
+    flagged_ids = set(predictions.loc[predictions["excluded_from_training"].astype(bool), "row_id"])
+    expect_equal(flagged_ids, outlier_ids if exclude_outliers else set())
+    expect_equal(summary["predict"]["rows_filled"], 6)
+
+
 def test_sensitivity_uses_owned_result_plot_and_report_helpers(tmp_path):
     runner = ClassificationSensitivityRunner(tmp_path / "sensitivity")
     frame = runner._results_to_frame(
