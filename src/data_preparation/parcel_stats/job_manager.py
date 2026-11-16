@@ -646,7 +646,7 @@ class OpenEOJobManagerZonalStats(TileJobRetryMixin, OpenEOZonalStats):
                 spatial_extent=spatial_extent,
                 temporal_extent=self._openeo_temporal_extent(),
                 bands=[*required_sentinel2_bands, self.SENTINEL2_SCENE_CLASSIFICATION_BAND],
-                max_cloud_cover=self.SENTINEL2_MAX_SCENE_CLOUD_COVER,
+                max_cloud_cover=self.sentinel2_max_scene_cloud_cover,
             )
             # The planning/output CRS must not override the source raster projection.
             reflectance = sentinel2.filter_bands(list(required_sentinel2_bands)).resample_spatial(

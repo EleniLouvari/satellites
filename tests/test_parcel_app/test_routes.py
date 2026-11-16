@@ -69,6 +69,37 @@ def test_temporal_fill_block_rows_web_configuration():
             check_processing({**options, "temporal_fill_block_rows": value})
 
 
+def test_parcel_observation_check_defaults_on_only_with_filling():
+    """The web form enables the check by default and submits it only when gaps are filled."""
+    from parcel_app.pipelines.parcel_stats.config import check_processing, configuration
+
+    fields = {field["name"]: field for field in configuration(user={})["fields"]}
+    field = fields["require_parcel_observation"]
+    assert field["default"] is True
+    assert field["type"] == "boolean"
+    assert field["group"] == "filling"
+    assert field["enabled_when"] == {"fill_nulls": [True]}
+    options = {"start_date": "2024-01-01", "end_date": "2024-01-31", "fill_nulls": True, "require_parcel_observation": True}
+    assert check_processing(options)["require_parcel_observation"] is True
+    assert "require_parcel_observation" not in check_processing({**options, "fill_nulls": False})
+
+
+def test_sentinel2_max_scene_cloud_cover_web_configuration():
+    """The imagery panel exposes the Sentinel-2 scene cloud-cover limit and validates it."""
+    from parcel_app.pipelines.parcel_stats.config import check_processing, configuration
+
+    fields = {field["name"]: field for field in configuration(user={})["fields"]}
+    field = fields["sentinel2_max_scene_cloud_cover"]
+    assert field["default"] == 70
+    assert field["type"] == "number"
+    assert field["group"] == "imagery"
+    assert field["enabled_when"] == {}
+    options = {"start_date": "2024-01-01", "end_date": "2024-01-31", "sentinel2_max_scene_cloud_cover": 40}
+    assert check_processing(options)["sentinel2_max_scene_cloud_cover"] == 40
+    with pytest.raises(ValueError, match="integer"):
+        check_processing({**options, "sentinel2_max_scene_cloud_cover": 40.5})
+
+
 def test_public_config_hides_paths():
     """Only portable, non-secret configuration is returned to browsers."""
     from parcel_app.pipelines.parcel_stats.routes import public_run

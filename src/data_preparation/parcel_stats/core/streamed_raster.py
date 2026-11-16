@@ -16,53 +16,82 @@ LOCAL_RASTER_LOCK = RLock()
 # This targets one temporal strip payload, not total RAM including working copies and masks.
 TEMPORAL_BLOCK_BYTES = 64 * 1024**2
 TEMPORAL_CACHE_BYTES = 64 * 1024**2
+# Spatial edge of checkpoint chunks; parcel reads are ordered by these chunks.
+CHECKPOINT_CHUNK_PIXELS = 256
+# Per-variable netCDF chunk cache while parcel statistics read the final checkpoint.
+PARCEL_READ_CACHE_BYTES = 512 * 1024**2
 
 
 class StreamedRasterProcessing:
     """Keep raster payloads on disk and materialize only bounded working slices."""
 
-    def _read_parcel_pixels(self, checkpoint, name, indices, variable_index, geometry, transform):
-        """Read the pixels for a single parcel within the specified indices and geometry."""
-        # Configured periods are contiguous on the sorted acquisition axis. Basic
-        # slices avoid backend fancy-indexing copies and empty-index shape quirks.
-        interval = slice(int(indices[0]), int(indices[-1]) + 1) if len(indices) else slice(0, 0)
-        selected = checkpoint[name].isel(period=interval, variable=slice(variable_index, variable_index + 1))
-        window, mask, _ = self._mask_parcel_window(selected, geometry, transform)
-        if not len(indices):
-            return np.empty((0, 1, int(mask.sum())), dtype=selected.dtype)
-        return np.asarray(window)[:, :, mask]
+    @staticmethod
+    @contextmanager
+    def _parcel_read_chunk_cache(period_count, variable_count):
+        """Size the netCDF chunk cache so spatially adjacent parcels reuse checkpoint chunks.
+
+        netCDF-C applies the default cache to files opened afterwards, so this context must wrap
+        opening the final checkpoint. The previous default is restored on exit.
+        """
+        # Keep acquisition-only dependencies out of the shared source-neutral import path.
+        from netCDF4 import get_chunk_cache, set_chunk_cache
+
+        chunk_bytes = CHECKPOINT_CHUNK_PIXELS**2 * np.dtype("float32").itemsize
+        # One chunk per period and output, doubled for parcels that cross a chunk boundary.
+        footprint = 2 * period_count * variable_count * chunk_bytes
+        previous = get_chunk_cache()
+        # A prime hash size avoids collisions; zero preemption keeps fully read chunks for the next parcel.
+        set_chunk_cache(size=min(PARCEL_READ_CACHE_BYTES, max(1024**2, footprint)), nelems=10007, preemption=0)
+        try:
+            yield
+        finally:
+            set_chunk_cache(*previous)
+
+    @staticmethod
+    def _read_parcel_pixels(checkpoint, name, variable_index, rows, columns, mask):
+        """Read one output's parcel pixels for every stored period in a single request.
+
+        Returns an array of shape ``(period, parcel_pixel)``. One request per output replaces one
+        request per output and reporting period, which dominated the cost of large batches.
+        """
+        window = np.asarray(checkpoint[name].isel(variable=variable_index, y=rows, x=columns).values)
+        return window[:, mask]
 
     def _stream_parcel_statistics(self, checkpoint, geometry, transform, periods, groups, variables):
-        """Read a single parcel, output band and period at a time, including provenance."""
-        # Determine the mask for the parcel using an empty slice to avoid loading data.
-        _, mask, _ = self._mask_parcel_window(
-            checkpoint["cleaned"].isel(period=slice(0, 0), variable=slice(0, 1)), geometry, transform
+        """Read a single parcel and output band at a time across all periods, including provenance."""
+        # Rasterize the parcel once; every output and period reuses the same window and mask.
+        rows_slice, columns_slice, mask, _ = self._parcel_pixel_window(
+            checkpoint.sizes["y"], checkpoint.sizes["x"], geometry, transform
         )
         pixel_count = int(mask.sum())
         # Coverage counts value slots across all stored times and outputs, not just unique spatial cells.
         expected_count = pixel_count * checkpoint.sizes["period"] * len(variables)
         observed_count = temporal_count = spatial_count = 0
-        rows = []
-        for period, indices in zip(periods, groups):
-            row = {"period_start": period}
-            for variable_index, variable in enumerate(variables):
-                pixels = self._read_parcel_pixels(checkpoint, "cleaned", indices, variable_index, geometry, transform)
-                observed = self._read_parcel_pixels(
-                    checkpoint, "observed_mask", indices, variable_index, geometry, transform
-                ).astype(bool)
-                temporal = self._read_parcel_pixels(
-                    checkpoint, "temporal_filled_mask", indices, variable_index, geometry, transform
-                ).astype(bool)
+        # Configured periods are contiguous on the sorted acquisition axis, so basic slices select each group.
+        intervals = [slice(int(indices[0]), int(indices[-1]) + 1) if len(indices) else slice(0, 0) for indices in groups]
+        rows = [{"period_start": period} for period in periods]
+        for variable_index, variable in enumerate(variables):
+            window = (variable_index, rows_slice, columns_slice, mask)
+            all_pixels = self._read_parcel_pixels(checkpoint, "cleaned", *window)
+            all_observed = self._read_parcel_pixels(checkpoint, "observed_mask", *window).astype(bool)
+            all_temporal = self._read_parcel_pixels(checkpoint, "temporal_filled_mask", *window).astype(bool)
+            for row, interval in zip(rows, intervals):
+                pixels = all_pixels[interval].copy()
+                observed = all_observed[interval]
+                temporal = all_temporal[interval]
                 observed_count += int(observed.sum())
                 temporal_count += int(temporal.sum())
                 # Finite values with neither observation nor temporal provenance are attributed to spatial filling.
                 spatial_count += int((~observed & ~temporal & np.isfinite(pixels)).sum())
+                if self.require_parcel_observation:
+                    # A date with no observed parcel pixel would be described only by filled values
+                    # borrowed from other dates or neighbouring pixels, so it is excluded from the pool.
+                    pixels[~observed.any(axis=1)] = np.nan
                 # Pool pixels across acquisitions in the reporting interval before computing parcel statistics.
                 stats = self._reduce_local_pixels(pixels.reshape(1, -1))
                 for statistic, values in stats.items():
                     row[f"{variable}_{statistic}"] = float(values[0])
-                del pixels, observed, temporal
-            rows.append(row)
+            del all_pixels, all_observed, all_temporal
         metrics = {
             "intersected_pixel_count": pixel_count,
             "expected_pixel_count": expected_count,
@@ -89,7 +118,7 @@ class StreamedRasterProcessing:
                 coordinate = checkpoint.createVariable(name, str, (name,))
                 coordinate[:] = np.asarray(labels, dtype=object)
             # Single-time, single-variable chunks support layer writes and small parcel-window reads.
-            chunks = (1, 1, min(256, spatial_shape[0]), min(256, spatial_shape[1]))
+            chunks = (1, 1, min(CHECKPOINT_CHUNK_PIXELS, spatial_shape[0]), min(CHECKPOINT_CHUNK_PIXELS, spatial_shape[1]))
             for name, dtype in (("cleaned", "f4"), ("observed_mask", "u1"), ("temporal_filled_mask", "u1")):
                 variable = checkpoint.createVariable(name, dtype, dimensions, chunksizes=chunks)
                 variable.set_var_chunk_cache(size=1024**2, nelems=1009, preemption=0.75)

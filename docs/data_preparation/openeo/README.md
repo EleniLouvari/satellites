@@ -181,6 +181,7 @@ These parameters apply to both classes.
 | `parcel_id_field` | `"parcel_id"` | Unique parcel ID column name |
 | `sentinel2_bands` | `None` | `None` selects `B02`, `B03`, `B04`, `B05`, `B08`; `[]` disables standalone S2 bands; supported bands are `B01`, `B02`, `B03`, `B04`, `B05`, `B06`, `B07`, `B08`, `B8A`, `B09`, `B11`, `B12` |
 | `sentinel2_indices` | `None` | Any of `NDVI`, `NDWI`, `MNDWI`, `NDMI`, `NBR`, `GNDVI`, `EVI`, `SAVI`, `MSAVI`, `NDRE`, `PSRI`, `CI`; `None` or `[]` disables indices |
+| `sentinel2_max_scene_cloud_cover` | `70` | Integer percentage `0`–`100`; Sentinel-2 scenes with higher scene-level cloud cover are excluded at load time. Remaining clouds are still masked per pixel with SCL. Changing it changes the run signature, so cached outputs are not reused |
 | `sentinel1_bands` | `None` | Any of `VV`, `VH`; `None` or `[]` disables standalone Sentinel-1 band outputs unless an index requires them as sources |
 | `sentinel1_indices` | `None` | `R` = `VV / VH`; `RVI` = `4 * VH / (VV + VH)`; `None` or `[]` disables indices and source bands VV/VH are loaded automatically otherwise |
 | `sentinel1_orbit_direction` | `"BOTH"` | `ASCENDING`, `DESCENDING`, or `BOTH`; `BOTH` loads both directions without an orbit filter |
@@ -288,8 +289,8 @@ The openEO local processing path streams data through NetCDF checkpoints:
   can cross reporting-period boundaries as before.
 - Spatial filling and interpolation process complete individual layers. Indices
   are calculated one acquisition and output variable at a time.
-- Parcel statistics read one parcel window, band/index, and reporting period at
-  a time. A resumed final checkpoint is read in windows without loading either
+- Parcel statistics read one parcel window and band/index across all periods
+  at a time, visiting parcels by checkpoint chunk. A resumed final checkpoint is read in windows without loading either
   the complete raw or final cube.
 
 Files are closed on completion or failure. Temporary arrays are released between
@@ -329,6 +330,7 @@ rerunning to load the new implementation and release arrays held by the old run.
 | `temporal_fill_mode` | `"past_only"` | `past_only` carries the nearest earlier value; `bidirectional` uses closest earlier/later values |
 | `minimum_parcel_pixels` | `3` | Threshold for the output quality flag; small parcels are retained |
 | `minimum_observed_fraction_for_fill` | `0.20` | Minimum observed fraction for a raster-variable-period to be filled or used as a temporal source |
+| `require_parcel_observation` | `False` | Null a parcel's date and variable when none of its pixels were observed; with pooled acquisitions, unobserved acquisitions are left out of the period |
 | `interpolation_method` | `"nearest"` | Final interpolation method: raster-native `nearest`, `idw`, or `kriging` |
 | `interpolation_max_distance_in_meters` | `None` | Positive search distance in metres. Required for `idw`; optional cutoff for `nearest` (`None` = unlimited) |
 | `interpolation_variogram_lags` | `15` | Positive kriging variogram lag count |

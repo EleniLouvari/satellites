@@ -111,7 +111,15 @@ class ParcelStatisticsReducerMixin:
 
     def _mask_parcel_window(self, values: np.ndarray, geometry, transform):
         """Rasterize one parcel only within its clipped pixel bounding window."""
-        raster_height, raster_width = values.shape[-2:]
+        rows, columns, parcel_mask, parcel_transform = self._parcel_pixel_window(*values.shape[-2:], geometry, transform)
+        return (values[:, :, rows, columns].copy(), parcel_mask, parcel_transform)
+
+    def _parcel_pixel_window(self, raster_height: int, raster_width: int, geometry, transform):
+        """Return the clipped row/column slices, parcel mask and window transform for one geometry.
+
+        Parcels outside the raster receive a 1x1 window with an all-false mask, so callers can read
+        a valid (empty) selection without special cases.
+        """
         raw_window = from_bounds(*geometry.bounds, transform=transform)
         column_start = max(0, math.floor(raw_window.col_off))
         row_start = max(0, math.floor(raw_window.row_off))
@@ -120,7 +128,7 @@ class ParcelStatisticsReducerMixin:
 
         if column_start >= column_stop or row_start >= row_stop:
             empty_window = Window(col_off=0, row_off=0, width=1, height=1)
-            return (values[:, :, :1, :1].copy(), np.zeros((1, 1), dtype=bool), window_transform(empty_window, transform))
+            return slice(0, 1), slice(0, 1), np.zeros((1, 1), dtype=bool), window_transform(empty_window, transform)
 
         window = Window(col_off=column_start, row_off=row_start, width=column_stop - column_start, height=row_stop - row_start)
         parcel_transform = window_transform(window, transform)
@@ -131,4 +139,4 @@ class ParcelStatisticsReducerMixin:
             invert=True,
             all_touched=True,
         )
-        return (values[:, :, row_start:row_stop, column_start:column_stop].copy(), parcel_mask, parcel_transform)
+        return slice(row_start, row_stop), slice(column_start, column_stop), parcel_mask, parcel_transform

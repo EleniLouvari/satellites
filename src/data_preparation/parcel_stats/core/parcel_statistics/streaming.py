@@ -11,7 +11,7 @@ import xarray as xr
 
 from shared.io import read_data
 
-from ..streamed_raster import LOCAL_RASTER_LOCK
+from ..streamed_raster import CHECKPOINT_CHUNK_PIXELS, LOCAL_RASTER_LOCK
 
 
 class ParcelStatisticsStreamingMixin:
@@ -51,7 +51,10 @@ class ParcelStatisticsStreamingMixin:
             _, report_path = self._cleaning_checkpoint_paths(netcdf_path)
             raster_report = read_data(str(report_path))
 
-        with xr.open_dataset(final_path, cache=False) as final_checkpoint:
+        with (
+            self._parcel_read_chunk_cache(len(stream_context["periods"]), len(stream_context["variables"])),
+            xr.open_dataset(final_path, cache=False) as final_checkpoint,
+        ):
             rows = self._build_streamed_stat_rows(final_checkpoint, parcels, stream_context)
 
         result = pd.DataFrame(rows)
@@ -151,24 +154,40 @@ class ParcelStatisticsStreamingMixin:
     # the final tabular output for downstream reshape and modeling.
     def _build_streamed_stat_rows(self, final_checkpoint, parcels, stream_context):
         """Build parcel-period statistics rows from a streamed checkpoint."""
-        rows = []
         transform = stream_context["transform"]
         period_end_lookup = stream_context["period_end_lookup"]
         pixel_cell_area = abs(float(transform.a * transform.e - transform.b * transform.d))
-        for (_, parcel), (_, projected_parcel) in zip(parcels.iterrows(), stream_context["projected"].iterrows()):
-            parcel_id = str(parcel[self.PARCEL_ID_FIELD])
+        parcel_ids = parcels[self.PARCEL_ID_FIELD].astype(str).to_list()
+        geometries = stream_context["projected"].geometry.to_list()
+        parcel_rows_by_position = [[] for _ in parcel_ids]
+        # Visit parcels chunk by chunk so cached checkpoint chunks serve neighbours, then restore input order.
+        for position in self._spatial_parcel_order(stream_context["projected"], transform):
             parcel_rows, fill_metrics = self._stream_parcel_statistics(
                 final_checkpoint,
-                projected_parcel.geometry,
+                geometries[position],
                 transform,
                 stream_context["result_periods"],
                 stream_context["period_groups"],
                 stream_context["variables"],
             )
-            rows.extend(
-                self._enrich_streamed_rows(parcel_rows, parcel_id, fill_metrics, pixel_cell_area, period_end_lookup)
+            parcel_rows_by_position[position] = self._enrich_streamed_rows(
+                parcel_rows, parcel_ids[position], fill_metrics, pixel_cell_area, period_end_lookup
             )
-        return rows
+        return [row for parcel_rows in parcel_rows_by_position for row in parcel_rows]
+
+    @staticmethod
+    def _spatial_parcel_order(projected, transform):
+        """Return parcel positions ordered by checkpoint chunk, then by pixel row and column."""
+        bounds = projected.geometry.bounds
+        x, y = bounds["minx"].to_numpy(), bounds["maxy"].to_numpy()
+        # The upper-left bound locates each parcel window; empty geometries sort first.
+        inverse = ~transform
+        columns = inverse.a * x + inverse.b * y + inverse.c
+        rows = inverse.d * x + inverse.e * y + inverse.f
+        rows = np.floor(np.nan_to_num(rows, nan=0.0))
+        columns = np.floor(np.nan_to_num(columns, nan=0.0))
+        # np.lexsort uses the last key as the primary key: chunk row, chunk column, row, column.
+        return np.lexsort((columns, rows, columns // CHECKPOINT_CHUNK_PIXELS, rows // CHECKPOINT_CHUNK_PIXELS))
 
     def _enrich_streamed_rows(self, parcel_rows, parcel_id, fill_metrics, pixel_cell_area, period_end_lookup):
         """Attach parcel identifiers and quality metrics to streamed period rows."""

@@ -58,6 +58,15 @@ class ZonalStatsConfiguration:
         return workers
 
     @staticmethod
+    def _validate_sentinel2_max_scene_cloud_cover(cloud_cover: int) -> int:
+        """Return an integer scene cloud-cover percentage between 0 and 100."""
+        if type(cloud_cover) is not int:
+            raise TypeError("Error: sentinel2_max_scene_cloud_cover must be an integer percentage.")
+        if not 0 <= cloud_cover <= 100:
+            raise ValueError("Error: sentinel2_max_scene_cloud_cover must be between 0 and 100.")
+        return cloud_cover
+
+    @staticmethod
     def _validate_temporal_fill_block_rows(block_rows: int | None) -> int | None:
         """Accept automatic strip sizing or an explicit positive integer row count."""
         if block_rows is None:
@@ -432,7 +441,7 @@ class ZonalStatsConfiguration:
             "target_resolution_metres": self.TARGET_RESOLUTION_METRES,
             "sentinel2_scene_classification_band": self.SENTINEL2_SCENE_CLASSIFICATION_BAND,
             "sentinel2_reflectance_scale_factor": self.SENTINEL2_REFLECTANCE_SCALE_FACTOR,
-            "sentinel2_max_scene_cloud_cover": self.SENTINEL2_MAX_SCENE_CLOUD_COVER,
+            "sentinel2_max_scene_cloud_cover": self.sentinel2_max_scene_cloud_cover,
             "sentinel2_invalid_scl_classes": self.SENTINEL2_INVALID_SCL_CLASSES,
             "sentinel2_buffered_scl_classes": self.SENTINEL2_BUFFERED_SCL_CLASSES,
             "remove_outliers": self.remove_outliers,

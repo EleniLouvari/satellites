@@ -108,8 +108,10 @@ original app_user_id and are available when that user signs in.
    require gap filling. IDW enables search distance; kriging enables variogram
    lags and distance; nearest requires neither. Disabled inputs keep their values
    while editing but are omitted from the saved effective processing request.
-   New forms default to `temporal_fill_mode=bidirectional` and
-   `temporal_reducer=none`. These web defaults do not overwrite existing saved
+   New forms default to `temporal_fill_mode=bidirectional`,
+   `require_parcel_observation=true` and `temporal_reducer=none`. The parcel
+   observation check is part of Gap filling, so it is sent only when gap filling
+   is enabled; it leaves a parcel's date out when none of its pixels were observed. These web defaults do not overwrite existing saved
    selections or change the CLI constructor defaults. Reporting intervals remain
    editable with reducer `none` because they still define the output periods.
    **Temporal fill block rows** in Gap filling accepts a positive maximum row count,

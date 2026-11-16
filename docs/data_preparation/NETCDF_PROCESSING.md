@@ -214,6 +214,15 @@ acquisitions in the reporting interval, separately for each variable. For
 example, samples `[1, 2, 3, 4]` and `[10]` yield a pooled mean of 4 and median of
 3. Acquisitions with more valid pixels contribute more observations.
 
+With `require_parcel_observation=True`, a parcel's values for an acquisition or
+composite are used only if at least one of its pixels was observed for that
+variable. Otherwise the parcel's values for that date are treated as missing,
+even when filling produced values there. When acquisitions are pooled, each
+acquisition is checked separately, and a period with no observed acquisition
+gives missing statistics. Once a date passes this check, filled pixels on it
+are still included. The quality counts in section 4 still describe the whole
+cube and are not changed by this option.
+
 Indices are calculated before parcel reduction. Thus a parcel's mean NDVI is
 the mean of pixel NDVI values, not NDVI calculated from parcel-mean bands.
 
@@ -269,11 +278,17 @@ where one sensor has no observation. Zero expected slots produce null ratios.
 The code keeps raster checkpoints on disk to avoid loading the entire
 time-by-band cube at once. It reads individual band/time layers for cleaning,
 spatial blocks across all dates for temporal filling, and all physical bands
-for one time slice during index creation. Parcel statistics read one parcel,
-variable, and reporting period at a time.
+for one time slice during index creation. Parcel statistics read one parcel
+window and output variable across all periods in a single request, rasterizing
+each parcel once. Parcels are visited in checkpoint-chunk order and the netCDF
+chunk cache is raised to up to 512 MiB per checkpoint variable while the final
+checkpoint is open, so neighbouring parcels reuse chunks already read. Output
+rows keep the input parcel order. Memory per parcel is about
+`dates * window_rows * window_columns * 6` bytes for one output.
 
 This reduces memory demand but still requires complete spatial layers and
-temporary arrays. By default, `temporal_fill_block_rows=None` selects spatial
+temporary arrays. The default is `temporal_fill_block_rows=2048` in both the
+Python API and Parcel Studio. `temporal_fill_block_rows=None` selects spatial
 blocks aligned to the checkpoint's chunks with a nominal 64 MiB float32 payload
 target across all dates. Wide rasters are split into column blocks. This replaces
 the previous 8 MiB full-width strips, which repeatedly accessed the same chunks.

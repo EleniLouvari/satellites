@@ -18,6 +18,9 @@ class BatchResultCache:
             "cleaning": self._cleaning_checkpoint_signature(),
             "statistics": self.spatial_statistics,
         }
+        # Added only when enabled so caches written before this option existed stay valid.
+        if self.require_parcel_observation:
+            configuration["require_parcel_observation"] = True
         return hashlib.sha256(json.dumps(configuration, sort_keys=True).encode()).hexdigest()[:16]
 
     def _batch_statistics_paths(self, netcdf_path):

@@ -104,6 +104,13 @@ class ParcelStatsBase(
     minimum_observed_fraction_for_fill:
         Minimum observed share required before a raster-variable-period may be
         imputed or used as a temporal filling source.
+    require_parcel_observation:
+        If ``True``, a parcel's statistic for a date is null when none of the
+        parcel's pixels were observed on that date for that output variable;
+        filled pixels alone never produce a value. With pooled acquisitions
+        (``temporal_reducer='none'``), each acquisition is checked separately and
+        unobserved ones are left out of the period pool. Defaults to ``False``.
+        Only meaningful with ``fill_nulls=True``.
     spatial_fill_window_sizes:
         Ordered spatial-mean windows applied after temporal filling. Defaults to
         ``(3, 5)``; append 7 and 9 only when wider smoothing is acceptable.
@@ -154,6 +161,10 @@ class ParcelStatsBase(
         ``None`` selects chunk-aligned blocks with a 64 MiB payload target.
         Column blocking limits wide reads. Working copies and temporary chunk
         caches use additional memory per worker; this is not a total RAM limit.
+    sentinel2_max_scene_cloud_cover:
+        Maximum scene-level cloud cover percentage (0-100) used to filter
+        Sentinel-2 acquisitions before pixel-level SCL masking. Defaults to
+        ``SENTINEL2_MAX_SCENE_CLOUD_COVER`` (70).
     openeo_username, openeo_password:
         Optional CDSE credentials used with the OIDC resource-owner-password
         flow. Both values must be supplied together. When omitted, the normal
@@ -275,6 +286,7 @@ class ParcelStatsBase(
         temporal_fill_mode: str = "past_only",
         minimum_parcel_pixels: int = 3,
         minimum_observed_fraction_for_fill: float = 0.20,
+        require_parcel_observation: bool = False,
         spatial_fill_window_sizes: tuple[int, ...] | list[int] = (3, 5, 7),
         keep_cleaned_checkpoint: bool = False,
         openeo_username: str | None = None,
@@ -282,7 +294,8 @@ class ParcelStatsBase(
         temporal_fill_window_sizes: tuple[int, ...] | list[int] | None = (3,),
         remove_nc_after_completion: bool = False,
         resume_completed_partitions: bool = False,
-        temporal_fill_block_rows: int | None = 512,
+        temporal_fill_block_rows: int | None = 2048,
+        sentinel2_max_scene_cloud_cover: int = SENTINEL2_MAX_SCENE_CLOUD_COVER,
     ) -> None:
         """Validate inputs and prepare a reusable extraction instance."""
         self.start_date, self.end_date = self._validate_dates(start_date, end_date)
@@ -317,6 +330,7 @@ class ParcelStatsBase(
         for name, value in (
             ("remove_nc_after_completion", remove_nc_after_completion),
             ("resume_completed_partitions", resume_completed_partitions),
+            ("require_parcel_observation", require_parcel_observation),
         ):
             if not isinstance(value, bool):
                 raise TypeError(f"Error: {name} must be a bool.")
@@ -326,6 +340,9 @@ class ParcelStatsBase(
         self.sentinel1_bands = self._validate_sentinel1_bands(sentinel1_bands)
         self.sentinel1_indices = self._validate_sentinel1_indices(sentinel1_indices)
         self.sentinel1_orbit_direction = self._validate_sentinel1_orbit_direction(sentinel1_orbit_direction)
+        self.sentinel2_max_scene_cloud_cover = self._validate_sentinel2_max_scene_cloud_cover(
+            sentinel2_max_scene_cloud_cover
+        )
         self._validate_sensor_selection()
         self.spatial_statistics = self._validate_spatial_statistics(spatial_statistics)
         (

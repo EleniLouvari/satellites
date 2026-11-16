@@ -455,7 +455,7 @@ def run_parallel_extractions(
         - parcel_id_field: name of parcel ID column
         - start_date, end_date: date range
         - working_epsg: projected EPSG code
-        - sentinel2_bands, sentinel2_indices: Sentinel-2 config
+        - sentinel2_bands, sentinel2_indices, sentinel2_max_scene_cloud_cover: Sentinel-2 config
         - sentinel1_bands, sentinel1_indices, sentinel1_orbit_direction: Sentinel-1 config
         - spatial_statistics: statistics to calculate
         - tile_size_metres, tile_buffer_metres: tiling parameters

@@ -435,8 +435,11 @@ all observed valid pixels without outlier exclusion or imputation.
 
 The engine reads one physical band/time layer at a time, fills temporal strips
 containing all dates, then processes complete spatial layers. Parcel reduction
-reads one parcel window, output variable, and reporting period at a time. Exact
-medians/percentiles still need that sample pool in memory. Within a process,
+reads one parcel window and output variable across all periods in a single
+request, rasterizing each parcel once. Parcels are visited by checkpoint chunk,
+with a netCDF chunk cache of up to 512 MiB per checkpoint variable, so neighbours
+reuse chunks; output rows keep the input parcel order. Exact medians/percentiles
+still need that sample pool in memory. Within a process,
 `LOCAL_RASTER_LOCK` serializes raster access; extra batch processes have separate
 memory requirements. The streamed design reduces RAM use by writing intermediate
 NetCDF data to disk.

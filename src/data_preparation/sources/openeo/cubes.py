@@ -86,7 +86,7 @@ class OpenEOCubePipeline:
                 self.SENTINEL2_COLLECTION,
                 temporal_extent=self._openeo_temporal_extent(),
                 bands=[*required_bands, self.SENTINEL2_SCENE_CLASSIFICATION_BAND],
-                max_cloud_cover=self.SENTINEL2_MAX_SCENE_CLOUD_COVER,
+                max_cloud_cover=self.sentinel2_max_scene_cloud_cover,
             ).filter_spatial(feature_collection)
             # Preserve the source projection; local parcel masks follow the downloaded NetCDF CRS.
             reflectance = sentinel2.filter_bands(list(required_bands)).resample_spatial(

@@ -35,8 +35,8 @@ services:
   worker:
     <<: *service
     command: [-m, parcel_app.jobs.worker, --lane, run]
-    cpus: ${PARCEL_WORKER_CPUS:-4}
-    mem_limit: ${PARCEL_WORKER_MEMORY:-16g}
+    cpus: ${PARCEL_WORKER_CPUS:-12}
+    mem_limit: ${PARCEL_WORKER_MEMORY:-52g}
   inspector:
     <<: *service
     command: [-m, parcel_app.jobs.worker, --lane, small]

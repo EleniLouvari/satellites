@@ -33,11 +33,19 @@ GROUP_FIELDS = {
         "spatial_statistics",
         "minimum_parcel_pixels",
     ],
-    "imagery": ["sentinel2_bands", "sentinel2_indices", "sentinel1_bands", "sentinel1_indices", "sentinel1_orbit_direction"],
+    "imagery": [
+        "sentinel2_bands",
+        "sentinel2_indices",
+        "sentinel2_max_scene_cloud_cover",
+        "sentinel1_bands",
+        "sentinel1_indices",
+        "sentinel1_orbit_direction",
+    ],
     "outliers": ["remove_outliers", "iqr_quantiles", "iqr_multiplier", "iqr_min_valid_pixels"],
     "filling": [
         "fill_nulls",
         "minimum_observed_fraction_for_fill",
+        "require_parcel_observation",
         "temporal_fill_mode",
         "temporal_fill_window_sizes",
         "temporal_fill_block_rows",
@@ -137,10 +145,12 @@ def configuration(user: dict = Depends(current_user)):
         "fit_tiles_to_parcels": True,
         "remove_nc_after_completion": True,
         "temporal_fill_mode": "bidirectional",
+        # Active only with fill_nulls=True; disabled fields are dropped by check_processing.
+        "require_parcel_observation": True,
         "temporal_reducer": "none",
         "spatial_fill_window_sizes": [3, 5, 7],
         "temporal_fill_window_sizes": [3],
-        "temporal_fill_block_rows": 1024,
+        "temporal_fill_block_rows": 2048,
         "openeo_job_options": {"executor-memory": "4G", "max-executors": 20},
         "openeo_max_executor_memory": "12G",
         "openeo_memory_reference_area_km2": 1000,
@@ -166,6 +176,10 @@ def configuration(user: dict = Depends(current_user)):
             "Tile area in km² that the configured executor memory is sized for. Larger tiles start with the heap "
             "doubled each time the area doubles, up to the maximum executor memory. Leave blank to disable."
         ),
+        "sentinel2_max_scene_cloud_cover": (
+            "Skip Sentinel-2 scenes whose overall cloud cover exceeds this percentage (0-100). "
+            "Remaining clouds are masked per pixel."
+        ),
         "temporal_period": "Reporting interval, e.g. 1M or 15D. Also applies when temporal reducer is none.",
         "temporal_reducer": "None retains individual acquisitions; other reducers composite observations per interval.",
         "iqr_quantiles": "Lower and upper quantiles as fractions, e.g. [0.25, 0.75].",
@@ -180,6 +194,9 @@ def configuration(user: dict = Depends(current_user)):
         ),
         "spatial_fill_window_sizes": "Neighborhood widths in pixels, e.g. [3, 5]. Applied in sequence.",
         "minimum_observed_fraction_for_fill": "Minimum observed coverage from 0 to 1 for a layer to receive or supply fills.",
+        "require_parcel_observation": (
+            "Leave a parcel's date empty when none of its pixels were observed that date; filled pixels alone give no value."
+        ),
         "interpolation_max_distance_in_meters": (
             "Maximum search distance in metres. Required for IDW; optional for nearest (blank means no limit)."
         ),

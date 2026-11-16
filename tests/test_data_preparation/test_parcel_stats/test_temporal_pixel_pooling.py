@@ -235,6 +235,24 @@ def test_temporal_fill_block_rows_rejects_invalid_values(tmp_path, block_rows):
     expect_false(output.exists())
 
 
+@pytest.mark.parametrize("cloud_cover", [-1, 101, True, 50.5, "70"])
+def test_sentinel2_max_scene_cloud_cover_rejects_invalid_values(tmp_path, cloud_cover):
+    """Reject invalid scene cloud-cover limits before creating output directories."""
+    output = tmp_path / "invalid"
+    with pytest.raises((TypeError, ValueError), match="sentinel2_max_scene_cloud_cover"):
+        _extractor(output, sentinel2_max_scene_cloud_cover=cloud_cover)
+    expect_false(output.exists())
+
+
+def test_sentinel2_max_scene_cloud_cover_changes_run_signature(tmp_path):
+    """Scene filtering changes downloaded imagery, so it must invalidate cached results."""
+    default = _extractor(tmp_path / "default")
+    expect_equal(default.sentinel2_max_scene_cloud_cover, OpenEOZonalStats.SENTINEL2_MAX_SCENE_CLOUD_COVER)
+    strict = _extractor(tmp_path / "strict", sentinel2_max_scene_cloud_cover=30)
+    expect_equal(strict.sentinel2_max_scene_cloud_cover, 30)
+    expect_false(default._run_signature() == strict._run_signature())
+
+
 def test_temporal_fill_block_rows_preserves_cache_signatures(tmp_path):
     """Execution-only tuning can reuse previously calculated raster and batch caches."""
     extractor = _extractor(tmp_path, temporal_fill_block_rows=None)
@@ -403,3 +421,204 @@ def test_local_user_threads_serialize_raster_work_and_release_arrays(tmp_path, m
         second_result.result()
     expect_equal(entered, [1, 2])
     expect_true(all(reference() is None for reference in references))
+
+
+def _partially_observed_cube(tmp_path):
+    """Write acquisitions where the right-hand column is unobserved on 5 January and 10 February."""
+    nan = np.nan
+    return _write_cube(
+        tmp_path / "partial.nc",
+        ["2024-01-02", "2024-01-05", "2024-01-20", "2024-02-10"],
+        B04=[[[0, 10], [0, 10]], [[1, nan], [1, nan]], [[2, 4], [2, 4]], [[3, nan], [3, nan]]],
+    )
+
+
+@pytest.mark.parametrize("require", [False, True])
+def test_pooled_statistics_can_exclude_acquisitions_without_parcel_observations(tmp_path, require):
+    """Filled-only acquisitions leave the pool, while partially observed ones keep their fills."""
+    extractor = _extractor(
+        tmp_path,
+        sentinel2_bands=["B04"],
+        sentinel2_indices=[],
+        fill_nulls=True,
+        temporal_fill_mode="past_only",
+        require_parcel_observation=require,
+    )
+    result, _ = extractor._calculate_local_statistics(_partially_observed_cube(tmp_path), extractor.parcels, 1)
+    stats = result.set_index(["parcel_id", "period_start"])["B04_mean"]
+    # Without the check, 5 January's right column carries 10 forward from 2 January and 10 February carries 4.
+    expect_equal(stats["right", "2024-01-01"], pytest.approx(7.0 if require else 8.0))
+    if require:
+        expect_true(np.isnan(stats["right", "2024-02-01"]))
+    else:
+        expect_equal(stats["right", "2024-02-01"], pytest.approx(4.0))
+    # The whole parcel was observed on 10 February, so its temporally filled right column still counts.
+    expect_equal(stats["whole", "2024-02-01"], pytest.approx(3.5))
+    # Fill provenance continues to describe the cube, independent of the check.
+    right = result.loc[result.parcel_id == "right"].iloc[0]
+    expect_equal(right.temporal_filled_pixel_count, 4)
+
+
+@pytest.mark.parametrize("require", [False, True])
+def test_composite_statistics_can_exclude_periods_without_parcel_observations(tmp_path, require):
+    """A composite whose parcel pixels were all spatially filled becomes null when required."""
+    extractor = _extractor(
+        tmp_path,
+        temporal_reducer="median",
+        sentinel2_bands=["B04"],
+        sentinel2_indices=[],
+        fill_nulls=True,
+        temporal_fill_mode="past_only",
+        require_parcel_observation=require,
+    )
+    path = _write_cube(
+        tmp_path / "composites.nc",
+        ["2024-01-01", "2024-02-01", "2024-03-01"],
+        B04=[[[1, np.nan], [1, np.nan]], [[2, 6], [2, 6]], [[5, 5], [5, 5]]],
+    )
+    result, _ = extractor._calculate_local_statistics(path, extractor.parcels, 1)
+    right = result.loc[result.parcel_id == "right"].set_index("period_start")["B04_mean"]
+    # January's right column has no earlier date, so only spatial filling from the left column reaches it.
+    np.testing.assert_allclose(right, [np.nan if require else 1.0, 6.0, 5.0], equal_nan=True)
+
+
+def test_parcel_observation_check_changes_only_the_statistics_signature(tmp_path):
+    """Enabling the check recalculates statistics but reuses downloads and cleaned rasters."""
+    extractor = _extractor(tmp_path)
+    expect_false(extractor.require_parcel_observation)
+    signatures = (extractor._run_signature(), extractor._cleaning_checkpoint_signature())
+    statistics_signature = extractor._statistics_signature()
+    extractor.require_parcel_observation = True
+    expect_equal((extractor._run_signature(), extractor._cleaning_checkpoint_signature()), signatures)
+    expect_true(extractor._statistics_signature() != statistics_signature)
+
+
+def test_parcel_observation_check_rejects_non_boolean_values(tmp_path):
+    """Reject truthy strings before creating output directories."""
+    output = tmp_path / "invalid"
+    with pytest.raises(TypeError, match="require_parcel_observation"):
+        _extractor(output, require_parcel_observation="yes")
+    expect_false(output.exists())
+
+
+def _gridded_cube(tmp_path, size=12):
+    """Write a reproducible gap-filled cube on a 10 m grid with several dates per month."""
+    generator = np.random.default_rng(7)
+    times = ["2024-01-03", "2024-01-15", "2024-01-28", "2024-02-09", "2024-03-02", "2024-03-20"]
+    red = generator.uniform(1, 50, (len(times), size, size)).astype("float32")
+    nir = generator.uniform(60, 120, (len(times), size, size)).astype("float32")
+    # Remove a third of the observations so temporal and spatial fills both contribute provenance.
+    red[generator.random(red.shape) < 0.33] = np.nan
+    nir[generator.random(nir.shape) < 0.33] = np.nan
+    centres = np.arange(size) * 10.0 + 5.0
+    dataset = xr.Dataset(
+        {"B04": (("t", "y", "x"), red), "B08": (("t", "y", "x"), nir)},
+        coords={"t": pd.to_datetime(times), "x": centres, "y": centres[::-1]},
+    ).rio.write_crs(3857)
+    path = tmp_path / "gridded.nc"
+    dataset.to_netcdf(path)
+    return path
+
+
+def _gridded_parcels():
+    """Parcels deliberately listed out of spatial order, including tiny, edge and outside shapes."""
+    return gpd.GeoDataFrame(
+        {"parcel_id": ["south_east", "north_west", "centre", "sliver", "edge", "outside"]},
+        geometry=[
+            box(70.2, 0.5, 119.0, 40.0),
+            box(0.5, 80.0, 45.0, 119.5),
+            box(30.0, 30.0, 90.0, 90.0),
+            box(55.1, 55.1, 55.9, 64.9),
+            box(-20.0, 50.0, 12.0, 70.0),
+            box(500.0, 500.0, 520.0, 520.0),
+        ],
+        crs=3857,
+    )
+
+
+def _reference_parcel_statistics(extractor, final, parcels, context):
+    """Recompute statistics with one masked read per parcel, period and output (the previous algorithm)."""
+    expected = {}
+    for parcel_id, geometry in zip(parcels.parcel_id, context["projected"].geometry):
+        counts = {"observed": 0, "temporal": 0, "spatial": 0}
+        for period, indices in zip(context["result_periods"], context["period_groups"]):
+            interval = slice(int(indices[0]), int(indices[-1]) + 1) if len(indices) else slice(0, 0)
+            for variable_index, variable in enumerate(context["variables"]):
+                arrays = {}
+                for name in ("cleaned", "observed_mask", "temporal_filled_mask"):
+                    values = final[name].values[interval, variable_index : variable_index + 1]
+                    window, mask, _ = extractor._mask_parcel_window(values, geometry, context["transform"])
+                    arrays[name] = window[:, :, mask]
+                pixels = arrays["cleaned"].astype("float32")
+                observed = arrays["observed_mask"].astype(bool)
+                temporal = arrays["temporal_filled_mask"].astype(bool)
+                counts["observed"] += int(observed.sum())
+                counts["temporal"] += int(temporal.sum())
+                counts["spatial"] += int((~observed & ~temporal & np.isfinite(pixels)).sum())
+                if extractor.require_parcel_observation:
+                    pixels[~observed.any(axis=(1, 2))] = np.nan
+                for statistic, value in extractor._reduce_local_pixels(pixels.reshape(1, -1)).items():
+                    expected[(parcel_id, period, f"{variable}_{statistic}")] = float(value[0])
+        expected[(parcel_id, "counts")] = counts
+    return expected
+
+
+@pytest.mark.parametrize("require", [False, True])
+def test_single_read_per_output_matches_per_period_parcel_statistics(tmp_path, monkeypatch, require):
+    """Reading each output once per parcel reproduces the per-period statistics, provenance and row order."""
+    parcels = _gridded_parcels()
+    extractor = _extractor(
+        tmp_path,
+        parcels=parcels,
+        fill_nulls=True,
+        temporal_fill_window_sizes=(3,),
+        spatial_fill_window_sizes=(3, 5),
+        minimum_observed_fraction_for_fill=0.2,
+        require_parcel_observation=require,
+    )
+    path = _gridded_cube(tmp_path)
+    reads = []
+    original_read = extractor._read_parcel_pixels
+    monkeypatch.setattr(extractor, "_read_parcel_pixels", lambda *args: (reads.append(args[1]), original_read(*args))[1])
+    result, _ = extractor._calculate_local_statistics(path, extractor.parcels, 1)
+
+    with xr.open_dataset(path, decode_coords="all") as dataset:
+        context = extractor._build_stream_statistics_context(dataset, extractor.parcels)
+    with xr.open_dataset(extractor._final_checkpoint_path(path)) as final:
+        expected = _reference_parcel_statistics(extractor, final, extractor.parcels, context)
+
+    # One request per output array and parcel, independent of the number of reporting periods.
+    expect_equal(len(reads), 3 * len(context["variables"]) * len(parcels))
+    # Rows keep the input parcel order even though parcels are visited by checkpoint chunk.
+    expect_equal(result.parcel_id.drop_duplicates().to_list(), parcels.parcel_id.to_list())
+    statistic_columns = [column for column in result.columns if column.split("_")[0] in context["variables"]]
+    expect_equal(len(statistic_columns), len(context["variables"]) * len(extractor.spatial_statistics))
+    for row in result.itertuples(index=False):
+        for column in statistic_columns:
+            np.testing.assert_allclose(
+                getattr(row, column), expected[(row.parcel_id, row.period_start, column)], rtol=1e-6, equal_nan=True
+            )
+        counts = expected[(row.parcel_id, "counts")]
+        expect_equal(row.temporal_filled_pixel_count, counts["temporal"])
+        expect_equal(row.spatial_filled_pixel_count, counts["spatial"])
+    whole_counts = expected[("centre", "counts")]
+    expect_true(whole_counts["temporal"] > 0 and whole_counts["spatial"] > 0)
+
+
+def test_spatial_parcel_order_groups_parcels_by_checkpoint_chunk():
+    """Parcels are visited chunk row by chunk row, then by column inside each chunk row."""
+    from rasterio.transform import from_origin
+
+    transform = from_origin(0, 10_000, 10, 10)
+    # Upper-left pixels: (row 300, col 10), (row 5, col 300), (row 5, col 5), (row 200, col 100).
+    projected = gpd.GeoDataFrame(
+        geometry=[
+            box(100, 10_000 - 3_010, 120, 10_000 - 3_000),
+            box(3_000, 10_000 - 60, 3_020, 10_000 - 50),
+            box(50, 10_000 - 60, 70, 10_000 - 50),
+            box(1_000, 10_000 - 2_010, 1_020, 10_000 - 2_000),
+        ],
+        crs=3857,
+    )
+    order = OpenEOZonalStats._spatial_parcel_order(projected, transform)
+    expect_equal(order.tolist(), [2, 3, 1, 0])
