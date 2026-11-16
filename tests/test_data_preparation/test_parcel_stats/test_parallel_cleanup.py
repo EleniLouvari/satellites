@@ -1,5 +1,6 @@
 """Exercise cleanup with real spawned processes, raster files and durable caches."""
 
+import logging
 import multiprocessing
 import os
 from pathlib import Path
@@ -94,13 +95,30 @@ def test_four_cleanup_workers_preserve_checkpoints_and_failed_rasters(tmp_path, 
                 ])
                 assert [int(frame.batch_number.iloc[0]) for frame in results] == list(range(1, batch_count + 1))
 
-        if fail_save:
-            with pytest.raises(OSError, match="simulated checkpoint write failure"):
+        # Record every worker message re-created in this process, as the web event hook would see it.
+        forwarded = []
+        previous_factory = logging.getLogRecordFactory()
+
+        def factory(*args, **kwargs):
+            record = previous_factory(*args, **kwargs)
+            if ".worker." in record.name and record.name.endswith(".parcels"):
+                forwarded.append(record.getMessage())
+            return record
+
+        logging.setLogRecordFactory(factory)
+        try:
+            if fail_save:
+                with pytest.raises(OSError, match="simulated checkpoint write failure"):
+                    run()
+            else:
                 run()
-        else:
-            run()
+        finally:
+            logging.setLogRecordFactory(previous_factory)
 
     assert len(entries) == batch_count
+    # Parcel statistics run in spawned workers, yet each calculated batch is logged in the parent.
+    calculated = [message for message in forwarded if message.startswith("Calculated ")]
+    assert len(calculated) == batch_count
     pids = {int(path.with_suffix(".pid").read_text(encoding="utf-8")) for _, path, _ in entries}
     assert len(pids) == 4
     assert os.getpid() not in pids

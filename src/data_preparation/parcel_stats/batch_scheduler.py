@@ -3,7 +3,6 @@
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from contextlib import ExitStack
 from dataclasses import dataclass
-from multiprocessing import get_context
 from pathlib import Path
 from queue import Empty, Queue
 from threading import BoundedSemaphore, RLock
@@ -12,6 +11,7 @@ import openeo
 import pandas as pd
 from openeo.extra.job_management import FullDataFrameJobDatabase, create_job_db, get_job_db
 
+from data_preparation.parcel_stats.core.worker_logging import spawn_pool_logging
 from data_preparation.parcel_stats.job_manager import (
     OpenEOJobManagerZonalStats,
     _NetCDFTileJobManager,
@@ -208,8 +208,10 @@ def _drain_batches(shared, pinned, users_list, jobs_per_user, batch_workers=1):
     with ExitStack() as stack:
         # Spawn isolates NetCDF/HDF5 state even when called by the web worker or
         # when the first submission comes from an acquisition thread.
+        # Worker records are also forwarded to this process for caller logging hooks; the
+        # listener is entered first so the pool shuts down and flushes before it stops.
         local_executor = stack.enter_context(ProcessPoolExecutor(
-            max_workers=batch_workers, mp_context=get_context("spawn"),
+            max_workers=batch_workers, **stack.enter_context(spawn_pool_logging()),
         )) if batch_workers > 1 else None
         executor = stack.enter_context(ThreadPoolExecutor(max_workers=len(users_list) * jobs_per_user))
         futures = [executor.submit(worker, user, password) for user, password in users_list for _ in range(jobs_per_user)]

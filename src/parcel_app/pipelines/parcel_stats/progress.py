@@ -28,7 +28,8 @@ def event_logging(job, secrets, *, private_paths=()):
                 "acquisition"
                 if ".source" in record.name
                 else "local processing"
-                if any(s in record.name for s in ("raster", "statistic"))
+                # Filling and parcel-statistics loggers, including those forwarded from batch workers.
+                if any(s in record.name for s in (".filling", ".parcels", "raster", "statistic"))
                 else "orchestration"
             )
             try:

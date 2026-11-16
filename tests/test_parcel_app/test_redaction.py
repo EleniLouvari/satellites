@@ -107,3 +107,43 @@ def test_downloaded_log_keeps_scientific_values(tmp_path, monkeypatch):
     artifacts.register_diagnostics({"output_dir": str(tmp_path), "config": {}}, ["1"])
     log = next(path.read_text(encoding="utf-8") for kind, path in registered if kind == "log")
     assert log == "B11 1.5 1M password=[redacted] [redacted]\n"
+
+
+def test_event_logging_assigns_worker_scopes_to_local_processing(monkeypatch):
+    """Filling and parcel-statistics records, including forwarded worker records, are local processing."""
+    from contextlib import contextmanager
+
+    from parcel_app.pipelines.parcel_stats import progress
+
+    inserted = []
+
+    class FakeDb:
+        """Accept event inserts for a running job owned by this claim."""
+
+        @staticmethod
+        @contextmanager
+        def connection():
+            yield object()
+
+        @staticmethod
+        def one(*_args, **_kwargs):
+            return {"status": "running", "claim_token": "claim"}
+
+        @staticmethod
+        def execute(_sql, params, **_kwargs):
+            inserted.append(params[1:])
+
+    monkeypatch.setattr(progress, "db", FakeDb)
+    job = {"job_id": "job", "claim_token": "claim", "target_id": "run"}
+    names = {
+        "parcel_stats_pipeline.worker.94.abc.parcels": "local processing",
+        "parcel_stats_pipeline.worker.94.abc.filling": "local processing",
+        "parcel_stats_pipeline.abc.1.parcels": "local processing",
+        "parcel_stats_pipeline.abc.1.source": "acquisition",
+        "parcel_stats_pipeline.abc.1.orchestrator": "orchestration",
+    }
+    with progress.event_logging(job, []):
+        for name in names:
+            logger = logging.getLogger(name)
+            logger.makeRecord(name, logging.INFO, "test", 1, f"from {name}", (), None)
+    assert {message.removeprefix("from "): stage for stage, _level, message in inserted} == names

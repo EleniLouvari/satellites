@@ -356,7 +356,9 @@ stops the local run worker. Start the rebuilt services, refresh the UI, then
 resume the original interrupted analysis with the recovery checkbox. Do not
 duplicate the analysis or manually edit retry counters/configuration files.
 
-The UI shows actual stage events rather than an invented percentage or ETA. Some
+The UI shows actual stage events rather than an invented percentage or ETA.
+Cleaning, filling and parcel-statistics messages from parallel batch workers are
+forwarded to the run process and appear under *local processing*. Some
 events can be dropped under excessive log volume; complete sanitized pipeline logs
 are published after completion/failure. Native subprocess console output is not
 used as a source of downloadable logs. A finished openEO job is not final result

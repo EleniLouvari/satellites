@@ -68,7 +68,10 @@ radar inputs are selected.
 - `satellite_raster_filling.log`: cleaning and filling.
 - `satellite_parcel_statistics.log`: parcel aggregation and checkpoints.
 
-Workers add `.worker-<process-id>` to their individual file names.
+Workers add `.worker-<process-id>` to their individual file names. With
+`batch_workers > 1`, worker records are also forwarded to the parent process and
+logged again under the same logger name, without writing a second file entry, so
+caller logging hooks such as Parcel Studio's live events receive them.
 Acquisition code uses `source_logger`.
 Actual openEO backend connection and job messages identify that service.
 

@@ -13,7 +13,6 @@ import logging
 import os
 import traceback
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from multiprocessing import get_context
 from pathlib import Path
 from typing import ClassVar
 
@@ -26,6 +25,7 @@ from data_preparation.parcel_stats.core.parcel_batches import ParcelBatchPlanner
 from data_preparation.parcel_stats.core.parcel_statistics import ParcelStatisticsCalculator
 from data_preparation.parcel_stats.core.raster_cleaning import RasterCleaner
 from data_preparation.parcel_stats.core.streamed_raster import LOCAL_RASTER_LOCK
+from data_preparation.parcel_stats.core.worker_logging import forward_worker_logger, spawn_pool_logging
 
 
 class ParcelStatsBase(
@@ -440,7 +440,7 @@ class ParcelStatsBase(
         logger = logging.getLogger(f"{self.LOGGER_NAMESPACE}.worker.{process_id}.{output_key}.{scope}")
         base_path = Path(file_name)
         worker_name = f"{base_path.stem}.worker-{process_id}{base_path.suffix}"
-        return self._configure_logger_handlers(logger, self.output_dir / worker_name)
+        return forward_worker_logger(self._configure_logger_handlers(logger, self.output_dir / worker_name))
 
     def _create_worker_console_logger(self, scope: str) -> logging.Logger:
         """Create a console-only worker logger for scopes unused by local jobs."""
@@ -452,7 +452,7 @@ class ParcelStatsBase(
             logger.addHandler(handler)
         logger.setLevel(logging.INFO)
         logger.propagate = False
-        return logger
+        return forward_worker_logger(logger)
 
     # =========================================================================
     # Local batch execution and result orchestration
@@ -548,7 +548,8 @@ class ParcelStatsBase(
             workers = min(self.batch_workers, len(batches))
             # Partition scheduling can invoke this from a thread. Spawn avoids
             # inheriting locked NetCDF/HDF5 state from the parent process.
-            with ProcessPoolExecutor(max_workers=workers, mp_context=get_context("spawn")) as executor:
+            # Worker records are also forwarded to this process for caller logging hooks.
+            with spawn_pool_logging() as pool_options, ProcessPoolExecutor(max_workers=workers, **pool_options) as executor:
                 futures = {
                     executor.submit(process, path, batch, number): number
                     for number, batch, path in batches
