@@ -1,14 +1,24 @@
 import { useEffect, useRef, useState } from "react";
-import { api, type Run } from "../../api";
-import { Button, Notice } from "../../components/ui";
+import { api } from "../api";
+import { Button, Notice } from "./ui";
 
 /** Edit an analysis label independently of its processing configuration. */
-export default function RenameAction({
-  run,
+export default function RenameAction<T>({
+  id,
+  name: current,
+  path,
+  status,
   onRenamed,
+  noun = "analysis",
+  maxLength = 120,
 }: {
-  run: Run;
-  onRenamed: (run: Run) => void;
+  id: string;
+  name: string;
+  path: string;
+  status: string;
+  onRenamed: (row: T) => void;
+  noun?: string;
+  maxLength?: number;
 }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
@@ -24,7 +34,7 @@ export default function RenameAction({
     setBusy(true);
     setError("");
     try {
-      const renamed = await api<Run>(`/runs/${run.run_id}/name`, "PATCH", {
+      const renamed = await api<T>(path, "PATCH", {
         name: name.trim(),
       });
       onRenamed(renamed);
@@ -39,9 +49,9 @@ export default function RenameAction({
   return (
     <>
       <Button
-        disabled={busy || run.status === "deleting"}
+        disabled={busy || status === "deleting"}
         onClick={() => {
-          setName(run.name);
+          setName(current);
           setError("");
           setOpen(true);
         }}
@@ -52,7 +62,7 @@ export default function RenameAction({
         <dialog
           ref={dialog}
           className="confirm-dialog"
-          aria-labelledby={`rename-${run.run_id}`}
+          aria-labelledby={`rename-${id}`}
           onCancel={(e) => {
             if (busy) e.preventDefault();
             else setOpen(false);
@@ -64,13 +74,14 @@ export default function RenameAction({
               if (!busy && name.trim()) void save();
             }}
           >
-            <h2 id={`rename-${run.run_id}`}>Rename analysis</h2>
+            <h2 id={`rename-${id}`}>Rename {noun}</h2>
             <label>
-              Analysis name
+              {noun[0].toUpperCase() + noun.slice(1)} name
               <input
                 autoFocus
+                className="name-input"
                 required
-                maxLength={120}
+                maxLength={maxLength}
                 value={name}
                 disabled={busy}
                 onChange={(e) => setName(e.target.value)}
@@ -84,7 +95,7 @@ export default function RenameAction({
               <Button
                 primary
                 type="submit"
-                disabled={busy || !name.trim() || run.status === "deleting"}
+                disabled={busy || !name.trim() || status === "deleting"}
               >
                 {busy ? "Saving…" : "Save name"}
               </Button>

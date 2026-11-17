@@ -12,6 +12,10 @@ for related guidance.
 
 ## 1. Complete flowchart
 
+For a step-by-step diagram that also lists every `EDAConfig` input with its
+default and the step it controls, open [WORKFLOW_DIAGRAM.html](WORKFLOW_DIAGRAM.html)
+in a browser.
+
 [Open PNG](EDA_PIPELINE_FLOWCHART.png)
 
 ![EDA pipeline from input data to diagnostics and reports](EDA_PIPELINE_FLOWCHART.png)
@@ -213,7 +217,7 @@ and known prior EDA diagnostics.
 | Normality / univariate outliers | Numeric features excluding target, configured ID and known diagnostic columns. |
 | VIF | First `max_features_per_plot` numeric candidates in plot order, default 30. |
 | PCA | First `max_multivariate_features` numeric columns in input order, default 15. |
-| Mahalanobis | First `max_multivariate_features` numeric features after excluding target, ID and known diagnostics. |
+| Outlier vote (all five methods) | Best-ranked `max_multivariate_features` numeric features in plot order, after excluding target, ID and known diagnostics. |
 
 VIF, PCA and Mahalanobis internally replace nonfinite values with missing, drop
 all-null columns, median-impute remaining gaps, remove constant columns and
@@ -242,7 +246,7 @@ The flag records the majority decision, not a combined confidence estimate.
 Individual nullable votes and counts are stored in `eda_outlier_*` columns;
 Mahalanobis distance and p-value remain separate diagnostics.
 The outlier table retains `row_position` and `source_index` for tracing records.
-`multivariate_features_used` records the requested scoring subset; constant and
+`multivariate_features_used` records the requested scoring subset in priority order; constant and
 all-null columns can subsequently be removed. The report includes method counts.
 
 These full-dataset diagnostics are not model predictors. Investigate flagged

@@ -54,6 +54,7 @@ def write_predict_report(config, final_df: pd.DataFrame, selection: dict[str, An
         "confidence_risk",
         "data_risk",
         "geometry_risk",
+        "geometry_complexity_level",
         "inspection_score",
         "inspection_need_base",
         "inspection_need",
@@ -263,7 +264,7 @@ def _build_inspection_sections(
         "text": (
             "This matrix shows how agreement with the farmer declaration changes the operational priority. "
             "Seven ordered priority bands come from direct rules. The numeric uncertainty score does not "
-            "determine the category or queue order. When inspection_include_outlier=True, is_outlier=True "
+            "determine the category; it orders parcels within a band in the queue. When inspection_include_outlier=True, is_outlier=True "
             "raises the matrix priority by one band, capped at Very High; Unknown stays unscored. "
             "False, missing, or unavailable outlier flags leave priority unchanged. The original matrix rule "
             "and inspection_need_before_outlier remain available alongside inspection_outlier_adjusted. "
@@ -283,7 +284,9 @@ def _build_inspection_sections(
             "combination. Cell support in the table should be considered before interpreting extreme rates. "
             f"Data reliability is LOW below {inspection_artifacts.summary['data_reliability_low_threshold']:.3f} and HIGH "
             f"above {inspection_artifacts.summary['data_reliability_medium_threshold']:.3f}; these are the thresholds "
-            "saved at scoring time, which percentile calibration derives from the predicted parcels."
+            "saved at scoring time, which percentile calibration derives from the predicted parcels. "
+            "Geometry quality is the saved geometry_complexity_level: in percentile mode a parcel is moderate or "
+            "complex only when both its percentile rank and its complexity score pass the configured thresholds."
         ),
         "table": inspection_artifacts.tables["inspection_evidence_quality_matrix"],
     }
@@ -343,7 +346,8 @@ def _build_inspection_sections(
         {
             "title": "Top-Priority Parcel Inspection Queue",
             "text": (
-                "The queue follows final inspection priority, preserving input order within each band. It preserves "
+                "The queue follows final inspection priority; within each band, parcels with the higher inspection "
+                "score come first, so the inspection weights set the visiting order. It preserves "
                 "the declared and predicted crops, all evidence components, check type, and human-readable reason "
                 "codes required for parcel-level follow-up."
             ),
@@ -659,6 +663,8 @@ def _build_output_links(config, confidence_artifacts, inspection_artifacts) -> l
         {"label": "Final Predictions Joblib", "path": config.predict_dir / "final_predictions.joblib"},
         {"label": "Final Predictions Preview CSV", "path": config.predict_dir / "final_predictions_preview.csv"},
     ]
+    if (config.predict_dir / "inspection_queue.csv").exists():
+        output_links.append({"label": "Full Inspection Queue CSV", "path": config.predict_dir / "inspection_queue.csv"})
     if confidence_artifacts is not None:
         output_links.extend(
             [

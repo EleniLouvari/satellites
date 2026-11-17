@@ -3,6 +3,10 @@
 Soft voting remains responsible for choosing the predicted class. This module
 uses raw selected-member probability ordering only to measure how strongly
 those members support that already-selected class.
+
+Rank agreement needs several voting models. With fewer than the configured
+minimum, the level is graded from the mean member probability of the predicted
+class instead, so a one- or two-model strategy still gets a valid confidence.
 """
 
 from __future__ import annotations
@@ -19,6 +23,13 @@ DEFAULT_RANK_CONFIDENCE_THRESHOLDS: dict[str, float] = {
     "medium_min_borda": 75.0,
     "medium_max_range": 4.0,
 }
+# Probability limits used only when there are too few voting models for rank agreement.
+DEFAULT_PROBABILITY_FALLBACK_THRESHOLDS: dict[str, float] = {
+    "fallback_high_min_probability": 0.80,
+    "fallback_medium_min_probability": 0.60,
+}
+PROBABILITY_FALLBACK_SOURCE = "probability_fallback"
+RANK_ONLY_SOURCE = "rank_only"
 
 
 def rank_confidence_thresholds_from_config(config: Any) -> dict[str, float]:
@@ -28,6 +39,9 @@ def rank_confidence_thresholds_from_config(config: Any) -> dict[str, float]:
         "high_max_range": float(getattr(config, "rank_confidence_high_max_range", 2.0)),
         "medium_min_borda": float(getattr(config, "rank_confidence_medium_min_borda", 75.0)),
         "medium_max_range": float(getattr(config, "rank_confidence_medium_max_range", 4.0)),
+        # The fallback reuses the probability review cut-off as its MEDIUM limit.
+        "fallback_high_min_probability": float(getattr(config, "prediction_high_confidence_threshold", 0.80)),
+        "fallback_medium_min_probability": float(getattr(config, "prediction_confidence_threshold", 0.60)),
     }
 
 
@@ -45,6 +59,49 @@ def _normalize_thresholds(thresholds: Mapping[str, Any] | None) -> dict[str, flo
     if values["high_max_range"] < 0 or values["medium_max_range"] < values["high_max_range"]:
         raise ValueError("Error: Rank-range thresholds must satisfy 0 <= HIGH <= MEDIUM.")
     return values
+
+
+def _normalize_fallback_thresholds(thresholds: Mapping[str, Any] | None) -> dict[str, float]:
+    """Return the probability-fallback limits; contracts saved before they existed use the defaults."""
+    configured = {} if thresholds is None else thresholds
+    values = {
+        name: float(configured.get(name, default)) for name, default in DEFAULT_PROBABILITY_FALLBACK_THRESHOLDS.items()
+    }
+    medium, high = values["fallback_medium_min_probability"], values["fallback_high_min_probability"]
+    if not (np.isfinite(medium) and np.isfinite(high) and 0.0 <= medium <= high <= 1.0):
+        raise ValueError("Error: Probability-fallback thresholds must satisfy 0 <= MEDIUM <= HIGH <= 1.")
+    return values
+
+
+def predicted_class_probability(probabilities: np.ndarray, predicted_class_indices: np.ndarray) -> np.ndarray:
+    """Return the mean member probability of each row's predicted class.
+
+    Every model row is normalized to sum to one first, so members that return unnormalized scores
+    carry the same weight as the others.
+    """
+    values = np.asarray(probabilities, dtype=np.float64)
+    normalized = values / values.sum(axis=2, keepdims=True)
+    rows = np.arange(values.shape[1])
+    return np.mean(normalized[:, rows, np.asarray(predicted_class_indices, dtype=int)], axis=0)
+
+
+def assign_probability_fallback_levels(
+    support: np.ndarray, thresholds: Mapping[str, Any] | None = None
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Grade confidence from predicted-class probability when rank agreement cannot be measured."""
+    configured = _normalize_fallback_thresholds(thresholds)
+    values = np.asarray(support, dtype=np.float64)
+    valid = np.isfinite(values)
+    high = valid & (values >= configured["fallback_high_min_probability"])
+    medium = valid & ~high & (values >= configured["fallback_medium_min_probability"])
+    levels = np.full(values.shape, "LOW", dtype=object)
+    levels[medium] = "MEDIUM"
+    levels[high] = "HIGH"
+    reasons = np.full(values.shape, "probability_fallback_low", dtype=object)
+    reasons[medium] = "probability_fallback_medium"
+    reasons[high] = "probability_fallback_high"
+    reasons[~valid] = "invalid_probability_evidence"
+    return levels.astype(str), valid, reasons.astype(str)
 
 
 def validate_model_probabilities(
@@ -230,7 +287,13 @@ def _calculate_validated_rank_confidence(
     if predicted_class_indices is None:
         predicted_class_indices = np.argmax(aggregate_scores, axis=1)
     features = calculate_rank_confidence_features(ranks, aggregate_scores, predicted_class_indices)
-    levels, valid, reasons = assign_confidence_levels(features, thresholds, minimum_models)
+    support = predicted_class_probability(probabilities, features["predicted_class_indices"])
+    # Rank agreement between one or two models says little; grade those strategies from probability instead.
+    use_fallback = probabilities.shape[0] < int(minimum_models)
+    if use_fallback:
+        levels, valid, reasons = assign_probability_fallback_levels(support, thresholds)
+    else:
+        levels, valid, reasons = assign_confidence_levels(features, thresholds, minimum_models)
     labels = np.asarray(class_names, dtype=str)
     return {
         **features,
@@ -238,6 +301,8 @@ def _calculate_validated_rank_confidence(
         "rank_confidence_level": levels,
         "rank_confidence_valid": valid,
         "rank_confidence_reason": reasons,
+        "rank_confidence_source": PROBABILITY_FALLBACK_SOURCE if use_fallback else RANK_ONLY_SOURCE,
+        "prediction_mean_probability": support,
         "runner_up_class": labels[features["runner_up_indices"]],
     }
 

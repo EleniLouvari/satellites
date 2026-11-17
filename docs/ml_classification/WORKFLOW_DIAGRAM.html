@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Self-contained on purpose: no scripts, no external fonts or images, so it opens offline and under the Parcel Studio CSP.
+     Source of truth: docs/ml_classification/WORKFLOW_DIAGRAM.html. web/public/help/ holds an identical copy for the Help dialog. -->
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ML Classification Workflow</title>
+<style>
+/* Layout idea: one vertical flow, five stage bands, each step a numbered card with the flags that control it. */
+:root {
+  --bg: #f4f6f5;
+  --surface: #ffffff;
+  --ink: #17242b;
+  --muted: #55666e;
+  --line: #c9d3d2;
+  --remote: #1f6f8b;      /* runs on the openEO backend */
+  --local: #3d7a4f;       /* runs on your machine */
+  --flag-bg: #fff3d6;
+  --flag-ink: #6b4a00;
+  --gate-bg: #e6eef7;
+  --gate-ink: #234a78;
+  --display: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --body: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, Consolas, "Cascadia Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #10181c; --surface: #18242a; --ink: #e4ecec; --muted: #9db0b5; --line: #33454c;
+    --remote: #6dbbd6; --local: #86c598; --flag-bg: #3d3110; --flag-ink: #f3d489;
+    --gate-bg: #1d2f45; --gate-ink: #a9c8ee; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #10181c; --surface: #18242a; --ink: #e4ecec; --muted: #9db0b5; --line: #33454c;
+  --remote: #6dbbd6; --local: #86c598; --flag-bg: #3d3110; --flag-ink: #f3d489;
+  --gate-bg: #1d2f45; --gate-ink: #a9c8ee; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 var(--body); }
+main { max-width: 1040px; margin: 0 auto; padding: 32px 20px 64px; display: flex; flex-direction: column; gap: 28px; }
+h1, h2, h3 { font-family: var(--display); font-weight: 600; text-wrap: balance; margin: 0; }
+h1 { font-size: 34px; line-height: 1.1; }
+h2 { font-size: 24px; }
+h3 { font-size: 17px; font-family: var(--body); }
+p { margin: 0; }
+.lede { color: var(--muted); max-width: 68ch; margin-top: 8px; }
+code, .flag, .gate { font-family: var(--mono); font-size: 12.5px; }
+code { background: var(--flag-bg); color: var(--flag-ink); padding: 1px 5px; border-radius: 4px; }
+
+.legend { display: flex; flex-wrap: wrap; gap: 8px 20px; font-size: 13px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+
+.stage { display: flex; flex-direction: column; gap: 0; }
+.stage-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; padding: 10px 14px; border-radius: 8px 8px 0 0; color: #fff; }
+.stage-head h2 { color: inherit; }
+.stage-head .where { font-size: 13px; opacity: .92; }
+.stage.local .stage-head { background: var(--local); }
+.stage.remote .stage-head { background: var(--remote); }
+:root[data-theme="dark"] .stage-head { color: #0c1215; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .stage-head { color: #0c1215; } }
+.stage-body { border: 1px solid var(--line); border-top: 0; border-radius: 0 0 8px 8px; padding: 18px 14px 14px; display: flex; flex-direction: column; }
+.stage + .handoff { margin: -14px 0; }
+.handoff { text-align: center; font-size: 13px; color: var(--muted); }
+.handoff b { display: block; font-size: 20px; line-height: 1; color: var(--ink); }
+
+.step { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; display: grid; grid-template-columns: 34px 1fr; gap: 4px 10px; }
+.step .n { grid-row: 1 / span 4; width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; font: 600 14px var(--display); color: #fff; background: var(--ink); }
+:root[data-theme="dark"] .step .n { color: #10181c; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .step .n { color: #10181c; } }
+.step > * { grid-column: 2; }
+.step > .n { grid-column: 1; }
+.step p, .step li { font-size: 14px; }
+.step ul, .step ol { margin: 4px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 3px; }
+.flags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.flag { background: var(--flag-bg); color: var(--flag-ink); padding: 2px 7px; border-radius: 4px; white-space: nowrap; }
+.gate { display: inline-block; background: var(--gate-bg); color: var(--gate-ink); padding: 2px 8px; border-radius: 999px; margin-top: 2px; justify-self: start; }
+.const { color: var(--muted); font-size: 13px; }
+
+.arrow { height: 26px; position: relative; }
+.arrow::before { content: ""; position: absolute; left: 31px; top: 0; bottom: 6px; width: 2px; background: var(--muted); }
+.arrow::after { content: ""; position: absolute; left: 26px; bottom: 0; border: 6px solid transparent; border-top: 8px solid var(--muted); border-bottom: 0; }
+
+.split { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.split .step { align-content: start; }
+.sub { border-left: 3px solid var(--line); padding-left: 12px; margin-top: 8px; display: flex; flex-direction: column; gap: 10px; }
+.figs { display: grid; grid-template-columns: 1.6fr 1fr; gap: 12px; margin-top: 10px; }
+figure { margin: 0; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 10px; overflow-x: auto; }
+figure svg { display: block; max-width: 100%; height: auto; margin: 0 auto; color: var(--ink); }
+figcaption { font-size: 12.5px; color: var(--muted); margin-top: 6px; }
+
+.tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; min-width: 640px; font-size: 13.5px; }
+th, td { text-align: left; vertical-align: top; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+th { font-weight: 600; font-size: 12.5px; color: var(--muted); background: var(--bg); }
+tr:last-child td { border-bottom: 0; }
+td:first-child, td:nth-child(2) { white-space: nowrap; }
+td:nth-child(2) { font-family: var(--mono); font-size: 12.5px; }
+td:last-child { text-align: center; color: var(--muted); font-variant-numeric: tabular-nums; }
+.ref { display: flex; flex-direction: column; gap: 18px; }
+.ref section { display: flex; flex-direction: column; gap: 8px; }
+.notes { background: var(--surface); border: 1px solid var(--line); border-left: 4px solid var(--flag-ink); border-radius: 8px; padding: 14px 16px; }
+.notes ul { margin: 6px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; font-size: 14px; }
+@media (max-width: 640px) {
+  .split, .figs { grid-template-columns: 1fr; }
+  h1 { font-size: 28px; }
+}
+
+.plain td:nth-child(2) { font-family: inherit; font-size: inherit; white-space: normal; }
+.plain td:last-child { text-align: left; color: inherit; }
+.plain td:first-child { white-space: nowrap; }
+.plain td.c, .plain th.c { text-align: center; }
+.band { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12.5px; white-space: nowrap; border: 1px solid var(--line); }
+.band.lo { background: var(--gate-bg); color: var(--gate-ink); }
+.band.hi { background: var(--flag-bg); color: var(--flag-ink); }
+.intable { margin-top: 8px; }
+</style>
+</head>
+<body>
+<main>
+<header>
+  <h1>ML classification workflow</h1>
+  <p class="lede">How <code>GeospatialClassificationPipeline</code> goes from one row per parcel to a predicted class, probabilities and a confidence level for every parcel, in five restartable steps. Read from the code in <code>src/ml_classification/</code>. Defaults are those of <code>ClassificationPipelineConfig</code>.</p>
+</header>
+
+<div class="legend">
+<span><span class="flag">flag = default</span> input that controls the step</span>
+<span><span class="gate">only if …</span> step is conditional</span>
+</div>
+
+<section class="stage local">
+<div class="stage-head"><h2>1 · Check</h2><span class="where"><code>run_check(df)</code> · writes <code>01_check/</code></span></div>
+<div class="stage-body">
+<div class="step" id="s1"><span class="n">1</span>
+<h3>Reset the project folder</h3>
+<p>By default every earlier output under <code>project_dir</code> is removed, so the five step folders always belong to one run.</p>
+<div class="flags"><span class="flag">project_dir</span><span class="flag">reset_project_dir_on_run_check = True</span><span class="flag">fail_on_cleanup_error = False</span></div>
+</div>
+<div class="arrow"></div>
+<div class="step" id="s2"><span class="n">2</span>
+<h3>Validate the table</h3>
+<p>One row per parcel. The ID column is cast to text (created from the index when missing) and must be unique. All feature columns and the target must exist. There must be at least two classes, and every class needs at least <code>cv_folds</code> labelled rows. Rows without a label are allowed: they are only predicted.</p>
+<div class="flags"><span class="flag">target_column</span><span class="flag">feature_columns</span><span class="flag">id_column = &quot;row_id&quot;</span><span class="flag">enforce_unique_ids = True</span><span class="flag">cv_folds = 5</span></div>
+</div>
+<div class="arrow"></div>
+<div class="step" id="s3"><span class="n">3</span>
+<h3>Blank out feature outliers (IQR)</h3>
+<span class="gate">only if apply_iqr = True</span>
+<p>For each numeric, non-boolean feature, values outside Q1 − k·IQR and Q3 + k·IQR are replaced with null. Nothing is deleted here; the nulls are handled in the next two steps.</p>
+<div class="flags"><span class="flag">apply_iqr = False</span><span class="flag">iqr_lower_quantile = 0.25</span><span class="flag">iqr_upper_quantile = 0.75</span><span class="flag">iqr_multiplier = 1.5</span></div>
+</div>
+<div class="arrow"></div>
+<div class="step" id="s4"><span class="n">4</span>
+<h3>Fill nulls from neighbouring parcels</h3>
+<span class="gate">only if fill_nulls = True</span>
+<p>Null values of numeric features are interpolated spatially from other parcels with <code>nearest</code>, <code>idw</code> or <code>kriging</code>. Needs a GeoDataFrame. A method is mandatory when filling is on; <code>idw</code> needs the maximum distance and <code>kriging</code> the variogram maximum distance.</p>
+<div class="flags"><span class="flag">fill_nulls = False</span><span class="flag">spatial_interpolation_method = None</span><span class="flag">spatial_interpolation_max_distance_in_meters = None</span><span class="flag">spatial_interpolation_variogram_lags = 15</span><span class="flag">spatial_interpolation_variogram_max_distance_in_meters = None</span></div>
+</div>
+<div class="arrow"></div>
+<div class="step" id="s5"><span class="n">5</span>
+<h3>Mark rows that must not be learned from</h3>
+<p>Two kinds of rows get <code>excluded_from_training = True</code>. They stay in the table and are still predicted at the end.</p><ul><li>Rows with a null that was already in the input, when <code>fill_nulls = False</code>. Values blanked by the IQR filter do not count: they stay null and each model fills them from its training folds (median for numeric features).</li><li>Rows with <code>is_outlier = True</code> (the EDA flag), when the outlier option is on. The column must then exist.</li></ul>
+<div class="flags"><span class="flag">fill_nulls = False</span><span class="flag">exclude_outliers_from_training = False</span></div>
+</div>
+<div class="arrow"></div>
+<div class="step" id="s6"><span class="n">6</span>
+<h3>Fix the active features and save</h3>
+<p>Features that are entirely null, or constant among the labelled rows, are dropped; the rest are the active features used by every later step. Numeric features are stored as <code>float32</code>, the others as categories. Saved: <code>input_dataset.joblib</code>, <code>check_summary.json</code>, <code>feature_profile.csv</code>, maps and the step report.</p>
+<div class="flags"><span class="flag">float_dtype = &quot;float32&quot;</span><span class="flag">max_map_geometries = 20000</span></div>
+</div>
+</div>
+</section>
+<div class="handoff"><b>↓</b>validated table, active features</div>
+<section class="stage local">
+<div class="stage-head"><h2>2 · Prepare</h2><span class="where"><code>run_prepare()</code> · writes <code>02_prepare/</code></span></div>
+<div class="stage-body">
+<div class="step" id="s7"><span class="n">7</span>
+<h3>Keep the rows that can be learned from</h3>
+<p>Labelled rows that are not excluded. Class labels are encoded to integers and the mapping is saved as <code>label_mapping.csv</code>.</p>
+</div>
+<div class="arrow"></div>
+<div class="step" id="s8"><span class="n">8</span>
+<h3>Hold out the test set</h3>
+<ul><li><b>Random stratified</b> (default): rows are drawn at random with the class shares preserved.</li><li><b>Spatial, by_row</b>: a grid is laid over the parcels; rows are assigned so that every class is in both sets and both sets cover as many grid cells as possible.</li><li><b>Spatial, by_group</b>: whole grid cells are held out, with the class shares kept approximately. Test parcels are then never neighbours of training parcels.</li></ul>
+<div class="flags"><span class="flag">test_size = 0.2</span><span class="flag">spatial_split = False</span><span class="flag">spatial_split_method = &quot;by_row&quot;</span><span class="flag">spatial_split_grid_size = 10</span><span class="flag">random_state = 42</span></div>
+</div>
+<div class="arrow"></div>
+<div class="step" id="s9"><span class="n">9</span>
+<h3>Build the cross-validation folds on the training set</h3>
+<p>Each validation fold targets 1 / <code>cv_folds</code> of the training rows and follows the same random or spatial logic as the split.</p><ul><li><code>disjoint</code>: every training row is validated exactly once.</li><li><code>overlapping</code>: each fold is drawn independently, so rows can repeat. A separate disjoint set of folds is then also saved for the out-of-fold probabilities of step 12.</li></ul>
+<div class="flags"><span class="flag">cv_folds = 5</span><span class="flag">cv_validation_method = &quot;disjoint&quot;</span></div>
+<p class="const">Saved: <code>train_dataset.joblib</code>, <code>test_dataset.joblib</code>, <code>labeled_dataset.joblib</code>, <code>prepare_summary.json</code> with the fold indices.</p>
+</div>
+</div>
+</section>
+<div class="handoff"><b>↓</b>train set, test set, folds</div>
+<section class="stage local">
+<div class="stage-head"><h2>3 · Train</h2><span class="where"><code>run_train()</code> · writes <code>03_train/</code> · training set only</span></div>
+<div class="stage-body">
+<div class="step" id="s10"><span class="n">10</span>
+<h3>Build one pipeline per candidate model</h3>
+<p><code>selected_models = None</code> means every available model: logistic_regression, linear_sgd_classifier, support_vector_machine, random_forest, extra_trees, gradient_boosting, decision_tree, knn, neural_network, bagging, bayesian. Added when possible: hist_gradient_boosting (no categorical features), xgboost and lightgbm (if installed), tensorflow_neural_network and keras_lstm (if TensorFlow is installed).</p><p>Each pipeline does its own preprocessing, fitted on training folds only:</p><ul><li>Numeric features: median imputation, plus standard scaling for the scale-sensitive models.</li><li>Categorical features: most-frequent imputation, then one-hot encoding with rare levels grouped.</li><li>Optional resampling of the minority classes placed after preprocessing: <code>random_oversample</code> or <code>smote</code>.</li></ul>
+<div class="flags"><span class="flag">selected_models = None</span><span class="flag">label_balancing_method = &quot;none&quot;</span><span class="flag">smote_k_neighbors = 5</span><span class="flag">rare_category_min_frequency = 10</span></div>
+<p class="const">keras_lstm reads the dated feature columns as a time sequence: lstm_temporal_statistics ("median",) · lstm_temporal_frequency "monthly" · lstm_require_complete_timesteps True · lstm_min_timesteps 6 · lstm_class_balancing_method "balanced_class_weight".</p>
+</div>
+<div class="arrow"></div>
+<div class="step" id="s11"><span class="n">11</span>
+<h3>Search the hyperparameters</h3>
+<p>Per model, a successive-halving random search (factor 2) over its grid in <code>tune_params</code>, scored with the primary metric on the folds of step 9. At most <code>max_search_candidates</code> combinations are tried. The best setting is refitted on the whole training set. A model that fails is recorded and the others continue.</p>
+<div class="flags"><span class="flag">max_search_candidates = 40</span><span class="flag">scoring_primary = &quot;f1_macro&quot;</span><span class="flag">tune_params</span><span class="flag">n_jobs = -1</span><span class="flag">random_state = 42</span></div>
+</div>
+<div class="arrow"></div>
+<div class="step" id="s12"><span class="n">12</span>
+<h3>Save out-of-fold probabilities</h3>
+<span class="gate">only if rank_confidence_enabled or optimize_class_probabilities</span>
+<p>With the winning setting, each training row is predicted by a model that did not see it (disjoint folds). These probabilities are the honest evidence later used for class reliability and probability optimisation.</p>
+</div>
+<div class="arrow"></div>
+<div class="step" id="s13"><span class="n">13</span>
+<h3>Rank the models</h3>
+<p><code>score_minus_std</code> ranks by mean fold score minus its standard deviation, which favours models that are stable across folds. <code>mean_score</code> ranks by the mean only. On a rerun, models that already have complete artifacts are reused unless retraining is forced.</p>
+<div class="flags"><span class="flag">cv_ranking_method = &quot;score_minus_std&quot;</span><span class="flag">force_retrain_models = False</span></div>
+<p class="const">Saved: one folder per model, <code>training_summary.csv</code>, <code>best_cv_fold_scores.csv</code>, <code>training_failed_models.csv</code>, <code>model_specs.json</code>.</p>
+</div>
+</div>
+</section>
+<div class="handoff"><b>↓</b>tuned models, CV ranking, OOF probabilities</div>
+<section class="stage local">
+<div class="stage-head"><h2>4 · Evaluate</h2><span class="where"><code>run_evaluate()</code> · writes <code>04_evaluate/</code></span></div>
+<div class="stage-body">
+<div class="step" id="s14"><span class="n">14</span>
+<h3>Score every model on the train and test sets</h3>
+<p>Accuracy, balanced accuracy, macro and weighted F1, weighted precision and recall, weighted ROC AUC, and a confusion matrix per model. The test set is used for reporting only.</p>
+<div class="flags"><span class="flag">scoring_primary = &quot;f1_macro&quot;</span><span class="flag">scoring_secondary = (&quot;balanced_accuracy&quot;, &quot;f1_weighted&quot;, &quot;accuracy&quot;)</span></div>
+</div>
+<div class="arrow"></div>
+<div class="step" id="s15"><span class="n">15</span>
+<h3>Explain the top models</h3>
+<p>Feature importances (or coefficient magnitudes) for the best models, and SHAP summaries on a sample of training rows when enabled.</p>
+<div class="flags"><span class="flag">interpretability_top_models = 3</span><span class="flag">feature_importance_top_n = 15</span><span class="flag">interpretability_include_shap = False</span><span class="flag">shap_sample_size = 500</span></div>
+</div>
+<div class="arrow"></div>
+<div class="step" id="s16"><span class="n">16</span>
+<h3>Choose the final strategy from the cross-validation ranking</h3>
+<ul><li><code>soft_voting</code>: the models that output probabilities, in CV rank order and limited to <code>top_voting_models</code>, vote by averaging their class probabilities.</li><li><code>single_model</code>: the best-ranked model alone. Also the fallback when fewer than two models are available.</li></ul><p>The choice never looks at the test set.</p>
+<div class="flags"><span class="flag">selection_type = &quot;soft_voting&quot;</span><span class="flag">top_voting_models = None</span></div>
+</div>
+<div class="arrow"></div>
+<div class="step" id="s17"><span class="n">17</span>
+<h3>Tune class probability multipliers</h3>
+<span class="gate">only if optimize_class_probabilities = True</span>
+<p>Starting from 1.0 for each class, a coordinate search tries each grid value per class on the averaged out-of-fold probabilities and keeps a change only if macro F1 improves and accuracy does not fall by more than the allowed drop. The multipliers rescale the probabilities, which are then renormalised.</p>
+<div class="flags"><span class="flag">optimize_class_probabilities = False</span><span class="flag">probability_multiplier_grid = (0.8, 1.0, 1.2, 1.5, 2.0)</span><span class="flag">probability_optimization_iterations = 2</span><span class="flag">probability_optimization_max_accuracy_drop = 0.02</span></div>
+</div>
+<div class="arrow"></div>
+<div class="step" id="s18"><span class="n">18</span>
+<h3>Freeze the confidence contract</h3>
+<p>Two things are fixed here and stored in <code>selection_summary.json</code>, so step 5 cannot drift with later setting changes:</p><ul><li>The rank-confidence thresholds of step 21, and the two probability limits used when too few models vote.</li><li><b>Class reliability</b>: from the out-of-fold soft-voting predictions, the precision of each predicted class. Fewer than the minimum predictions gives an invalid LOW; otherwise precision ≥ 0.80 is HIGH, ≥ 0.60 is MEDIUM, below is LOW.</li></ul>
+<div class="flags"><span class="flag">rank_confidence_enabled = True</span><span class="flag">class_reliability_enabled = True</span><span class="flag">class_reliability_minimum_oof_support = 100</span><span class="flag">class_reliability_high_min_precision = 0.80</span><span class="flag">class_reliability_medium_min_precision = 0.60</span></div>
+<p class="const">Saved: metric tables with and without voting, ranking and confidence tables, <code>selection_summary.json</code>, the step report and the final dashboard.</p>
+</div>
+</div>
+</section>
+<div class="handoff"><b>↓</b>frozen strategy and confidence contract</div>
+<section class="stage local">
+<div class="stage-head"><h2>5 · Predict</h2><span class="where"><code>run_predict()</code> · writes <code>05_predict/</code> · every row</span></div>
+<div class="stage-body">
+<div class="step" id="s19"><span class="n">19</span>
+<h3>Refit on all labelled rows and predict every parcel</h3>
+<p>Each selected model is rebuilt with its best hyperparameters and fitted on all rows that can be learned from (training and test together). It then outputs class probabilities for every row, including unlabelled and excluded ones.</p>
+</div>
+<div class="arrow"></div>
+<div class="step" id="s20"><span class="n">20</span>
+<h3>Decide the class</h3>
+<p>Member probabilities are averaged, the multipliers of step 17 are applied, and the class with the highest probability wins.</p>
+<div class="flags"><span class="flag">prediction_column = None</span><span class="flag">prediction_filled_column = None</span><span class="flag">probability_prefix = &quot;probability&quot;</span><span class="flag">prediction_confidence_column = &quot;prediction_max_probability&quot;</span></div>
+<p class="const">Columns: <code>&lt;target&gt;_prediction</code>, <code>predicted_class</code>, <code>probability_&lt;class&gt;</code>, <code>prediction_max_probability</code>, and <code>&lt;target&gt;_filled</code>, which keeps the declared label and uses the prediction only where the label is missing.</p>
+</div>
+<div class="arrow"></div>
+<div class="step" id="s21"><span class="n">21</span>
+<h3>Rate the confidence of each prediction by rank agreement</h3>
+<p>Each voting model ranks the classes for the parcel. A rank becomes a Borda score from 100 (first) to 0 (last), and the scores are averaged over the models. The rank range is the gap between the best and worst rank the models gave to the predicted class.</p><div class="tablewrap intable"><table class="plain"><thead><tr><th>Level</th><th>Mean Borda of predicted class</th><th>Rank range</th></tr></thead><tbody><tr><td>HIGH</td><td>≥ 90</td><td>≤ 2</td></tr><tr><td>MEDIUM</td><td>≥ 75</td><td>≤ 4</td></tr><tr><td>LOW</td><td colspan="2">everything else</td></tr></tbody></table></div><p>A parcel is also LOW when the Borda winner is tied or differs from the voted class.</p><p><b>Fewer voting models than the minimum</b> (for example a single-model run): rank agreement cannot be measured, so the level comes from the mean probability of the predicted class instead: HIGH from 0.80, MEDIUM from 0.60, otherwise LOW. These predictions stay valid; their reasons start with <code>probability_fallback_</code> and <code>prediction_confidence_source</code> is <code>probability_fallback</code>.</p><p><code>prediction_needs_review</code> is True for LOW or invalid confidence. If rank confidence is disabled, it is True when the highest probability is below the threshold.</p>
+<div class="flags"><span class="flag">rank_confidence_minimum_models = 3</span><span class="flag">rank_confidence_high_min_borda = 90.0</span><span class="flag">rank_confidence_high_max_range = 2.0</span><span class="flag">rank_confidence_medium_min_borda = 75.0</span><span class="flag">rank_confidence_medium_max_range = 4.0</span><span class="flag">prediction_confidence_threshold = 0.60</span><span class="flag">prediction_high_confidence_threshold = 0.80</span></div>
+</div>
+<div class="arrow"></div>
+<div class="step" id="s22"><span class="n">22</span>
+<h3>Assign the inspection priority</h3>
+<span class="gate">only if inspection_scoring_enabled = True</span>
+<p>Confidence, class reliability, the declared label, data reliability, geometry complexity and optionally the EDA outlier flag are combined into a seven-level priority and a check type. The inspection priority workflow page describes this step. It is skipped with a warning when the data-reliability or geometry column is missing.</p>
+<div class="flags"><span class="flag">inspection_scoring_enabled = True</span></div>
+</div>
+<div class="arrow"></div>
+<div class="step" id="s23"><span class="n">23</span>
+<h3>Save the results</h3>
+<p><code>final_predictions.joblib</code> (all columns), <code>final_predictions_preview.csv</code>, <code>member_probabilities.joblib</code>, <code>predict_summary.json</code>, the step report, the final dashboard and <code>report_index.html</code>. <code>recalculate_prediction_quality()</code> repeats steps 21 and 22 from the saved probabilities without refitting.</p>
+<div class="flags"><span class="flag">open_html_report = True</span><span class="flag">max_features_per_plot = 20</span><span class="flag">max_distribution_features = 9</span></div>
+</div>
+</div>
+</section>
+<aside class="notes">
+<h3>Things to know before choosing values</h3>
+<ul>
+<li><code>apply_iqr=True</code> keeps parcels in training: blanked values are imputed by the models. Only nulls already in the input exclude a parcel when <code>fill_nulls=False</code>.</li>
+<li>With fewer than 3 voting models the confidence comes from the predicted-class probability, which is less informative than rank agreement. Prefer at least 3 models in the vote.</li>
+<li>The test set never selects models, strategy or thresholds. Step 5 then refits on training and test rows together, so the test metrics describe models trained on less data than the final ones.</li>
+<li>Rank thresholds and class reliability are frozen in step 4. Changing them afterwards has no effect until step 4 is run again. The <code>inspection_*</code> settings are read in step 5 and can be re-applied with <code>recalculate_prediction_quality()</code>.</li>
+<li>Several models already use balanced class weights by themselves. <code>label_balancing_method</code> adds resampling on top of that.</li>
+<li><code>run_check</code> deletes earlier outputs by default. To continue a stopped run, call the next <code>run_*</code> step instead of starting again from the check.</li>
+</ul>
+</aside>
+
+<section class="ref">
+  <h2>Input flags and variables</h2>
+<section>
+<h3>Data and restart</h3>
+<div class="tablewrap"><table>
+<thead><tr><th>Flag</th><th>Default</th><th>Meaning</th><th>Step</th></tr></thead>
+<tbody>
+<tr><td><code>project_dir</code></td><td>required</td><td>Output folder; one sub-folder per step.</td><td>1</td></tr>
+<tr><td><code>target_column</code></td><td>required</td><td>Class label. Missing values mark rows that are only predicted.</td><td>2</td></tr>
+<tr><td><code>feature_columns</code></td><td>required</td><td>Model inputs. No duplicates; not the target, ID or geometry.</td><td>2, 6</td></tr>
+<tr><td><code>id_column</code></td><td>&quot;row_id&quot;</td><td>Unique parcel identifier, created from the index when absent.</td><td>2</td></tr>
+<tr><td><code>enforce_unique_ids</code></td><td>True</td><td>Stop when an ID appears more than once.</td><td>2</td></tr>
+<tr><td><code>reset_project_dir_on_run_check</code></td><td>True</td><td>Delete earlier outputs when the check starts.</td><td>1</td></tr>
+<tr><td><code>fail_on_cleanup_error</code></td><td>False</td><td>Stop instead of continuing when an old file cannot be removed.</td><td>1</td></tr>
+<tr><td><code>force_retrain_models</code></td><td>False</td><td>Retrain models that already have complete artifacts.</td><td>13</td></tr>
+<tr><td><code>random_state</code></td><td>42</td><td>Seed for the split, folds, search and models.</td><td>8 to 11</td></tr>
+</tbody>
+</table></div>
+</section>
+<section>
+<h3>Cleaning in the check step</h3>
+<div class="tablewrap"><table>
+<thead><tr><th>Flag</th><th>Default</th><th>Meaning</th><th>Step</th></tr></thead>
+<tbody>
+<tr><td><code>apply_iqr</code></td><td>False</td><td>Replace feature values outside the IQR fences with null.</td><td>3</td></tr>
+<tr><td><code>iqr_lower_quantile</code>, <code>iqr_upper_quantile</code></td><td>0.25, 0.75</td><td>Quantiles that define the IQR.</td><td>3</td></tr>
+<tr><td><code>iqr_multiplier</code></td><td>1.5</td><td>k of the fences.</td><td>3</td></tr>
+<tr><td><code>fill_nulls</code></td><td>False</td><td>True fills nulls spatially. False excludes rows with input nulls from training; IQR-blanked values are imputed by the models.</td><td>4, 5</td></tr>
+<tr><td><code>spatial_interpolation_method</code></td><td>None</td><td>nearest, idw or kriging. Required when fill_nulls is True.</td><td>4</td></tr>
+<tr><td><code>spatial_interpolation_max_distance_in_meters</code></td><td>None</td><td>Search radius. Required for idw.</td><td>4</td></tr>
+<tr><td><code>spatial_interpolation_variogram_lags</code></td><td>15</td><td>Variogram lags for kriging.</td><td>4</td></tr>
+<tr><td><code>spatial_interpolation_variogram_max_distance_in_meters</code></td><td>None</td><td>Variogram range limit. Required for kriging.</td><td>4</td></tr>
+<tr><td><code>exclude_outliers_from_training</code></td><td>False</td><td>Leave is_outlier=True rows out of training, test and the final refit; they are still predicted.</td><td>5</td></tr>
+</tbody>
+</table></div>
+</section>
+<section>
+<h3>Split and cross-validation</h3>
+<div class="tablewrap"><table>
+<thead><tr><th>Flag</th><th>Default</th><th>Meaning</th><th>Step</th></tr></thead>
+<tbody>
+<tr><td><code>test_size</code></td><td>0.2</td><td>Share of the labelled rows held out as the test set.</td><td>8</td></tr>
+<tr><td><code>spatial_split</code></td><td>False</td><td>Use the parcel geometry for the split and the folds.</td><td>8, 9</td></tr>
+<tr><td><code>spatial_split_method</code></td><td>&quot;by_row&quot;</td><td>by_row spreads both sets over the area; by_group holds out whole grid cells.</td><td>8, 9</td></tr>
+<tr><td><code>spatial_split_grid_size</code></td><td>10</td><td>Cells per side of the grid (10 gives 10 × 10).</td><td>8, 9</td></tr>
+<tr><td><code>cv_folds</code></td><td>5</td><td>Number of folds; also the minimum rows per class.</td><td>2, 9</td></tr>
+<tr><td><code>cv_validation_method</code></td><td>&quot;disjoint&quot;</td><td>disjoint validates each row once; overlapping draws folds independently.</td><td>9</td></tr>
+</tbody>
+</table></div>
+</section>
+<section>
+<h3>Models, search and scoring</h3>
+<div class="tablewrap"><table>
+<thead><tr><th>Flag</th><th>Default</th><th>Meaning</th><th>Step</th></tr></thead>
+<tbody>
+<tr><td><code>selected_models</code></td><td>None</td><td>Model names to train. None trains all available ones.</td><td>10</td></tr>
+<tr><td><code>tune_params</code></td><td>default grids</td><td>Hyperparameter grid per model; an entry replaces that model's default grid.</td><td>11</td></tr>
+<tr><td><code>max_search_candidates</code></td><td>40</td><td>Maximum hyperparameter combinations tried per model.</td><td>11</td></tr>
+<tr><td><code>n_jobs</code></td><td>-1</td><td>Parallel workers for the search. TensorFlow models run sequentially.</td><td>11</td></tr>
+<tr><td><code>scoring_primary</code></td><td>&quot;f1_macro&quot;</td><td>Metric optimised by the search and used to sort reports.</td><td>11, 14</td></tr>
+<tr><td><code>scoring_secondary</code></td><td>(&quot;balanced_accuracy&quot;, &quot;f1_weighted&quot;, &quot;accuracy&quot;)</td><td>Additional metrics reported.</td><td>14</td></tr>
+<tr><td><code>cv_ranking_method</code></td><td>&quot;score_minus_std&quot;</td><td>score_minus_std or mean_score.</td><td>13</td></tr>
+<tr><td><code>label_balancing_method</code></td><td>&quot;none&quot;</td><td>none, random_oversample or smote.</td><td>10</td></tr>
+<tr><td><code>smote_k_neighbors</code></td><td>5</td><td>Neighbours used by SMOTE.</td><td>10</td></tr>
+<tr><td><code>rare_category_min_frequency</code></td><td>10</td><td>Categorical levels rarer than this are grouped together.</td><td>10</td></tr>
+</tbody>
+</table></div>
+</section>
+<section>
+<h3>LSTM model</h3>
+<div class="tablewrap"><table>
+<thead><tr><th>Flag</th><th>Default</th><th>Meaning</th><th>Step</th></tr></thead>
+<tbody>
+<tr><td><code>lstm_temporal_statistics</code></td><td>(&quot;median&quot;,)</td><td>Which statistic columns form the sequence.</td><td>10</td></tr>
+<tr><td><code>lstm_temporal_frequency</code></td><td>&quot;monthly&quot;</td><td>Expected spacing of the dated columns; None disables the check.</td><td>10</td></tr>
+<tr><td><code>lstm_require_complete_timesteps</code></td><td>True</td><td>Require every variable at every time step.</td><td>10</td></tr>
+<tr><td><code>lstm_min_timesteps</code></td><td>6</td><td>Minimum sequence length.</td><td>10</td></tr>
+<tr><td><code>lstm_class_balancing_method</code></td><td>&quot;balanced_class_weight&quot;</td><td>none or balanced_class_weight.</td><td>10</td></tr>
+</tbody>
+</table></div>
+</section>
+<section>
+<h3>Final strategy and probabilities</h3>
+<div class="tablewrap"><table>
+<thead><tr><th>Flag</th><th>Default</th><th>Meaning</th><th>Step</th></tr></thead>
+<tbody>
+<tr><td><code>selection_type</code></td><td>&quot;soft_voting&quot;</td><td>soft_voting or single_model.</td><td>16</td></tr>
+<tr><td><code>top_voting_models</code></td><td>None</td><td>Keep only the best N models in the vote (at least 2). None keeps all.</td><td>16</td></tr>
+<tr><td><code>optimize_class_probabilities</code></td><td>False</td><td>Learn a multiplier per class from out-of-fold predictions.</td><td>17</td></tr>
+<tr><td><code>probability_multiplier_grid</code></td><td>(0.8, 1.0, 1.2, 1.5, 2.0)</td><td>Values tried per class.</td><td>17</td></tr>
+<tr><td><code>probability_optimization_iterations</code></td><td>2</td><td>Passes over all classes.</td><td>17</td></tr>
+<tr><td><code>probability_optimization_max_accuracy_drop</code></td><td>0.02</td><td>Largest accuracy loss accepted for a macro F1 gain.</td><td>17</td></tr>
+</tbody>
+</table></div>
+</section>
+<section>
+<h3>Confidence</h3>
+<div class="tablewrap"><table>
+<thead><tr><th>Flag</th><th>Default</th><th>Meaning</th><th>Step</th></tr></thead>
+<tbody>
+<tr><td><code>rank_confidence_enabled</code></td><td>True</td><td>Rate predictions by rank agreement between the voting models.</td><td>12, 18, 21</td></tr>
+<tr><td><code>rank_confidence_minimum_models</code></td><td>3</td><td>With fewer voting models the level comes from the predicted-class probability.</td><td>21</td></tr>
+<tr><td><code>rank_confidence_high_min_borda</code>, <code>rank_confidence_high_max_range</code></td><td>90.0, 2.0</td><td>Both must hold for HIGH.</td><td>21</td></tr>
+<tr><td><code>rank_confidence_medium_min_borda</code>, <code>rank_confidence_medium_max_range</code></td><td>75.0, 4.0</td><td>Both must hold for MEDIUM.</td><td>21</td></tr>
+<tr><td><code>class_reliability_enabled</code></td><td>True</td><td>Use out-of-fold class precision in the inspection rules. It never changes the confidence level.</td><td>18, 22</td></tr>
+<tr><td><code>class_reliability_minimum_oof_support</code></td><td>100</td><td>Out-of-fold predictions of a class needed for a valid reliability.</td><td>18</td></tr>
+<tr><td><code>class_reliability_high_min_precision</code>, <code>class_reliability_medium_min_precision</code></td><td>0.80, 0.60</td><td>Precision limits for HIGH and MEDIUM class reliability.</td><td>18</td></tr>
+<tr><td><code>prediction_confidence_threshold</code></td><td>0.60</td><td>Review limit on the highest probability when rank confidence is disabled; MEDIUM limit of the probability fallback.</td><td>21</td></tr>
+<tr><td><code>prediction_high_confidence_threshold</code></td><td>0.80</td><td>HIGH limit of the probability fallback used with too few voting models.</td><td>21</td></tr>
+</tbody>
+</table></div>
+</section>
+<section>
+<h3>Output names and reports</h3>
+<div class="tablewrap"><table>
+<thead><tr><th>Flag</th><th>Default</th><th>Meaning</th><th>Step</th></tr></thead>
+<tbody>
+<tr><td><code>prediction_column</code></td><td>None</td><td>Defaults to &lt;target&gt;_prediction.</td><td>20</td></tr>
+<tr><td><code>prediction_filled_column</code></td><td>None</td><td>Defaults to &lt;target&gt;_filled.</td><td>20</td></tr>
+<tr><td><code>probability_prefix</code></td><td>&quot;probability&quot;</td><td>Prefix of the per-class probability columns.</td><td>20</td></tr>
+<tr><td><code>prediction_confidence_column</code></td><td>&quot;prediction_max_probability&quot;</td><td>Column holding the highest class probability.</td><td>20</td></tr>
+<tr><td><code>prediction_confidence_level_column</code></td><td>&quot;prediction_confidence_level&quot;</td><td>Column holding HIGH, MEDIUM or LOW.</td><td>21</td></tr>
+<tr><td><code>prediction_review_column</code></td><td>&quot;prediction_needs_review&quot;</td><td>Column holding the review flag.</td><td>21</td></tr>
+<tr><td><code>inspection_scoring_enabled</code></td><td>True</td><td>Run the inspection priority step. Its other settings are on the inspection page.</td><td>22</td></tr>
+<tr><td><code>interpretability_top_models</code></td><td>3</td><td>Models explained in step 4.</td><td>15</td></tr>
+<tr><td><code>feature_importance_top_n</code></td><td>15</td><td>Features shown per importance chart.</td><td>15</td></tr>
+<tr><td><code>interpretability_include_shap</code>, <code>shap_sample_size</code></td><td>False, 500</td><td>Add SHAP summaries, computed on this many training rows.</td><td>15</td></tr>
+<tr><td><code>float_dtype</code></td><td>&quot;float32&quot;</td><td>Storage type of numeric features.</td><td>6</td></tr>
+<tr><td><code>max_features_per_plot</code>, <code>max_distribution_features</code>, <code>max_map_geometries</code></td><td>20, 9, 20000</td><td>Limits for charts and maps in the reports.</td><td>6, 23</td></tr>
+<tr><td><code>open_html_report</code></td><td>True</td><td>Open reports in the browser when written.</td><td>23</td></tr>
+</tbody>
+</table></div>
+</section>
+</section>
+</main>
+</body>
+</html>

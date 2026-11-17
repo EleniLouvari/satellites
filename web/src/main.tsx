@@ -101,6 +101,9 @@ function App() {
               {p}
             </button>
           ))}
+          <a className="guide-nav-link" href="/guide/index.html" target="_blank" rel="noopener">
+            <b aria-hidden="true">?</b> Pipeline guide <span className="sr-only">(opens in a new tab)</span>
+          </a>
         </nav>
         <div className="sidebottom">
           <div className="help">
@@ -147,7 +150,9 @@ function App() {
           <span className="topbar-actions">
             <Help
               initial={
-                page === "Exploratory data analysis"
+                page === "Copernicus accounts" || page === "New analysis"
+                  ? "openEO"
+                  : page === "Exploratory data analysis"
                   ? "EDA"
                   : page === "ML classification"
                     ? "ML classification"

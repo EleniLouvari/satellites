@@ -15,7 +15,7 @@ from parcel_app.core import db
 from parcel_app.core.security import current_user
 from parcel_app.core.storage import contained, eda_directory, sanitize_text, storage_available
 from parcel_app.jobs.queue import enqueue
-from parcel_app.pipelines.parcel_stats.routes import owned_run
+from parcel_app.pipelines.parcel_stats.routes import RunName, owned_run
 
 from .config import eda_schema, validate_eda
 
@@ -143,12 +143,13 @@ def submit_eda(run_id: UUID, body: EDASubmission, user: dict = Depends(current_u
             raise HTTPException(507, "Error: Server storage limit reached.")
         output = eda_directory(user["app_user_id"], run_id, body.request_id) / "output"
         row = db.one(
-            "INSERT INTO eda_runs(eda_id,run_id,app_user_id,selected_columns,config,input_sha256,output_dir) "
-            "VALUES(%s,%s,%s,%s,%s,%s,%s) RETURNING *",
+            "INSERT INTO eda_runs(eda_id,run_id,app_user_id,name,selected_columns,config,input_sha256,output_dir) "
+            "VALUES(%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",
             (
                 str(body.request_id),
                 str(run_id),
                 user["app_user_id"],
+                str(config.get("report_title") or "").strip() or "EDA analysis",
                 Json(body.columns),
                 Json(config),
                 artifact["sha256"],
@@ -166,6 +167,26 @@ def owned_eda(eda_id, user_id):
     if not row:
         raise HTTPException(404, "Error: EDA analysis not found.")
     return row
+
+
+@router.patch("/eda/{eda_id}/name")
+def rename_eda(eda_id: UUID, body: RunName, user: dict = Depends(current_user)):
+    """Rename an owned analysis without touching its saved settings, report or results."""
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(422, "Error: Give the analysis a name.")
+    with db.connection() as conn:
+        row = db.one(
+            "SELECT * FROM eda_runs WHERE eda_id=%s AND app_user_id=%s FOR UPDATE",
+            (str(eda_id), user["app_user_id"]),
+            conn=conn,
+        )
+        if not row:
+            raise HTTPException(404, "Error: EDA analysis not found.")
+        if row["status"] == "deleting":
+            raise HTTPException(409, "Error: This analysis is being deleted.")
+        db.execute("UPDATE eda_runs SET name=%s WHERE eda_id=%s", (name, str(eda_id)), conn=conn)
+        return public_eda(dict(row, name=name))
 
 
 @router.get("/eda/{eda_id}/report")

@@ -665,3 +665,47 @@ def test_outlier_votes_are_excluded_when_annotated_data_is_reused() -> None:
     expect_equal(second["summary"]["multivariate_features_used"], ["x", "y"])
     pd.testing.assert_series_equal(first["annotated_data"]["is_outlier"],
                                    second["annotated_data"]["is_outlier"])
+
+
+def test_multivariate_outlier_vote_uses_best_ranked_features_not_table_order() -> None:
+    random = np.random.default_rng(7)
+    rows = 300
+    target = np.repeat(["wheat", "maize", "cotton"], rows // 3)
+    signal = pd.Series(target).map({"wheat": 0.0, "maize": 3.0, "cotton": 6.0}).to_numpy()
+    data = pd.DataFrame(
+        {
+            # Uninformative columns come first in the table; the informative ones come last.
+            "noise_a": random.normal(size=rows),
+            "noise_b": random.normal(size=rows),
+            "strong": signal + random.normal(scale=0.2, size=rows),
+            "weaker": signal + random.normal(scale=2.0, size=rows),
+            "crop": target,
+        }
+    )
+    config = EDAConfig(
+        output_dir="unused",
+        target_column="crop",
+        target_task="classification",
+        max_multivariate_features=2,
+        include_html_report=False,
+        include_plots=False,
+        include_geospatial=False,
+        print_feature_selection_summary=False,
+    )
+
+    artifacts = build_eda_artifacts(data, config)
+
+    expect_equal(artifacts["summary"]["multivariate_features_used"], ["strong", "weaker"])
+    expect_equal(int(artifacts["annotated_data"]["eda_outlier_methods_available"].max()), 5)
+
+
+def test_multivariate_feature_columns_rank_then_keep_input_order_for_the_rest() -> None:
+    from eda.core.profiling_helpers import _multivariate_feature_columns
+
+    config = EDAConfig(output_dir="unused", target_column="crop", id_column="parcel_id", max_multivariate_features=3)
+    numeric = ["parcel_id", "a", "b", "c", "d", "crop"]
+
+    # Ranked features lead; target, ID and unknown names never enter; unranked features follow in input order.
+    expect_equal(_multivariate_feature_columns(numeric, config, ["c", "crop", "missing", "a"]), ["c", "a", "b"])
+    expect_equal(_multivariate_feature_columns(numeric, config), ["a", "b", "c"])
+    expect_equal(_multivariate_feature_columns(numeric, config, []), ["a", "b", "c"])

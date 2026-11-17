@@ -53,6 +53,7 @@ CHOICES = {
     "lstm_temporal_frequency": [None, "monthly"],
     "lstm_class_balancing_method": ["balanced_class_weight", "none"],
     "inspection_data_reliability_threshold_mode": ["percentile", "absolute"],
+    "inspection_geometry_threshold_mode": ["percentile", "absolute"],
 }
 def _when(rule, *names):
     """Give several dependent fields the same parent rule."""
@@ -104,10 +105,16 @@ ENABLED_WHEN = {
         "inspection_data_reliability_threshold_mode",
         "inspection_low_data_reliability_threshold",
         "inspection_medium_data_reliability_threshold",
-        "inspection_medium_geometry_risk_threshold",
-        "inspection_high_geometry_risk_threshold",
+        "inspection_geometry_threshold_mode",
+        "inspection_medium_geometry_complexity_threshold",
+        "inspection_high_geometry_complexity_threshold",
         "inspection_medium_score_threshold",
         "inspection_high_score_threshold",
+    ),
+    **_when(
+        {"inspection_scoring_enabled": [True], "inspection_geometry_threshold_mode": ["percentile"]},
+        "inspection_medium_geometry_risk_threshold",
+        "inspection_high_geometry_risk_threshold",
     ),
     **_when(
         {"inspection_scoring_enabled": [True], "inspection_data_reliability_threshold_mode": ["percentile"]},
@@ -133,7 +140,8 @@ GROUPS = (
             "(is_outlier = true) out of the train, validation and test sets and out of the final refit. They are still "
             "predicted by the final model and appear in the prediction table with excluded_from_training = true.",
             "add_centroid_features": "Add each parcel's centroid coordinates (centroid_x, centroid_y, in metres) as two "
-            "extra features, so models can learn regional patterns.",
+            "extra features, so models can learn regional patterns. Recalculates existing coordinates; "
+            "coordinates already selected as features are included only once.",
             "enforce_unique_ids": "Stop the run when two rows share the same ID. Keep enabled: the pipeline expects one "
             "row per parcel.",
             "float_dtype": "Numeric precision used for the features. float32 halves memory use; float64 keeps full precision.",
@@ -144,13 +152,15 @@ GROUPS = (
         "Data cleaning before training",
         "Optional outlier clipping and gap filling applied to the feature values during the Check step.",
         {
-            "apply_iqr": "Treat feature values outside the IQR fences as missing before training.",
+            "apply_iqr": "Treat feature values outside the IQR fences as missing before training. Unless they are "
+            "filled from neighbours, each model fills them with the training median; the parcel stays in training.",
             "iqr_lower_quantile": "Lower quantile of the IQR range (0.25 = first quartile).",
             "iqr_upper_quantile": "Upper quantile of the IQR range (0.75 = third quartile).",
             "iqr_multiplier": "How many IQRs beyond the quantiles a value may lie before it counts as an outlier. "
             "Larger values remove fewer points.",
-            "fill_nulls": "Fill missing feature values from neighbouring parcels. When disabled, parcels with missing "
-            "features are left out of training but are still predicted.",
+            "fill_nulls": "Fill missing feature values from neighbouring parcels. When disabled, parcels with values "
+            "missing in the input are left out of training but are still predicted; values removed by the IQR "
+            "filter are filled by the models instead.",
             "spatial_interpolation_method": "How gaps are filled: nearest parcel, inverse distance weighting (idw) or kriging.",
             "spatial_interpolation_max_distance_in_meters": "Farthest neighbour used for filling. Required for idw; "
             "blank means no limit for nearest.",
@@ -222,11 +232,14 @@ GROUPS = (
         "How each prediction is graded HIGH, MEDIUM or LOW confidence, and how reliable each predicted class is.",
         {
             "prediction_confidence_threshold": "Review cut-off for the highest soft-voting class probability (0-1). "
-            "Applied only when rank confidence is disabled.",
+            "Applied when rank confidence is disabled. With fewer voting models than the rank minimum it is also "
+            "the MEDIUM limit of the probability grade.",
+            "prediction_high_confidence_threshold": "With fewer voting models than the rank minimum, the mean "
+            "probability of the predicted class (0-1) from which a prediction is HIGH confidence.",
             "rank_confidence_enabled": "Grade every prediction by how strongly the voting models agree on its class, "
             "using the Borda score described above.",
-            "rank_confidence_minimum_models": "Fewest voting models needed for a Borda grade. With fewer models every "
-            "prediction is LOW (reason insufficient_models).",
+            "rank_confidence_minimum_models": "Fewest voting models needed for a Borda grade. With fewer models the "
+            "grade comes from the predicted-class probability instead (see Maximum probability check).",
             "rank_confidence_high_min_borda": "Lowest mean Borda score (0-100) of the predicted class that still counts as HIGH.",
             "rank_confidence_high_max_range": "Largest rank range (worst minus best rank of the predicted class across "
             "the models) still allowed for HIGH. 0 means every model ranked it the same.",
@@ -258,8 +271,9 @@ GROUPS = (
             "pixel values that were observed rather than filled. Inspection is skipped when the column is absent.",
             "inspection_geometry_complexity_column": "Column with the shape complexity score (0 = simple compact shape, "
             "larger = irregular or elongated). Inspection is skipped when the column is absent.",
-            "inspection_model_weight": "Weight w_model of the confidence risk in the diagnostic score.",
-            "inspection_data_weight": "Weight w_data of the data risk in the diagnostic score.",
+            "inspection_model_weight": "Weight w_model of the confidence risk in the inspection score, which orders "
+            "parcels within a priority band of the queue.",
+            "inspection_data_weight": "Weight w_data of the data risk in the inspection score.",
             "inspection_geometry_weight": "Weight w_geometry of the geometry risk. The three weights must sum to 1.",
             "inspection_data_reliability_threshold_mode": "percentile (default) lowers each data reliability "
             "threshold to the matching percentile of the predicted parcels when that percentile is lower, so normal "
@@ -274,11 +288,19 @@ GROUPS = (
             "allowed below the low threshold. 0.05 reports about the weakest 5% as LOW_DATA_RELIABILITY.",
             "inspection_medium_data_reliability_percentile": "Percentile mode only: share of predicted parcels (0-1) "
             "allowed at or below the medium threshold. 0.25 treats about the best 75% as high data reliability.",
-            "inspection_medium_geometry_risk_threshold": "Rule table and reason codes: geometry risk (0-1 percentile) "
-            "below this value counts as favourable. At or above it the parcel drops one band in the rules and gets "
-            "the reason MEDIUM_GEOMETRY_COMPLEXITY.",
-            "inspection_high_geometry_risk_threshold": "Reason codes only: geometry risk at or above this percentile is "
+            "inspection_geometry_threshold_mode": "percentile (default): a parcel's geometry counts as medium or high "
+            "complexity only when both its percentile and its complexity score pass the thresholds, so a run of "
+            "simple parcels is not penalised for ranking alone. absolute: only the complexity score thresholds apply.",
+            "inspection_medium_geometry_risk_threshold": "Percentile mode only: geometry risk (0-1 percentile) from "
+            "which a parcel can be medium complexity. Medium or high complexity drops a parcel one band in the rules "
+            "and adds the reason MEDIUM_GEOMETRY_COMPLEXITY.",
+            "inspection_high_geometry_risk_threshold": "Percentile mode only: geometry risk from which a parcel can be "
             "reported as HIGH_GEOMETRY_COMPLEXITY.",
+            "inspection_medium_geometry_complexity_threshold": "Shape complexity score from which a parcel can be medium "
+            "complexity. Compact parcels score about 0.1-0.3, 2:1 strips 0.35-0.5, 3:1 strips 0.5-0.7. Set 0 to use "
+            "the percentile alone.",
+            "inspection_high_geometry_complexity_threshold": "Shape complexity score from which a parcel can be high "
+            "complexity (reason code only). 5:1 strips score about 0.75-0.95.",
             "inspection_medium_score_threshold": "Diagnostic score only: a score at or above this value (0-100) gives "
             "inspection_need_base MEDIUM.",
             "inspection_high_score_threshold": "Diagnostic score only: a score at or above this value (0-100) gives "
@@ -339,9 +361,13 @@ SUBGROUPS = {
                 "saved in the prediction_confidence column for every parcel."),
                 ("It flags a prediction for review only when rank confidence is disabled. With rank confidence "
                 "enabled, the review flag comes from the Borda grade below and this value is kept as a diagnostic."),
+                ("When fewer models vote than the rank minimum (for example a single-model run), rank agreement "
+                "cannot be measured. The grade then comes from the mean probability of the predicted class: HIGH "
+                "from the high threshold, MEDIUM from the review cut-off, otherwise LOW. The reason codes start "
+                "with probability_fallback."),
             ),
             None,
-            ("prediction_confidence_threshold",),
+            ("prediction_confidence_threshold", "prediction_high_confidence_threshold"),
         ),
         (
             "borda",
@@ -354,8 +380,8 @@ SUBGROUPS = {
                 "before any class multipliers, so the score stays independent of probability tuning."),
                 ("Rank range is the worst minus the best rank the models gave the predicted class; 0 means "
                 "they all ranked it the same. A grade is HIGH or MEDIUM only when the predicted class is also the "
-                "unique Borda winner (no tie, no other class with more points) and enough models vote. Everything "
-                "else is LOW."),
+                "unique Borda winner (no tie, no other class with more points). Everything else is LOW. With fewer "
+                "models than the minimum, the probability grade above is used instead."),
                 ("Output: prediction_confidence_level (HIGH, MEDIUM or LOW) with the mean Borda, rank range and the "
                 "reason for the grade. LOW or invalid predictions are flagged for review, and the grade is an input "
                 "of the inspection priority rules and of the diagnostic inspection score."),
@@ -439,14 +465,15 @@ SUBGROUPS = {
         ),
         (
             "weights",
-            "Diagnostic score weights",
+            "Score weights (queue order within a band)",
             (
                 ("The three weights combine three risks, each scaled 0 (no concern) to 1 (strong concern), into one "
                 "0-100 inspection_score. Geometry risk is the percentile of the parcel's shape complexity among all "
                 "predicted parcels, so 0.9 means more complex than 90% of them."),
                 ("Output: inspection_score (higher = weaker evidence) and inspection_need_base (LOW, MEDIUM or HIGH "
                 "from the score thresholds below). The score does not depend on the declared class and does not set "
-                "the final priority. It is shown in the report to compare parcels and audit the rules."),
+                "the priority band, but it orders the queue inside each band: parcels with the higher score are "
+                "listed first, so the weights decide which parcels of equal priority are visited first."),
             ),
             ("confidence_risk = 0 (HIGH) · 0.5 (MEDIUM) · 1 (LOW)   from the rank confidence grade\n"
             "data_risk       = 1 − data reliability\n"
@@ -464,38 +491,70 @@ SUBGROUPS = {
             "thresholds",
             "Thresholds",
             (
-                ("Each threshold divides one input into bands. They serve three purposes. Only the medium data "
-                "reliability and medium geometry risk thresholds affect the final priority, through the rule table. "
-                "The low data reliability and high geometry risk thresholds only add explanation codes to "
-                "inspection_reasons. The two score thresholds only band the diagnostic score into inspection_need_base."),
-                ("In percentile mode the two data reliability thresholds adapt to the predicted parcels: the applied "
-                "value is the smaller of the threshold and the chosen percentile of the scores. The applied values "
-                "are saved with the predictions and shown in predict_summary.json."),
+                ("Data reliability and geometry have separate threshold modes, explained below. Their medium "
+                "boundaries affect the inspection priority through the rule table; low reliability and high geometry "
+                "boundaries add explanation codes to inspection_reasons."),
+                "The score thresholds below only set inspection_need_base. They do not set the final priority band.",
             ),
-            ("Threshold                       Compared with          Used in\n"
-            "low data reliability   (0.60)   data reliability       reasons\n"
-            "medium data reliability (0.80)  data reliability       rule table + reasons\n"
-            "medium geometry risk   (0.50)   geometry percentile    rule table + reasons\n"
-            "high geometry risk     (0.75)   geometry percentile    reasons\n"
-            "medium score           (25)     inspection_score       inspection_need_base\n"
-            "high score             (50)     inspection_score       inspection_need_base\n"
-            "\n"
-            "Rule table: high data = reliability > applied medium threshold;\n"
-            "            favourable geometry = geometry risk < medium threshold\n"
-            "\n"
-            "Percentile mode: applied threshold = min(threshold, percentile of the scores)\n"
-            "Example  scores with 25th percentile 0.72, medium threshold 0.80, medium percentile 0.25\n"
-            "         applied medium threshold = min(0.80, 0.72) = 0.72"),
+            "Score bands: LOW below medium; MEDIUM from medium up to high; HIGH at or above high.",
+            ("inspection_medium_score_threshold", "inspection_high_score_threshold"),
+        ),
+        (
+            "data_reliability",
+            "Data reliability",
+            (
+                ("Data reliability is the share of observed rather than filled pixel values (0-1); higher is better. "
+                "The rule table treats reliability as high only when it is strictly above the applied medium cutoff."),
+                ("Absolute: use the low and medium score cutoffs exactly as entered, for the same standard across "
+                "runs. For example, a medium cutoff of 0.80 requires more than 80% observed values for high reliability."),
+                ("Percentile (default): adapt each cutoff to the valid reliability scores of all predicted parcels "
+                "in this run. Use the smaller of the entered cutoff and the score at the chosen percentile. "
+                "A percentile of 0.25 means the 25th percentile (the lower quarter), not a reliability score of 0.25. "
+                "This can lower a cutoff in a cloudy season, but never raises it above the entered value."),
+                ("Example: with a medium cutoff of 0.80 and a 25th-percentile score of 0.72, percentile mode uses "
+                "0.72; absolute mode uses 0.80. A parcel scoring 0.75 therefore has high reliability only in "
+                "percentile mode. Percentiles do not guarantee an exact share in each band because of ties and "
+                "the fixed cutoff cap. Applied cutoffs are saved with predictions and in predict_summary.json."),
+            ),
+            ("Absolute: applied cutoff = entered cutoff\n"
+            "Percentile: applied cutoff = min(entered cutoff, score at chosen percentile)\n"
+            "High data reliability: score > applied medium cutoff"),
             (
                 "inspection_data_reliability_threshold_mode",
                 "inspection_low_data_reliability_threshold",
                 "inspection_medium_data_reliability_threshold",
                 "inspection_low_data_reliability_percentile",
                 "inspection_medium_data_reliability_percentile",
+            ),
+        ),
+        (
+            "geometry",
+            "Geometry",
+            (
+                ("Geometry complexity measures shape irregularity or elongation; higher means more complex. "
+                "Geometry risk is its percentile rank among all predicted parcels in this run (0-1). "
+                "A rank of 0.75 is around the 75th percentile; it is not a complexity score of 0.75."),
+                ("Absolute: compare only the complexity score with the medium and high complexity cutoffs. "
+                "Percentile rank cutoffs are ignored, so the same shape receives the same level across runs."),
+                ("Percentile (default): require BOTH the complexity cutoff and the percentile rank cutoff for "
+                "each level. This keeps simple shapes from being marked complex just because they rank highly "
+                "in a run of simple parcels. Unlike data reliability, this mode does not lower a score cutoff."),
+                ("Example: with medium rank 0.50 and medium complexity 0.60, a parcel with complexity 0.65 and "
+                "rank 0.40 is LOW in percentile mode but MEDIUM in absolute mode, assuming it is below the high "
+                "complexity cutoff. A parcel with complexity 0.40 remains LOW even at rank 0.90. "
+                "HIGH is checked first, then MEDIUM; otherwise the level is LOW. The result is saved as "
+                "geometry_complexity_level; LOW is favourable geometry in the rule table. "
+                "The weighted inspection score still uses geometry percentile rank in either mode."),
+            ),
+            ("Absolute: complexity >= complexity cutoff\n"
+            "Percentile: complexity >= complexity cutoff AND rank >= rank cutoff\n"
+            "Apply separately to HIGH and MEDIUM; otherwise LOW."),
+            (
+                "inspection_geometry_threshold_mode",
                 "inspection_medium_geometry_risk_threshold",
                 "inspection_high_geometry_risk_threshold",
-                "inspection_medium_score_threshold",
-                "inspection_high_score_threshold",
+                "inspection_medium_geometry_complexity_threshold",
+                "inspection_high_geometry_complexity_threshold",
             ),
         ),
     ),
@@ -616,7 +675,10 @@ def ml_schema(columns):
                 "description": text,
                 "collapsed": group not in OPEN_GROUPS,
                 "subgroups": [
-                    {"id": section, "label": label, "description": list(paragraphs), "formula": formula}
+                    {
+                        "id": section, "label": label, "description": list(paragraphs), "formula": formula,
+                        "parent": "thresholds" if group == "inspection" and section in {"data_reliability", "geometry"} else None,
+                    }
                     for section, label, paragraphs, formula, _ in SUBGROUPS.get(group, ())
                 ],
             }
@@ -683,7 +745,7 @@ def validate_ml(settings, features, available, *, geometry=True):
         raise ValueError("Error: Choose the target column to predict.")
     if identifier not in available or identifier == target:
         raise ValueError("Error: Choose an ID column that differs from the target.")
-    reserved = {target, identifier, *CENTROID_COLUMNS}
+    reserved = {target, identifier}
     if (
         not isinstance(features, list)
         or not features
@@ -711,6 +773,62 @@ def validate_ml(settings, features, available, *, geometry=True):
     return options
 
 
+# A re-run keeps the checked data and the split, so these groups and fields stay as they were.
+CHECK_PREPARE_GROUPS = {"data", "quality", "split"}
+# Listed in later groups but read by Check or Prepare: the input columns and the prepare-report limits.
+CHECK_PREPARE_FIELDS = {
+    "inspection_data_reliability_column",
+    "inspection_geometry_complexity_column",
+    "max_distribution_features",
+    "max_features_per_plot",
+    "max_map_geometries",
+}
+# Predict alone reads these groups; every other setting is used by Train or Evaluate.
+PREDICT_GROUPS = {"inspection", "output"}
+# Evaluate and Predict alone read these groups, so changing them keeps every trained model.
+EVALUATE_GROUPS = {"ensemble", "confidence", "interpretability", *PREDICT_GROUPS}
+# Train saves the out-of-fold probabilities Evaluate needs only while one of these is on.
+OOF_SETTINGS = ("optimize_class_probabilities", "rank_confidence_enabled")
+# A change to one of these makes every saved model stale.
+RETRAIN_ALL_WHEN = (
+    "max_search_candidates",
+    "scoring_primary",
+    "scoring_secondary",
+    "cv_ranking_method",
+    "label_balancing_method",
+    "smote_k_neighbors",
+    "rare_category_min_frequency",
+)
+LSTM_MODEL = "keras_lstm"
+
+
+def rerun_rules():
+    """Describe which settings a Train, Evaluate or Predict re-run may change and which changes force retraining."""
+    group_of = {name: group for group, _, _, members in GROUPS for name in members}
+    group_of |= {name: TUNING_GROUP["id"] for name in ml_defaults() if name.startswith(TUNE_PREFIX)}
+    later = [name for name, group in group_of.items() if group not in CHECK_PREPARE_GROUPS and name not in CHECK_PREPARE_FIELDS]
+    return {
+        "train": later,
+        "evaluate": [name for name in later if group_of[name] in EVALUATE_GROUPS],
+        "predict": [name for name in later if group_of[name] in PREDICT_GROUPS],
+        "retrain_all_when": list(RETRAIN_ALL_WHEN),
+        "retrain_model_when": {LSTM_MODEL: [name for name, group in group_of.items() if group == "lstm"]},
+    }
+
+
+def required_retrain(previous, current, rules=None):
+    """Return the selected models whose saved training no longer matches the new settings."""
+    rules = rules or rerun_rules()
+    models = current["selected_models"]
+    if any(previous.get(name) != current.get(name) for name in rules["retrain_all_when"]):
+        return set(models)
+    changed = {model for model in models if previous.get(f"{TUNE_PREFIX}{model}") != current.get(f"{TUNE_PREFIX}{model}")}
+    for model, names in rules["retrain_model_when"].items():
+        if model in models and any(previous.get(name) != current.get(name) for name in names):
+            changed.add(model)
+    return changed
+
+
 def _tuples(value):
     """Restore the tuples that JSON stored as lists, such as hidden layer sizes."""
     return tuple(_tuples(item) for item in value) if isinstance(value, list) else value
@@ -719,7 +837,8 @@ def _tuples(value):
 def pipeline_arguments(options, features):
     """Translate validated web settings into ``ClassificationPipelineConfig`` arguments."""
     arguments = {k: v for k, v in options.items() if k not in WEB_DEFAULTS and not k.startswith(TUNE_PREFIX)}
-    arguments["feature_columns"] = [*features, *(CENTROID_COLUMNS if options["add_centroid_features"] else ())]
+    # Existing coordinates are selectable; generating them must not duplicate selected columns.
+    arguments["feature_columns"] = list(dict.fromkeys([*features, *(CENTROID_COLUMNS if options["add_centroid_features"] else ())]))
     # The vote cannot use more models than were selected; one model falls back to a single-model run.
     if arguments["top_voting_models"] and len(arguments["selected_models"]) >= 2:
         arguments["top_voting_models"] = min(arguments["top_voting_models"], len(arguments["selected_models"]))

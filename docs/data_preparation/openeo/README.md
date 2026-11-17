@@ -42,7 +42,9 @@ responsibilities are separated into focused modules:
 
 The shared core handles local processing; the openEO adapter handles acquisition.
 See the [detailed workflow](WORKFLOW.md) for execution order, method ownership,
-checkpoint recovery, multi-user scheduling, and output validation.
+checkpoint recovery, multi-user scheduling, and output validation. The
+[workflow diagram and input reference](WORKFLOW_DIAGRAM.html) shows the same
+route step by step with the flag that controls each step.
 
 For account assignment and concurrency, see
 [batches versus partitions: scheduling flowcharts](SCHEDULING.md).

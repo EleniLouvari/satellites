@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Self-contained on purpose: no scripts, no external fonts or images, so it opens offline and under the Parcel Studio CSP.
+     Source of truth: docs/eda/WORKFLOW_DIAGRAM.html. web/public/help/ holds an identical copy for the Help dialog. -->
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EDA Workflow</title>
+<style>
+/* Layout idea: one vertical flow, five stage bands, each step a numbered card with the flags that control it. */
+:root {
+  --bg: #f4f6f5;
+  --surface: #ffffff;
+  --ink: #17242b;
+  --muted: #55666e;
+  --line: #c9d3d2;
+  --remote: #1f6f8b;      /* runs on the openEO backend */
+  --local: #3d7a4f;       /* runs on your machine */
+  --flag-bg: #fff3d6;
+  --flag-ink: #6b4a00;
+  --gate-bg: #e6eef7;
+  --gate-ink: #234a78;
+  --display: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --body: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, Consolas, "Cascadia Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #10181c; --surface: #18242a; --ink: #e4ecec; --muted: #9db0b5; --line: #33454c;
+    --remote: #6dbbd6; --local: #86c598; --flag-bg: #3d3110; --flag-ink: #f3d489;
+    --gate-bg: #1d2f45; --gate-ink: #a9c8ee; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #10181c; --surface: #18242a; --ink: #e4ecec; --muted: #9db0b5; --line: #33454c;
+  --remote: #6dbbd6; --local: #86c598; --flag-bg: #3d3110; --flag-ink: #f3d489;
+  --gate-bg: #1d2f45; --gate-ink: #a9c8ee; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 var(--body); }
+main { max-width: 1040px; margin: 0 auto; padding: 32px 20px 64px; display: flex; flex-direction: column; gap: 28px; }
+h1, h2, h3 { font-family: var(--display); font-weight: 600; text-wrap: balance; margin: 0; }
+h1 { font-size: 34px; line-height: 1.1; }
+h2 { font-size: 24px; }
+h3 { font-size: 17px; font-family: var(--body); }
+p { margin: 0; }
+.lede { color: var(--muted); max-width: 68ch; margin-top: 8px; }
+code, .flag, .gate { font-family: var(--mono); font-size: 12.5px; }
+code { background: var(--flag-bg); color: var(--flag-ink); padding: 1px 5px; border-radius: 4px; }
+
+.legend { display: flex; flex-wrap: wrap; gap: 8px 20px; font-size: 13px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+
+.stage { display: flex; flex-direction: column; gap: 0; }
+.stage-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; padding: 10px 14px; border-radius: 8px 8px 0 0; color: #fff; }
+.stage-head h2 { color: inherit; }
+.stage-head .where { font-size: 13px; opacity: .92; }
+.stage.local .stage-head { background: var(--local); }
+.stage.remote .stage-head { background: var(--remote); }
+:root[data-theme="dark"] .stage-head { color: #0c1215; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .stage-head { color: #0c1215; } }
+.stage-body { border: 1px solid var(--line); border-top: 0; border-radius: 0 0 8px 8px; padding: 18px 14px 14px; display: flex; flex-direction: column; }
+.stage + .handoff { margin: -14px 0; }
+.handoff { text-align: center; font-size: 13px; color: var(--muted); }
+.handoff b { display: block; font-size: 20px; line-height: 1; color: var(--ink); }
+
+.step { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; display: grid; grid-template-columns: 34px 1fr; gap: 4px 10px; }
+.step .n { grid-row: 1 / span 4; width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; font: 600 14px var(--display); color: #fff; background: var(--ink); }
+:root[data-theme="dark"] .step .n { color: #10181c; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .step .n { color: #10181c; } }
+.step > * { grid-column: 2; }
+.step > .n { grid-column: 1; }
+.step p, .step li { font-size: 14px; }
+.step ul, .step ol { margin: 4px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 3px; }
+.flags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.flag { background: var(--flag-bg); color: var(--flag-ink); padding: 2px 7px; border-radius: 4px; white-space: nowrap; }
+.gate { display: inline-block; background: var(--gate-bg); color: var(--gate-ink); padding: 2px 8px; border-radius: 999px; margin-top: 2px; justify-self: start; }
+.const { color: var(--muted); font-size: 13px; }
+
+.arrow { height: 26px; position: relative; }
+.arrow::before { content: ""; position: absolute; left: 31px; top: 0; bottom: 6px; width: 2px; background: var(--muted); }
+.arrow::after { content: ""; position: absolute; left: 26px; bottom: 0; border: 6px solid transparent; border-top: 8px solid var(--muted); border-bottom: 0; }
+
+.split { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.split .step { align-content: start; }
+.sub { border-left: 3px solid var(--line); padding-left: 12px; margin-top: 8px; display: flex; flex-direction: column; gap: 10px; }
+.figs { display: grid; grid-template-columns: 1.6fr 1fr; gap: 12px; margin-top: 10px; }
+figure { margin: 0; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 10px; overflow-x: auto; }
+figure svg { display: block; max-width: 100%; height: auto; margin: 0 auto; color: var(--ink); }
+figcaption { font-size: 12.5px; color: var(--muted); margin-top: 6px; }
+
+.tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; min-width: 640px; font-size: 13.5px; }
+th, td { text-align: left; vertical-align: top; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+th { font-weight: 600; font-size: 12.5px; color: var(--muted); background: var(--bg); }
+tr:last-child td { border-bottom: 0; }
+td:first-child, td:nth-child(2) { white-space: nowrap; }
+td:nth-child(2) { font-family: var(--mono); font-size: 12.5px; }
+td:last-child { text-align: center; color: var(--muted); font-variant-numeric: tabular-nums; }
+.ref { display: flex; flex-direction: column; gap: 18px; }
+.ref section { display: flex; flex-direction: column; gap: 8px; }
+.notes { background: var(--surface); border: 1px solid var(--line); border-left: 4px solid var(--flag-ink); border-radius: 8px; padding: 14px 16px; }
+.notes ul { margin: 6px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; font-size: 14px; }
+@media (max-width: 640px) {
+  .split, .figs { grid-template-columns: 1fr; }
+  h1 { font-size: 28px; }
+}
+
+.plain td:nth-child(2) { font-family: inherit; font-size: inherit; white-space: normal; }
+.plain td:last-child { text-align: left; color: inherit; }
+.plain td:first-child { white-space: nowrap; }
+.plain td.c, .plain th.c { text-align: center; }
+.band { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12.5px; white-space: nowrap; border: 1px solid var(--line); }
+.band.lo { background: var(--gate-bg); color: var(--gate-ink); }
+.band.hi { background: var(--flag-bg); color: var(--flag-ink); }
+.intable { margin-top: 8px; }
+</style>
+</head>
+<body>
+<main>
+<header>
+  <h1>EDA workflow</h1>
+  <p class="lede">How <code>EDAPipeline</code> profiles a table, usually the parcel statistics output, and produces the report, the diagnostic tables, the row-level outlier flag and a first feature proposal. Read from the code in <code>src/eda/</code>. Defaults are those of <code>EDAConfig</code>.</p>
+</header>
+
+<div class="legend">
+<span><span class="flag">flag = default</span> input that controls the step</span>
+<span><span class="gate">only if …</span> step is conditional</span>
+</div>
+
+<section class="stage local">
+<div class="stage-head"><h2>1 · Set up</h2><span class="where">once per run</span></div>
+<div class="stage-body">
+<div class="step" id="s1"><span class="n">1</span>
+<h3>Validate the settings and prepare the output folder</h3>
+<p>The input must be a pandas DataFrame or GeoDataFrame with at least one row. Numeric settings are range-checked. With the default reset, everything already in <code>output_dir</code> is removed so the run leaves one consistent set of files.</p>
+<div class="flags"><span class="flag">output_dir</span><span class="flag">reset_output_dir = True</span><span class="flag">report_title</span><span class="flag">random_state = 42</span></div>
+</div>
+<div class="arrow"></div>
+<div class="step" id="s2"><span class="n">2</span>
+<h3>Sort the columns into roles</h3>
+<ul><li><b>Numeric</b>: numeric dtype. <b>Categorical</b>: everything that is neither numeric nor datetime. <b>Datetime</b>: datetime dtype. Geometry is handled separately.</li><li><b>Numeric features</b> are the numeric columns without the target, the ID and earlier EDA diagnostics (<code>is_outlier</code>, <code>mahalanobis_*</code>, any <code>eda_*</code> column), so a rerun never analyses its own output.</li><li><b>Target task</b>: <code>auto</code> treats a numeric target as regression and anything else as classification. Set <code>classification</code> when crop classes are stored as numbers.</li></ul>
+<div class="flags"><span class="flag">target_column = None</span><span class="flag">target_task = &quot;auto&quot;</span><span class="flag">id_column = None</span></div>
+</div>
+</div>
+</section>
+<div class="handoff"><b>↓</b>typed column lists</div>
+<section class="stage local">
+<div class="stage-head"><h2>2 · Profile the data</h2><span class="where">every column, no target needed</span></div>
+<div class="stage-body">
+<div class="step" id="s3"><span class="n">3</span>
+<h3>Column profile and data-quality flags</h3>
+<p>Each column gets its type, missing share and unique share. A column can collect several flags:</p><ul><li><code>constant</code> (high): one or no distinct value.</li><li><code>high_missing</code> (medium): missing share at or above the threshold.</li><li><code>id_like_or_nearly_unique</code> (medium): almost every value is different.</li><li><code>quasi_constant</code> (medium): one value covers nearly all non-missing rows.</li><li><code>rare_category_heavy</code> (low): for categorical columns with at least 5 levels, half or more of the levels occur in at most 1% of rows.</li></ul>
+<div class="flags"><span class="flag">high_missing_percent_threshold = 40.0</span><span class="flag">quasi_constant_threshold = 0.98</span><span class="flag">categorical_association_max_unique_ratio = 0.95</span></div>
+</div>
+<div class="arrow"></div>
+<div class="step" id="s4"><span class="n">4</span>
+<h3>Descriptive summaries</h3>
+<p>Numeric and robust numeric statistics, categorical top values, datetime ranges, missingness (including columns that are missing together) and the target distribution. With a geometry column: CRS, missing, empty and invalid geometries, geometry types and bounds. Area and length are summarised only for a projected CRS.</p>
+<div class="flags"><span class="flag">max_categories = 20</span><span class="flag">include_geospatial = True</span></div>
+</div>
+<div class="arrow"></div>
+<div class="step" id="s5"><span class="n">5</span>
+<h3>Normality tests</h3>
+<p>Each numeric feature is tested with Shapiro-Wilk, D'Agostino, Jarque-Bera and Anderson-Darling. Columns longer than the sample size are sampled reproducibly. The hint is <code>likely_normal</code> only when both D'Agostino and Jarque-Bera give p ≥ 0.05.</p>
+<div class="flags"><span class="flag">normality_sample_size = 5000</span></div>
+</div>
+<div class="arrow"></div>
+<div class="step" id="s6"><span class="n">6</span>
+<h3>Univariate outliers</h3>
+<p>Per numeric feature: how many values fall outside the IQR fences (Q1 − k·IQR, Q3 + k·IQR) and how many have an absolute z-score above the threshold. Counts only; no value is changed.</p>
+<div class="flags"><span class="flag">iqr_multiplier = 1.5</span><span class="flag">outlier_zscore_threshold = 3.0</span></div>
+</div>
+<div class="arrow"></div>
+<div class="step" id="s7"><span class="n">7</span>
+<h3>Correlation, multicollinearity and categorical association</h3>
+<ul><li>Pearson and Spearman matrices over the numeric columns. Pairs with absolute Pearson at or above the threshold are listed as strong.</li><li>Variance inflation factors for the first <code>max_features_per_plot</code> numeric features in plot-priority order, after median imputation and standardisation. VIF ≥ 5 and ≥ 10 are labelled.</li><li>Chi-square and Cramér's V for every pair of categorical columns, skipping constant and nearly unique ones.</li></ul>
+<div class="flags"><span class="flag">correlation_threshold = 0.75</span><span class="flag">max_features_per_plot = 30</span><span class="flag">categorical_association_max_unique_ratio = 0.95</span></div>
+</div>
+</div>
+</section>
+<div class="handoff"><b>↓</b>profile tables</div>
+<section class="stage local">
+<div class="stage-head"><h2>3 · Target evidence and feature proposal</h2><span class="where">only with a target column</span></div>
+<div class="stage-body">
+<div class="step" id="s8"><span class="n">8</span>
+<h3>Test every feature against the target</h3>
+<span class="gate">only if target_column is set</span>
+<div class="tablewrap intable"><table class="plain"><thead><tr><th>Target task</th><th>Numeric feature</th><th>Categorical feature</th></tr></thead><tbody><tr><td>Classification</td><td>Kruskal-Wallis across classes, effect size epsilon² (ANOVA eta² also reported)</td><td>Chi-square, bias-corrected Cramér's V</td></tr><tr><td>Regression</td><td>Spearman correlation (Pearson and Kendall also reported)</td><td>Kruskal-Wallis of the target across levels, epsilon²</td></tr></tbody></table></div><p>p-values are corrected within each test family with Benjamini-Hochberg, giving a q-value. Effect sizes are labelled: epsilon² ≥ 0.14 large, ≥ 0.06 moderate, ≥ 0.01 small; Cramér's V or |Spearman| ≥ 0.5 strong, ≥ 0.3 moderate, ≥ 0.1 weak. For a classification target, each column's missingness is also tested against the target.</p>
+<div class="flags"><span class="flag">feature_selection_alpha = 0.05</span></div>
+</div>
+<div class="arrow"></div>
+<div class="step" id="s9"><span class="n">9</span>
+<h3>Build the feature proposal: six criteria, in order</h3>
+<span class="gate">only if target_column is set</span>
+<ol><li><b>Hard exclusions</b>: target, ID, geometry, EDA diagnostics and the configured exclusions are set to <i>exclude</i>.</li><li><b>Data quality</b>: constant, quasi-constant and high-missing columns are set to <i>exclude</i>.</li><li><b>Target evidence</b>: a moderate, large or strong effect with q ≤ alpha is set to <i>use</i>. A meaningful effect without significance, or a significant but weak one, goes to <i>review</i>. Limited evidence is <i>exclude</i>.</li><li><b>Redundancy</b>: going down the ranking, a <i>use</i> feature whose |Spearman| (numeric) or Cramér's V (categorical) with an already kept feature reaches the threshold moves to <i>review</i>.</li><li><b>Shortlist cap</b>: <i>use</i> features beyond the maximum move to <i>review</i>.</li><li><b>Train-only validation</b>: not done here. The ML pipeline does it.</li></ol><p>Result: <code>feature_selection_proposal.csv</code> with one action per feature and the five pass/fail columns, plus a text summary.</p>
+<div class="flags"><span class="flag">feature_selection_alpha = 0.05</span><span class="flag">feature_selection_redundancy_threshold = 0.90</span><span class="flag">feature_selection_max_features = 50</span><span class="flag">feature_selection_exclude_columns = ()</span><span class="flag">print_feature_selection_summary = True</span></div>
+</div>
+</div>
+</section>
+<div class="handoff"><b>↓</b>ranked features</div>
+<section class="stage local">
+<div class="stage-head"><h2>4 · Multivariate diagnostics</h2><span class="where">numeric features, row by row</span></div>
+<div class="stage-body">
+<div class="step" id="s10"><span class="n">10</span>
+<h3>PCA summary</h3>
+<p>Explained variance per component from the first <code>max_multivariate_features</code> numeric columns, after median imputation, removal of constant columns and standardisation.</p>
+<div class="flags"><span class="flag">max_multivariate_features = 15</span></div>
+</div>
+<div class="arrow"></div>
+<div class="step" id="s11"><span class="n">11</span>
+<h3>Outlier vote: five methods, one vote each</h3>
+<p>Run on the best-ranked <code>max_multivariate_features</code> numeric feature columns, in the shared feature priority used by the charts: proposal rank first (when a target is set), then data quality and missingness, then input order.</p><ul><li><b>IQR</b>: any feature value outside its fences.</li><li><b>z-score</b>: any feature with |z| above the threshold.</li><li><b>Isolation Forest</b>: contamination 0.05.</li><li><b>PCA + DBSCAN</b>: noise points after projecting to 2 components (eps 0.3, min_samples 5; needs at least 5 rows).</li><li><b>Mahalanobis</b>: distance beyond the chi-square 97.5% quantile.</li></ul><p><code>is_outlier</code> is True when a strict majority of the methods that could vote flag the row, with at least two methods voting. It is never null: a row with too little evidence is False.</p>
+<div class="flags"><span class="flag">max_multivariate_features = 15</span><span class="flag">iqr_multiplier = 1.5</span><span class="flag">outlier_zscore_threshold = 3.0</span><span class="flag">random_state = 42</span></div>
+<p class="const">Columns added per row: <code>eda_outlier_iqr</code>, <code>eda_outlier_zscore</code>, <code>eda_outlier_iforest</code>, <code>eda_outlier_pca_dbscan</code>, <code>eda_outlier_mahalanobis</code>, <code>eda_outlier_votes</code>, <code>eda_outlier_methods_available</code>, <code>is_outlier</code>, <code>mahalanobis_distance</code>, <code>mahalanobis_pvalue</code>.</p>
+</div>
+</div>
+</section>
+<div class="handoff"><b>↓</b>row-level diagnostics</div>
+<section class="stage local">
+<div class="stage-head"><h2>5 · Write the outputs</h2><span class="where">once per run</span></div>
+<div class="stage-body">
+<div class="step" id="s12"><span class="n">12</span>
+<h3>Charts</h3>
+<span class="gate">only if include_plots = True</span>
+<p>Features are plotted in one shared order: proposal rank first, then the remaining columns by quality and missingness. Each chart shows at most <code>max_features_per_plot</code> features; categorical charts keep the top categories and target charts the top target levels.</p>
+<div class="flags"><span class="flag">include_plots = True</span><span class="flag">max_features_per_plot = 30</span><span class="flag">max_categories = 20</span><span class="flag">max_target_levels_for_plots = 20</span></div>
+</div>
+<div class="arrow"></div>
+<div class="step" id="s13"><span class="n">13</span>
+<h3>Tables and annotated data</h3>
+<ul><li><code>eda_summary.json</code> and CSV tables under <code>tables/</code> (overview, data_quality, numeric, categorical, correlation, target, feature_selection, multivariate, geospatial).</li><li><code>eda_annotated_data.parquet</code>: every input row with the outlier columns of step 11, geometry preserved.</li></ul>
+</div>
+<div class="arrow"></div>
+<div class="step" id="s14"><span class="n">14</span>
+<h3>HTML report</h3>
+<span class="gate">only if include_html_report = True</span>
+<p><code>report.html</code> combines the tables and charts. The run also returns <code>proposed_features</code>, the features with action <i>use</i>.</p>
+<div class="flags"><span class="flag">include_html_report = True</span></div>
+</div>
+</div>
+</section>
+<aside class="notes">
+<h3>Things to know before choosing values</h3>
+<ul>
+<li>The outlier vote judges only the 15 best-ranked numeric features. Without a target there is no proposal, so the ranking falls back to data quality and missingness. Raise <code>max_multivariate_features</code> to judge more columns.</li>
+<li>PCA (step 10) still uses the first numeric columns in table order and can include a numeric target or ID; treat it as an overview only.</li>
+<li>Every test here sees all rows, including those the ML pipeline later holds out. That is why the proposal is a starting shortlist and why the EDA diagnostic columns are excluded from features.</li>
+<li>With <code>target_task="auto"</code>, numeric crop codes are analysed as a regression target. Set <code>classification</code> explicitly.</li>
+<li>Only <code>is_outlier</code> is meant to travel to the ML pipeline (as metadata for excluding rows from training or raising inspection priority), never as a model feature.</li>
+</ul>
+</aside>
+
+<section class="ref">
+  <h2>Input flags and variables</h2>
+<section>
+<h3>Run and roles</h3>
+<div class="tablewrap"><table>
+<thead><tr><th>Flag</th><th>Default</th><th>Meaning</th><th>Step</th></tr></thead>
+<tbody>
+<tr><td><code>output_dir</code></td><td>required</td><td>Folder for the report, tables, plots and annotated data.</td><td>1, 13</td></tr>
+<tr><td><code>reset_output_dir</code></td><td>True</td><td>Empty the folder before the run. False keeps existing files and overwrites by name.</td><td>1</td></tr>
+<tr><td><code>report_title</code></td><td>&quot;Exploratory Data Analysis Report&quot;</td><td>Title shown in the HTML report.</td><td>14</td></tr>
+<tr><td><code>target_column</code></td><td>None</td><td>Column to explain. Without it, stage 3 is skipped and no proposal is made.</td><td>2, 8, 9</td></tr>
+<tr><td><code>target_task</code></td><td>&quot;auto&quot;</td><td>auto, classification or regression. Decides which tests are used.</td><td>2, 8</td></tr>
+<tr><td><code>id_column</code></td><td>None</td><td>Identifier column, kept out of feature analyses.</td><td>2</td></tr>
+<tr><td><code>random_state</code></td><td>42</td><td>Seed for sampling and Isolation Forest.</td><td>5, 11</td></tr>
+</tbody>
+</table></div>
+</section>
+<section>
+<h3>Data-quality thresholds</h3>
+<div class="tablewrap"><table>
+<thead><tr><th>Flag</th><th>Default</th><th>Meaning</th><th>Step</th></tr></thead>
+<tbody>
+<tr><td><code>high_missing_percent_threshold</code></td><td>40.0</td><td>Missing share (percent) from which a column is flagged and excluded from the proposal.</td><td>3, 9</td></tr>
+<tr><td><code>quasi_constant_threshold</code></td><td>0.98</td><td>Share of the most common value from which a column is quasi-constant.</td><td>3, 9</td></tr>
+<tr><td><code>categorical_association_max_unique_ratio</code></td><td>0.95</td><td>Unique share from which a column is id-like and left out of categorical association tests.</td><td>3, 7</td></tr>
+</tbody>
+</table></div>
+</section>
+<section>
+<h3>Statistics</h3>
+<div class="tablewrap"><table>
+<thead><tr><th>Flag</th><th>Default</th><th>Meaning</th><th>Step</th></tr></thead>
+<tbody>
+<tr><td><code>normality_sample_size</code></td><td>5000</td><td>Maximum values per column used in the normality tests.</td><td>5</td></tr>
+<tr><td><code>iqr_multiplier</code></td><td>1.5</td><td>k of the IQR fences, for the univariate counts and the IQR vote.</td><td>6, 11</td></tr>
+<tr><td><code>outlier_zscore_threshold</code></td><td>3.0</td><td>Absolute z-score above which a value is an outlier.</td><td>6, 11</td></tr>
+<tr><td><code>correlation_threshold</code></td><td>0.75</td><td>Absolute Pearson from which a pair is listed as strong.</td><td>7</td></tr>
+<tr><td><code>max_multivariate_features</code></td><td>15</td><td>Number of numeric columns used for PCA (table order) and the outlier vote (best-ranked first).</td><td>10, 11</td></tr>
+</tbody>
+</table></div>
+</section>
+<section>
+<h3>Feature proposal</h3>
+<div class="tablewrap"><table>
+<thead><tr><th>Flag</th><th>Default</th><th>Meaning</th><th>Step</th></tr></thead>
+<tbody>
+<tr><td><code>feature_selection_alpha</code></td><td>0.05</td><td>Maximum q-value for a feature to count as supported.</td><td>8, 9</td></tr>
+<tr><td><code>feature_selection_redundancy_threshold</code></td><td>0.90</td><td>Association with an already kept feature from which a candidate is redundant.</td><td>9</td></tr>
+<tr><td><code>feature_selection_max_features</code></td><td>50</td><td>Maximum number of use features. None removes the cap.</td><td>9</td></tr>
+<tr><td><code>feature_selection_exclude_columns</code></td><td>()</td><td>Columns you know are leaky or unavailable at prediction time.</td><td>9</td></tr>
+<tr><td><code>print_feature_selection_summary</code></td><td>True</td><td>Print the proposal summary when a target is set.</td><td>9</td></tr>
+</tbody>
+</table></div>
+</section>
+<section>
+<h3>Outputs</h3>
+<div class="tablewrap"><table>
+<thead><tr><th>Flag</th><th>Default</th><th>Meaning</th><th>Step</th></tr></thead>
+<tbody>
+<tr><td><code>include_plots</code></td><td>True</td><td>Create the charts.</td><td>12</td></tr>
+<tr><td><code>max_features_per_plot</code></td><td>30</td><td>Features per chart; also the number of features in the VIF table.</td><td>7, 12</td></tr>
+<tr><td><code>max_categories</code></td><td>20</td><td>Categories kept per categorical summary and chart.</td><td>4, 12</td></tr>
+<tr><td><code>max_target_levels_for_plots</code></td><td>20</td><td>Target levels shown in target charts.</td><td>12</td></tr>
+<tr><td><code>include_geospatial</code></td><td>True</td><td>Add the geospatial summary when a geometry column exists.</td><td>4</td></tr>
+<tr><td><code>include_html_report</code></td><td>True</td><td>Write report.html.</td><td>14</td></tr>
+</tbody>
+</table></div>
+</section>
+</section>
+</main>
+</body>
+</html>

@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Self-contained on purpose: no scripts, no external fonts or images, so it opens offline and under the Parcel Studio CSP.
+     Source of truth: docs/ml_classification/INSPECTION_WORKFLOW_DIAGRAM.html. web/public/help/ holds an identical copy for the Help dialog. -->
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Inspection Priority Workflow</title>
+<style>
+/* Layout idea: one vertical flow, five stage bands, each step a numbered card with the flags that control it. */
+:root {
+  --bg: #f4f6f5;
+  --surface: #ffffff;
+  --ink: #17242b;
+  --muted: #55666e;
+  --line: #c9d3d2;
+  --remote: #1f6f8b;      /* runs on the openEO backend */
+  --local: #3d7a4f;       /* runs on your machine */
+  --flag-bg: #fff3d6;
+  --flag-ink: #6b4a00;
+  --gate-bg: #e6eef7;
+  --gate-ink: #234a78;
+  --display: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --body: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, Consolas, "Cascadia Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #10181c; --surface: #18242a; --ink: #e4ecec; --muted: #9db0b5; --line: #33454c;
+    --remote: #6dbbd6; --local: #86c598; --flag-bg: #3d3110; --flag-ink: #f3d489;
+    --gate-bg: #1d2f45; --gate-ink: #a9c8ee; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #10181c; --surface: #18242a; --ink: #e4ecec; --muted: #9db0b5; --line: #33454c;
+  --remote: #6dbbd6; --local: #86c598; --flag-bg: #3d3110; --flag-ink: #f3d489;
+  --gate-bg: #1d2f45; --gate-ink: #a9c8ee; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 var(--body); }
+main { max-width: 1040px; margin: 0 auto; padding: 32px 20px 64px; display: flex; flex-direction: column; gap: 28px; }
+h1, h2, h3 { font-family: var(--display); font-weight: 600; text-wrap: balance; margin: 0; }
+h1 { font-size: 34px; line-height: 1.1; }
+h2 { font-size: 24px; }
+h3 { font-size: 17px; font-family: var(--body); }
+p { margin: 0; }
+.lede { color: var(--muted); max-width: 68ch; margin-top: 8px; }
+code, .flag, .gate { font-family: var(--mono); font-size: 12.5px; }
+code { background: var(--flag-bg); color: var(--flag-ink); padding: 1px 5px; border-radius: 4px; }
+
+.legend { display: flex; flex-wrap: wrap; gap: 8px 20px; font-size: 13px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+
+.stage { display: flex; flex-direction: column; gap: 0; }
+.stage-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; padding: 10px 14px; border-radius: 8px 8px 0 0; color: #fff; }
+.stage-head h2 { color: inherit; }
+.stage-head .where { font-size: 13px; opacity: .92; }
+.stage.local .stage-head { background: var(--local); }
+.stage.remote .stage-head { background: var(--remote); }
+:root[data-theme="dark"] .stage-head { color: #0c1215; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .stage-head { color: #0c1215; } }
+.stage-body { border: 1px solid var(--line); border-top: 0; border-radius: 0 0 8px 8px; padding: 18px 14px 14px; display: flex; flex-direction: column; }
+.stage + .handoff { margin: -14px 0; }
+.handoff { text-align: center; font-size: 13px; color: var(--muted); }
+.handoff b { display: block; font-size: 20px; line-height: 1; color: var(--ink); }
+
+.step { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; display: grid; grid-template-columns: 34px 1fr; gap: 4px 10px; }
+.step .n { grid-row: 1 / span 4; width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; font: 600 14px var(--display); color: #fff; background: var(--ink); }
+:root[data-theme="dark"] .step .n { color: #10181c; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .step .n { color: #10181c; } }
+.step > * { grid-column: 2; }
+.step > .n { grid-column: 1; }
+.step p, .step li { font-size: 14px; }
+.step ul, .step ol { margin: 4px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 3px; }
+.flags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.flag { background: var(--flag-bg); color: var(--flag-ink); padding: 2px 7px; border-radius: 4px; white-space: nowrap; }
+.gate { display: inline-block; background: var(--gate-bg); color: var(--gate-ink); padding: 2px 8px; border-radius: 999px; margin-top: 2px; justify-self: start; }
+.const { color: var(--muted); font-size: 13px; }
+
+.arrow { height: 26px; position: relative; }
+.arrow::before { content: ""; position: absolute; left: 31px; top: 0; bottom: 6px; width: 2px; background: var(--muted); }
+.arrow::after { content: ""; position: absolute; left: 26px; bottom: 0; border: 6px solid transparent; border-top: 8px solid var(--muted); border-bottom: 0; }
+
+.split { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.split .step { align-content: start; }
+.sub { border-left: 3px solid var(--line); padding-left: 12px; margin-top: 8px; display: flex; flex-direction: column; gap: 10px; }
+.figs { display: grid; grid-template-columns: 1.6fr 1fr; gap: 12px; margin-top: 10px; }
+figure { margin: 0; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 10px; overflow-x: auto; }
+figure svg { display: block; max-width: 100%; height: auto; margin: 0 auto; color: var(--ink); }
+figcaption { font-size: 12.5px; color: var(--muted); margin-top: 6px; }
+
+.tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; min-width: 640px; font-size: 13.5px; }
+th, td { text-align: left; vertical-align: top; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+th { font-weight: 600; font-size: 12.5px; color: var(--muted); background: var(--bg); }
+tr:last-child td { border-bottom: 0; }
+td:first-child, td:nth-child(2) { white-space: nowrap; }
+td:nth-child(2) { font-family: var(--mono); font-size: 12.5px; }
+td:last-child { text-align: center; color: var(--muted); font-variant-numeric: tabular-nums; }
+.ref { display: flex; flex-direction: column; gap: 18px; }
+.ref section { display: flex; flex-direction: column; gap: 8px; }
+.notes { background: var(--surface); border: 1px solid var(--line); border-left: 4px solid var(--flag-ink); border-radius: 8px; padding: 14px 16px; }
+.notes ul { margin: 6px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; font-size: 14px; }
+@media (max-width: 640px) {
+  .split, .figs { grid-template-columns: 1fr; }
+  h1 { font-size: 28px; }
+}
+
+.plain td:nth-child(2) { font-family: inherit; font-size: inherit; white-space: normal; }
+.plain td:last-child { text-align: left; color: inherit; }
+.plain td:first-child { white-space: nowrap; }
+.plain td.c, .plain th.c { text-align: center; }
+.band { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12.5px; white-space: nowrap; border: 1px solid var(--line); }
+.band.lo { background: var(--gate-bg); color: var(--gate-ink); }
+.band.hi { background: var(--flag-bg); color: var(--flag-ink); }
+.intable { margin-top: 8px; }
+</style>
+</head>
+<body>
+<main>
+<header>
+  <h1>Inspection priority workflow</h1>
+  <p class="lede">How the predict step turns each parcel's prediction and its supporting evidence into one of seven inspection priorities, a check type and the reasons behind them. Read from the code in <code>src/ml_classification/step_05_predict/libraries/inspection_priority/</code>. Defaults are those of <code>ClassificationPipelineConfig</code>.</p>
+</header>
+
+<div class="legend">
+<span><span class="flag">flag = default</span> input that controls the step</span>
+<span><span class="gate">only if …</span> step is conditional</span>
+</div>
+
+<section class="stage local">
+<div class="stage-head"><h2>1 · Evidence collected before this step</h2><span class="where">one value per parcel, from three pipelines</span></div>
+<div class="stage-body">
+<div class="split">
+<div class="step" id="s1a"><span class="n">a</span>
+<h3>From ML classification</h3>
+<ul><li><b>Predicted class</b> from the vote of the selected models.</li><li><b>Rank confidence</b>: HIGH, MEDIUM or LOW, from how consistently the models rank the predicted class.</li><li><b>Class reliability</b>: HIGH, MEDIUM or LOW, the out-of-fold precision of the predicted class, frozen in the evaluate step.</li><li><b>Declared class</b>: the target column, when the parcel has one.</li></ul>
+<div class="flags"><span class="flag">rank_confidence_enabled = True</span><span class="flag">class_reliability_enabled = True</span></div>
+</div>
+<div class="step" id="s1b"><span class="n">b</span>
+<h3>From parcel statistics and EDA</h3>
+<ul><li><b>Data reliability</b>: <code>data_reliability_score</code>, the share of pixel values that were really observed and not filled (0 to 1).</li><li><b>Geometry complexity</b>: <code>geom_shape_complexity_score</code>, higher for small, irregular or elongated parcels.</li><li><b>Outlier flag</b>: <code>is_outlier</code> from EDA, optional metadata joined by parcel ID.</li></ul>
+<div class="flags"><span class="flag">inspection_data_reliability_column = &quot;data_reliability_score&quot;</span><span class="flag">inspection_geometry_complexity_column = &quot;geom_shape_complexity_score&quot;</span></div>
+</div>
+</div>
+<div class="arrow"></div>
+<div class="step" id="s1"><span class="n">1</span>
+<h3>Check that scoring can run</h3>
+<span class="gate">only if inspection_scoring_enabled = True</span>
+<p>The confidence level, data-reliability and geometry-complexity columns must exist. If one is missing the whole step is skipped with a warning and predictions are saved without inspection columns.</p>
+<div class="flags"><span class="flag">inspection_scoring_enabled = True</span></div>
+</div>
+</div>
+</section>
+<div class="handoff"><b>↓</b>six inputs per parcel</div>
+<section class="stage local">
+<div class="stage-head"><h2>2 · Turn the evidence into comparable signals</h2><span class="where">per parcel</span></div>
+<div class="stage-body">
+<div class="step" id="s2"><span class="n">2</span>
+<h3>Compare the declaration with the prediction</h3>
+<p>Codes are normalised first, so 1.0 and "1" are the same class. Result in <code>label_prediction_status</code>: <code>SAME</code>, <code>DIFFERENT</code>, <code>NO_DECLARATION</code> (no declared class) or <code>UNAVAILABLE</code> (no prediction).</p>
+</div>
+<div class="arrow"></div>
+<div class="step" id="s3"><span class="n">3</span>
+<h3>Express each uncertainty as a risk from 0 to 1</h3>
+<ul><li><code>confidence_risk</code>: HIGH = 0, MEDIUM = 0.5, LOW = 1.</li><li><code>data_risk</code> = 1 − data reliability. Scores outside 0 to 1 are treated as missing.</li><li><code>geometry_risk</code> = the percentile rank of the parcel's complexity among all predicted parcels. It is relative: 0.5 is the median parcel of this run.</li></ul><p><b>Geometry level</b> (<code>geometry_complexity_level</code>, LOW, MEDIUM or HIGH). In <code>percentile</code> mode a parcel is MEDIUM only when its rank is at least 0.50 <i>and</i> its complexity score at least 0.60, HIGH when its rank is at least 0.75 and its score at least 0.90. A run of simple parcels therefore stays LOW. <code>absolute</code> mode uses the scores alone. For scale: compact parcels score about 0.1–0.3, 2:1 strips 0.35–0.5, 3:1 strips 0.5–0.7, 5:1 strips 0.75–0.95.</p>
+<div class="flags"><span class="flag">inspection_geometry_threshold_mode = &quot;percentile&quot;</span><span class="flag">inspection_medium_geometry_risk_threshold = 0.50</span><span class="flag">inspection_high_geometry_risk_threshold = 0.75</span><span class="flag">inspection_medium_geometry_complexity_threshold = 0.60</span><span class="flag">inspection_high_geometry_complexity_threshold = 0.90</span></div>
+</div>
+<div class="arrow"></div>
+<div class="step" id="s4"><span class="n">4</span>
+<h3>Set the data-reliability boundaries for this run</h3>
+<ul><li><code>percentile</code> (default): low = the smaller of 0.60 and the 5th percentile of the scores; medium = the smaller of 0.80 and the 25th percentile. This only relaxes the limits, so a season with ordinary cloud gaps does not make most parcels weak evidence.</li><li><code>absolute</code>: 0.60 and 0.80 exactly as configured.</li></ul><p>The applied values are saved on every row and in <code>predict_summary.json</code>; rules, reasons and reports all read the saved values.</p>
+<div class="flags"><span class="flag">inspection_data_reliability_threshold_mode = &quot;percentile&quot;</span><span class="flag">inspection_low_data_reliability_threshold = 0.60</span><span class="flag">inspection_medium_data_reliability_threshold = 0.80</span><span class="flag">inspection_low_data_reliability_percentile = 0.05</span><span class="flag">inspection_medium_data_reliability_percentile = 0.25</span></div>
+</div>
+<div class="arrow"></div>
+<div class="step" id="s5"><span class="n">5</span>
+<h3>Compute the diagnostic score</h3>
+<p><code>inspection_score</code> = 100 × (0.60 × confidence risk + 0.25 × data risk + 0.15 × geometry risk), with a score-only band in <code>inspection_need_base</code> (HIGH from 50, MEDIUM from 25). It never decides the priority band, but it orders the parcels inside a band in the queue (step 11), so the weights set the visiting order.</p>
+<div class="flags"><span class="flag">inspection_model_weight = 0.60</span><span class="flag">inspection_data_weight = 0.25</span><span class="flag">inspection_geometry_weight = 0.15</span><span class="flag">inspection_medium_score_threshold = 25.0</span><span class="flag">inspection_high_score_threshold = 50.0</span></div>
+</div>
+</div>
+</section>
+<div class="handoff"><b>↓</b>status, risks and boundaries</div>
+<section class="stage local">
+<div class="stage-head"><h2>3 · Decide the priority</h2><span class="where">rules, first match wins</span></div>
+<div class="stage-body">
+<div class="step" id="s6"><span class="n">6</span>
+<h3>Handle parcels the table cannot judge</h3>
+<ul><li><b>Unknown</b> (<code>REQUIRED_EVIDENCE_UNAVAILABLE</code>): no prediction, invalid rank confidence, or missing data reliability or geometry.</li><li><b>Medium</b> (<code>NO_DECLARATION</code>): valid evidence but no declared class to compare with.</li><li><b>Medium</b> (<code>CLASS_RELIABILITY_UNAVAILABLE</code>): class reliability is enabled but the predicted class had too few out-of-fold predictions to be judged.</li></ul>
+</div>
+<div class="arrow"></div>
+<div class="step" id="s7"><span class="n">7</span>
+<h3>Apply the 20-rule decision table</h3>
+<p>Conditions in a row are combined with AND; the first matching row wins. <b>Data reliability high</b> means strictly above the applied medium boundary of step 4. <b>Geometry good</b> means <code>geometry_complexity_level</code> LOW (step 3). With class reliability disabled, its column is treated as High.</p>
+<div class="tablewrap intable"><table class="plain">
+<thead><tr><th>Class reliability</th><th>Rank confidence</th><th>Data reliability</th><th>Geometry</th><th>Declared = predicted</th><th>Declared ≠ predicted</th></tr></thead>
+<tbody>
+<tr><td>High</td><td>High</td><td>high</td><td>good</td><td>R01 <span class="band lo">Very Low</span></td><td>R11 <span class="band hi">Very High</span></td></tr>
+<tr><td>High</td><td>High</td><td>high</td><td>not good</td><td>R02 <span class="band lo">Low</span></td><td>R12 <span class="band hi">High</span></td></tr>
+<tr><td>Medium</td><td>High</td><td>high</td><td>good</td><td>R03 <span class="band lo">Low</span></td><td>R13 <span class="band hi">High</span></td></tr>
+<tr><td>Medium</td><td>High</td><td>high</td><td>not good</td><td>R04 <span class="band lo">Low–Medium</span></td><td>R14 <span class="band hi">Medium–High</span></td></tr>
+<tr><td>High</td><td>Medium</td><td>high</td><td>good</td><td>R05 <span class="band lo">Low–Medium</span></td><td>R15 <span class="band hi">Medium–High</span></td></tr>
+<tr><td>High</td><td>Medium</td><td>high</td><td>not good</td><td>R06 <span class="band ">Medium</span></td><td>R16 <span class="band ">Medium</span></td></tr>
+<tr><td>Medium</td><td>Medium</td><td>high</td><td>any</td><td>R07 <span class="band ">Medium</span></td><td>R17 <span class="band ">Medium</span></td></tr>
+<tr><td>Low</td><td>any</td><td>any</td><td>any</td><td>R08 <span class="band ">Medium</span></td><td>R18 <span class="band ">Medium</span></td></tr>
+<tr><td>any</td><td>Low</td><td>any</td><td>any</td><td>R09 <span class="band ">Medium</span></td><td>R19 <span class="band ">Medium</span></td></tr>
+<tr><td>any</td><td>any</td><td>not high</td><td>any</td><td>R10 <span class="band ">Medium</span></td><td>R20 <span class="band ">Medium</span></td></tr>
+</tbody></table></div>
+
+<div class="figs" style="grid-template-columns:1fr">
+<figure>
+<svg viewBox="0 0 720 150" role="img" aria-label="Seven priority bands from Very Low to Very High; agreement moves a parcel left, conflict moves it right, weak evidence keeps it at Medium, and an outlier raises it one band">
+<defs><marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker></defs>
+<g font-family="Segoe UI, Arial, sans-serif" font-size="12" text-anchor="middle" fill="currentColor">
+<g fill="none" stroke="currentColor" stroke-width="1.4">
+<rect x="10" y="50" width="96" height="36" rx="4"/><rect x="110" y="50" width="96" height="36" rx="4"/><rect x="210" y="50" width="96" height="36" rx="4"/>
+<rect x="310" y="50" width="100" height="36" rx="4" stroke-width="2.6"/>
+<rect x="414" y="50" width="96" height="36" rx="4"/><rect x="514" y="50" width="96" height="36" rx="4"/><rect x="614" y="50" width="96" height="36" rx="4"/>
+<line x1="300" y1="28" x2="20" y2="28" marker-end="url(#ah2)"/><line x1="420" y1="28" x2="700" y2="28" marker-end="url(#ah2)"/>
+<path d="M462 100 q50 26 100 0" marker-end="url(#ah2)" stroke-dasharray="4 3"/>
+</g>
+<text x="58" y="73">Very Low</text><text x="158" y="73">Low</text><text x="258" y="73">Low–Medium</text><text x="360" y="73" font-weight="600">Medium</text>
+<text x="462" y="73">Medium–High</text><text x="562" y="73">High</text><text x="662" y="73">Very High</text>
+<text x="160" y="20">declared = predicted, stronger evidence</text><text x="560" y="20">declared ≠ predicted, stronger evidence</text>
+<text x="360" y="104" font-size="11">weak or missing evidence</text><text x="512" y="134" font-size="11">outlier: one band up</text>
+</g>
+</svg>
+<figcaption>The seven bands. Medium means the evidence is inconclusive. Strong evidence moves a parcel left when the declaration matches the prediction and right when it does not.</figcaption>
+</figure>
+</div>
+<p>The matched rule is saved in <code>inspection_rule</code> and the result in <code>inspection_need_before_outlier</code>.</p>
+<div class="flags"><span class="flag">class_reliability_enabled = True</span><span class="flag">inspection_geometry_threshold_mode = &quot;percentile&quot;</span></div>
+</div>
+<div class="arrow"></div>
+<div class="step" id="s8"><span class="n">8</span>
+<h3>Raise outliers by one band</h3>
+<span class="gate">only if inspection_include_outlier = True and the is_outlier column exists</span>
+<p>A parcel with <code>is_outlier = True</code> moves up one band: Very Low to Low, Low to Low–Medium, and so on up to High to Very High. Very High and Unknown do not change. Only real True values count (or 1); text and missing values do not. The rule ID is kept, and <code>inspection_outlier_adjusted</code> records the change.</p>
+<div class="flags"><span class="flag">inspection_include_outlier = False</span></div>
+</div>
+<div class="arrow"></div>
+<div class="step" id="s9"><span class="n">9</span>
+<h3>Decide what kind of check is needed</h3>
+<ul><li><code>NONE</code>: Very Low and Low. Also Low–Medium and Medium when the declaration matches the prediction, unless matching declarations are to be checked.</li><li><code>DECLARATION_CONFLICT</code>: declaration differs and the priority is Medium–High, High or Very High.</li><li><code>INSUFFICIENT_EO_EVIDENCE</code>: everything else, including parcels that an outlier raised from <code>NONE</code> to Low–Medium or above.</li></ul>
+<div class="flags"><span class="flag">inspection_check_matching_declarations = False</span></div>
+</div>
+</div>
+</section>
+<div class="handoff"><b>↓</b>priority and check type</div>
+<section class="stage local">
+<div class="stage-head"><h2>4 · Explain and queue</h2><span class="where">outputs in <code>05_predict/</code></span></div>
+<div class="stage-body">
+<div class="step" id="s10"><span class="n">10</span>
+<h3>Write the reasons</h3>
+<p><code>inspection_reasons</code> lists the codes that apply, separated by <code>|</code>: declaration conflict or difference, insufficient evidence, low or medium model confidence, low or medium data reliability, medium or high geometry complexity (the geometry level of step 3), class reliability, no declaration, and the outlier increase.</p>
+</div>
+<div class="arrow"></div>
+<div class="step" id="s11"><span class="n">11</span>
+<h3>Save, report and queue</h3>
+<p>All columns go into <code>final_predictions.joblib</code> and the preview CSV; counts per priority, check type and status go into <code>predict_summary.json</code>. The report queue is ordered by final priority; inside each band the parcel with the higher <code>inspection_score</code> comes first, parcels without a score come last and remaining ties keep input order. <code>recalculate_prediction_quality()</code> re-applies steps 2 to 10 with new settings without refitting; the table is applied first each time, so outlier increases never accumulate.</p>
+</div>
+</div>
+</section>
+<aside class="notes">
+<h3>Things to know before choosing values</h3>
+<ul>
+<li>The weights decide the order of parcels inside a priority band; the two score thresholds only band the score into <code>inspection_need_base</code>. To change who gets inspected, change the geometry or data-reliability thresholds, the outlier option or the matching-declarations option.</li>
+<li>Geometry needs both a high rank and a high complexity score in percentile mode. Set both complexity thresholds to 0 to return to the rank-only policy, where about half of every run is "not good".</li>
+<li>In percentile mode up to about a quarter of the parcels fall at or below the medium data boundary and are therefore Medium, whatever their confidence.</li>
+<li>With fewer than 3 voting models the confidence comes from the predicted-class probability, so parcels still get a priority. Rank agreement remains the stronger evidence.</li>
+<li>By default a matching declaration with inconclusive evidence is not queued. Set <code>inspection_check_matching_declarations=True</code> to review those parcels as well.</li>
+<li>An outlier increase is extra review priority, not stronger proof of a wrong declaration. The library default is off.</li>
+</ul>
+</aside>
+
+<section class="ref">
+  <h2>Input flags, variables and outputs</h2>
+<section>
+<h3>Switches and input columns</h3>
+<div class="tablewrap"><table>
+<thead><tr><th>Flag</th><th>Default</th><th>Meaning</th><th>Step</th></tr></thead>
+<tbody>
+<tr><td><code>inspection_scoring_enabled</code></td><td>True</td><td>Run the inspection step after prediction.</td><td>1</td></tr>
+<tr><td><code>inspection_include_outlier</code></td><td>False</td><td>Raise is_outlier=True parcels by one band.</td><td>8</td></tr>
+<tr><td><code>inspection_check_matching_declarations</code></td><td>False</td><td>Also queue Low–Medium and Medium parcels whose declaration matches the prediction.</td><td>9</td></tr>
+<tr><td><code>class_reliability_enabled</code></td><td>True</td><td>Use class reliability in the rules. False treats every class as High.</td><td>6, 7</td></tr>
+<tr><td><code>inspection_data_reliability_column</code></td><td>&quot;data_reliability_score&quot;</td><td>Column with the observed share of pixel values, 0 to 1.</td><td>1, 3</td></tr>
+<tr><td><code>inspection_geometry_complexity_column</code></td><td>&quot;geom_shape_complexity_score&quot;</td><td>Column with the geometry complexity score.</td><td>1, 3</td></tr>
+</tbody>
+</table></div>
+</section>
+<section>
+<h3>Thresholds that change the priority</h3>
+<div class="tablewrap"><table>
+<thead><tr><th>Flag</th><th>Default</th><th>Meaning</th><th>Step</th></tr></thead>
+<tbody>
+<tr><td><code>inspection_data_reliability_threshold_mode</code></td><td>&quot;percentile&quot;</td><td>percentile relaxes the two limits to the run's percentiles; absolute applies them as written.</td><td>4</td></tr>
+<tr><td><code>inspection_medium_data_reliability_threshold</code></td><td>0.80</td><td>Data reliability must be strictly above the applied value to count as high.</td><td>4, 7</td></tr>
+<tr><td><code>inspection_medium_data_reliability_percentile</code></td><td>0.25</td><td>Percentile used for the medium limit in percentile mode.</td><td>4</td></tr>
+<tr><td><code>inspection_geometry_threshold_mode</code></td><td>&quot;percentile&quot;</td><td>percentile needs both the rank and the complexity score; absolute uses the score alone.</td><td>3, 7</td></tr>
+<tr><td><code>inspection_medium_geometry_risk_threshold</code></td><td>0.50</td><td>Percentile mode: rank from which a parcel can be medium complexity.</td><td>3, 7</td></tr>
+<tr><td><code>inspection_medium_geometry_complexity_threshold</code></td><td>0.60</td><td>Complexity score from which a parcel can be medium complexity. 0 disables this condition.</td><td>3, 7</td></tr>
+<tr><td><code>rank_confidence_minimum_models</code></td><td>3</td><td>Fewer voting models gives invalid confidence and priority Unknown.</td><td>6</td></tr>
+<tr><td><code>rank_confidence_high_min_borda</code>, <code>rank_confidence_high_max_range</code></td><td>90.0, 2.0</td><td>Limits for HIGH rank confidence, frozen in the evaluate step.</td><td>7</td></tr>
+<tr><td><code>rank_confidence_medium_min_borda</code>, <code>rank_confidence_medium_max_range</code></td><td>75.0, 4.0</td><td>Limits for MEDIUM rank confidence, frozen in the evaluate step.</td><td>7</td></tr>
+<tr><td><code>class_reliability_minimum_oof_support</code></td><td>100</td><td>Out-of-fold predictions a class needs for a valid reliability.</td><td>6</td></tr>
+<tr><td><code>class_reliability_high_min_precision</code>, <code>class_reliability_medium_min_precision</code></td><td>0.80, 0.60</td><td>Precision limits for HIGH and MEDIUM class reliability.</td><td>7</td></tr>
+</tbody>
+</table></div>
+</section>
+<section>
+<h3>Settings that change reasons, diagnostics and queue order</h3>
+<div class="tablewrap"><table>
+<thead><tr><th>Flag</th><th>Default</th><th>Meaning</th><th>Step</th></tr></thead>
+<tbody>
+<tr><td><code>inspection_low_data_reliability_threshold</code></td><td>0.60</td><td>Below the applied value the reason is LOW_DATA_RELIABILITY.</td><td>4, 10</td></tr>
+<tr><td><code>inspection_low_data_reliability_percentile</code></td><td>0.05</td><td>Percentile used for the low limit in percentile mode.</td><td>4</td></tr>
+<tr><td><code>inspection_high_geometry_risk_threshold</code></td><td>0.75</td><td>Percentile mode: rank from which a parcel can be high complexity (reason only).</td><td>3, 10</td></tr>
+<tr><td><code>inspection_high_geometry_complexity_threshold</code></td><td>0.90</td><td>Complexity score from which a parcel can be high complexity (reason only).</td><td>3, 10</td></tr>
+<tr><td><code>inspection_model_weight</code>, <code>inspection_data_weight</code>, <code>inspection_geometry_weight</code></td><td>0.60, 0.25, 0.15</td><td>Weights of the three risks in inspection_score, which orders the queue inside a band.</td><td>5, 11</td></tr>
+<tr><td><code>inspection_medium_score_threshold</code>, <code>inspection_high_score_threshold</code></td><td>25.0, 50.0</td><td>Score limits for inspection_need_base.</td><td>5</td></tr>
+</tbody>
+</table></div>
+</section>
+<section>
+<h3>Output columns</h3>
+<div class="tablewrap"><table class="plain">
+<thead><tr><th>Column</th><th>Content</th><th>Step</th></tr></thead>
+<tbody>
+<tr><td><code>label_prediction_status</code></td><td>SAME, DIFFERENT, NO_DECLARATION or UNAVAILABLE.</td><td>2</td></tr>
+<tr><td><code>confidence_risk</code>, <code>data_risk</code>, <code>geometry_risk</code></td><td>The three risks, 0 to 1.</td><td>3</td></tr>
+<tr><td><code>geometry_complexity_level</code></td><td>LOW, MEDIUM or HIGH geometry complexity used by the rules and reasons.</td><td>3</td></tr>
+<tr><td><code>inspection_data_reliability_low_threshold</code>, <code>..._medium_threshold</code></td><td>Boundaries applied in this run.</td><td>4</td></tr>
+<tr><td><code>inspection_score</code>, <code>inspection_need_base</code></td><td>Diagnostic score 0 to 100 and its score-only band.</td><td>5</td></tr>
+<tr><td><code>inspection_rule</code></td><td>R01 to R20, or the fallback name.</td><td>6, 7</td></tr>
+<tr><td><code>inspection_class_reliability_applied</code></td><td>Whether class reliability took part in the rule.</td><td>7</td></tr>
+<tr><td><code>inspection_need_before_outlier</code></td><td>Priority from the table, before the outlier step.</td><td>7</td></tr>
+<tr><td><code>inspection_outlier_adjusted</code></td><td>True when the outlier step raised the band.</td><td>8</td></tr>
+<tr><td><code>inspection_need</code>, <code>inspection_priority_label</code></td><td>Final priority as a code (VERY_LOW to VERY_HIGH, UNKNOWN) and as a label.</td><td>8</td></tr>
+<tr><td><code>inspection_check_type</code></td><td>NONE, DECLARATION_CONFLICT or INSUFFICIENT_EO_EVIDENCE.</td><td>9</td></tr>
+<tr><td><code>inspection_reasons</code></td><td>Reason codes separated by |, or NONE.</td><td>10</td></tr>
+</tbody></table></div>
+</section>
+</section>
+</main>
+</body>
+</html>

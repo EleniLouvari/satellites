@@ -1,5 +1,13 @@
 # Documentation
 
+- [Pipeline learning guide: acquisition to inspection](guide/README.md)
+- [Optional parcel feature enrichment](guide/FEATURE_ENRICHMENT.md)
+
+In Parcel Studio, use **Pipeline guide** in the sidebar or **Help** on a pipeline
+page. The app publishes the current guides and diagrams in execution order from
+the [guide catalog](guide/contents.json). The existing paths below remain the
+authoritative source locations.
+
 - [Web application design and interactive preview](web_app/DESIGN.md)
 - [Run the Parcel Studio web application](web_app/README.md)
 - [Extending Parcel Studio with data providers and pipelines](web_app/EXTENDING.md)
@@ -11,18 +19,24 @@
 - [openEO database account setup](data_preparation/openeo/CREDENTIALS.md)
 - [Parcel grouping with buffers or tiles](data_preparation/openeo/PARCEL_GROUPING.md)
 - [Detailed openEO parcel_stats workflow](data_preparation/openeo/WORKFLOW.md)
+- [openEO parcel statistics workflow diagram and input reference (HTML)](data_preparation/openeo/WORKFLOW_DIAGRAM.html)
 - [openEO scheduling: batches versus partitions](data_preparation/openeo/SCHEDULING.md)
 - [openEO calling example](data_preparation/openeo/CALLING_EXAMPLE.md)
 - [Multiuser guide](data_preparation/openeo/MULTIUSER_IMPLEMENTATION_GUIDE.md)
 - [Local NetCDF cleaning, checkpoints, and completion](data_preparation/NETCDF_PROCESSING.md)
 - [EDA](eda/README.md) and [feature-screening guide](eda/FEATURE_SELECTION_GUIDE.md)
 - [Detailed EDA workflow and flowchart](eda/WORKFLOW.md)
+- [EDA workflow diagram and input reference (HTML)](eda/WORKFLOW_DIAGRAM.html)
 - [ML overview](ml_classification/OVERVIEW.md)
+- [ML classification workflow diagram and input reference (HTML)](ml_classification/WORKFLOW_DIAGRAM.html)
 - [ML configuration and usage](ml_classification/README.md)
 - [ML architecture](ml_classification/STRUCTURE.md)
 - [Incremental training](ml_classification/INCREMENTAL_WORKFLOW.md)
 - [Rank-confidence methodology](ml_classification/rank_based_ensemble_confidence_methodology.md)
 - [Inspection-priority rules and optional outlier adjustment](ml_classification/INSPECTION_PRIORITY_DECISION_TABLE.md)
+- [Inspection priority workflow diagram and input reference (HTML)](ml_classification/INSPECTION_WORKFLOW_DIAGRAM.html)
+- [Inspection priority workflow diagram (PNG)](ml_classification/INSPECTION_WORKFLOW_DIAGRAM.png)
+- [Detailed inspection evidence and priority workflow (PNG)](ml_classification/INSPECTION_EVIDENCE_AND_PRIORITY_WORKFLOW.png)
 - [Classification source guide](../src/ml_classification/README.md)
 - [Notebook setup and project workflow](../notebooks/README.md)
 - [Sentinel band interpretation notes](reference/sentinel_band_notes.txt)

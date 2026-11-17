@@ -114,6 +114,21 @@ def _numeric_feature_columns(numeric_columns: list[str], config: EDAConfig) -> l
     excluded = {config.target_column, config.id_column, *_EDA_DIAGNOSTIC_COLUMNS}
     return [column for column in numeric_columns if column not in excluded and not column.startswith("eda_")]
 
-def _multivariate_feature_columns(numeric_columns: list[str], config: EDAConfig) -> list[str]:
-    """Return the ordered numeric feature subset used for multivariate outlier scoring."""
-    return _numeric_feature_columns(numeric_columns, config)[: config.max_multivariate_features]
+def _multivariate_feature_columns(
+    numeric_columns: list[str], config: EDAConfig, priority: list[str] | None = None
+) -> list[str]:
+    """Return the numeric feature subset used for multivariate outlier scoring, best-ranked first.
+
+    ``priority`` is the shared ML-screening order (proposal rank, then data quality). Features it
+    lists come first in that order, so the ``max_multivariate_features`` cap keeps the most relevant
+    columns instead of whichever happen to come first in the table. Features it does not list follow
+    in input order. Without a priority the input order is used.
+    """
+    features = _numeric_feature_columns(numeric_columns, config)
+    if priority:
+        allowed = set(features)
+        ranked = [column for column in priority if column in allowed]
+        ranked_set = set(ranked)
+        # Keep unranked features as a deterministic tail so no eligible column is silently lost.
+        features = ranked + [column for column in features if column not in ranked_set]
+    return features[: config.max_multivariate_features]

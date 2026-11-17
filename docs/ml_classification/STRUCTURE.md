@@ -172,6 +172,7 @@ project_dir/
     |-- member_probabilities.joblib
     |-- final_predictions.joblib
     |-- final_predictions_preview.csv
+    |-- inspection_queue.csv                     [when inspection metrics exist]
     |-- predict_summary.json
     |-- schema_manifest.json
     |-- report.html
@@ -266,6 +267,7 @@ project_dir/
 | `final_predictions.joblib` | Complete output with predictions, filled target, class probabilities, rank-confidence diagnostics, independent model/data/geometry risks, declaration agreement, label-aware inspection need/check type, and explainable reasons. |
 | `member_probabilities.joblib` | Selected-model probabilities used to recalculate confidence without refitting. |
 | `final_predictions_preview.csv` | Full-row lightweight CSV with identifiers, target/prediction fields, rank-confidence diagnostics, declaration agreement, and inspection-priority fields. |
+| `inspection_queue.csv` | Every parcel whose `inspection_check_type` is not `NONE`, with the preview columns, ordered by final priority then `inspection_score` (highest first). `inspection_queue_rank` numbers the visit order from 1. `data/inspection_top_priority_parcels.csv` keeps only the first 100. |
 | `predict_summary.json` | Prediction counts, confidence diagnostics, selected strategy, output path, and schema metadata. |
 | `data/inspection_*.csv` | Operational inspection summaries, matrices, predicted-crop rates, and the parcel audit queue used by the report. |
 | `plots/*` | Filled-target distribution, enlarged inspection diagnostics, and optional predicted-label map. |

@@ -57,3 +57,37 @@ export function trainingCounts(models: TrainingModel[]) {
     unavailable: models.length - runnable.length,
   };
 }
+
+export type RerunStep = "train" | "evaluate" | "predict";
+export type RerunRules = {
+  train: string[];
+  evaluate: string[];
+  predict: string[];
+  retrain_all_when: string[];
+  retrain_model_when: Record<string, string[]>;
+};
+
+/** Train, Evaluate and Predict can run again on an idle run once the steps before them are done. */
+export function canRerun(status: string, stepsDone: number, step: RerunStep): boolean {
+  const index = { train: 2, evaluate: 3, predict: 4 }[step];
+  return ["complete", "paused", "failed", "interrupted"].includes(status) && stepsDone >= index;
+}
+
+const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+
+/** Selected models whose saved training no longer matches the edited settings; the server applies the same rule. */
+export function requiredRetrain(
+  previous: Record<string, unknown>,
+  current: Record<string, unknown>,
+  rules: RerunRules,
+): Set<string> {
+  const models = Array.isArray(current.selected_models) ? (current.selected_models as string[]) : [];
+  if (rules.retrain_all_when.some((name) => !same(previous[name], current[name]))) return new Set(models);
+  const changed = models.filter(
+    (model) => !same(previous[`tune_params.${model}`], current[`tune_params.${model}`]),
+  );
+  for (const [model, names] of Object.entries(rules.retrain_model_when)) {
+    if (models.includes(model) && names.some((name) => !same(previous[name], current[name]))) changed.push(model);
+  }
+  return new Set(changed);
+}

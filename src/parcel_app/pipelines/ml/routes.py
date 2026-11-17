@@ -7,6 +7,7 @@ import json
 import posixpath
 import re
 from pathlib import Path
+from typing import Literal
 from urllib.parse import unquote
 from uuid import UUID
 
@@ -21,7 +22,7 @@ from parcel_app.core.storage import contained, ml_directory, sanitize_text, stor
 from parcel_app.jobs.queue import enqueue
 from parcel_app.pipelines.eda.routes import completed_run, source_artifact, source_columns
 
-from .config import OUTLIER_COLUMN, ml_schema, validate_ml
+from .config import OOF_SETTINGS, OUTLIER_COLUMN, ml_defaults, ml_schema, required_retrain, rerun_rules, validate_ml
 
 router = APIRouter()
 ANNOTATED = "eda_annotated_data.parquet"
@@ -38,6 +39,8 @@ STEPS = (
 REPORTS = {name: report for name, _, _, report in STEPS} | {"dashboard": "final_dashboard/report.html"}
 # A run in one of these states has steps left and no job working on it.
 CONTINUABLE = {"paused", "failed", "interrupted"}
+# Steps that can run again on a finished or stopped run, by the index of the step.
+RERUN_STEPS = {"train": 2, "evaluate": 3, "predict": 4}
 
 
 class MLSubmission(BaseModel):
@@ -49,6 +52,15 @@ class MLSubmission(BaseModel):
     features: list[str] = Field(min_length=1, max_length=10000)
     config: dict
     through: int = Field(default=len(STEPS), ge=1, le=len(STEPS))
+
+
+class MLRerun(BaseModel):
+    """Run Train, Evaluate or Predict again with changed later settings; ``retrain`` names models to train afresh."""
+
+    model_config = ConfigDict(extra="forbid")
+    step: Literal["train", "evaluate", "predict"]
+    config: dict
+    retrain: list[str] = Field(default_factory=list, max_length=100)
 
 
 class MLContinuation(BaseModel):
@@ -145,9 +157,10 @@ def options(eda_id: UUID, user: dict = Depends(current_user)):
         "schema": schema,
         # Start from the EDA proposal; an EDA without a target makes none, so fall back to its numeric columns.
         "default_features": proposed or analysed,
-        "default_name": f"ML: {eda['config'].get('report_title') or run['name']}",
-        "eda_title": eda["config"].get("report_title"),
+        "default_name": f"ML: {eda['name']}",
+        "eda_title": eda["name"],
         "run_name": run["name"],
+        "rerun": rerun_rules(),
     }
 
 
@@ -232,12 +245,99 @@ def continue_ml(ml_id: UUID, body: MLContinuation, user: dict = Depends(current_
         return public_ml(row)
 
 
+def stale_artifact(name, start):
+    """Return whether a re-run from step index ``start`` replaces this published file."""
+    folders = {report.split("/", 1)[0] for _, _, _, report in STEPS[start:]} | {"final_dashboard"}
+    return name.split("/", 1)[0] in folders or name in {"ml-results.zip", "report_index.html"}
+
+
+@router.post("/ml/{ml_id}/rerun", status_code=202)
+def rerun_ml(ml_id: UUID, body: MLRerun, user: dict = Depends(current_user)):
+    """Queue Train, Evaluate or Predict again, then every later step, keeping the checked data and the split."""
+    user_id = user["app_user_id"]
+    start = RERUN_STEPS[body.step]
+    with db.connection() as conn:
+        row = db.one("SELECT * FROM ml_runs WHERE ml_id=%s AND app_user_id=%s FOR UPDATE", (str(ml_id), user_id), conn=conn)
+        if not row:
+            raise HTTPException(404, "Error: ML run not found.")
+        if row["status"] not in CONTINUABLE | {"complete"} or row["steps_done"] < start:
+            raise HTTPException(409, "Error: Finish the earlier steps before running this step again.")
+        eda, run = owned_eda_source(row["eda_id"], user_id, conn=conn)
+        columns = feature_columns(eda, run, conn=conn)
+        available = [column["name"] for column in columns if not column["geometry"]]
+        rules = rerun_rules()
+        try:
+            config = validate_ml(body.config, row["feature_columns"], available, geometry=any(c["geometry"] for c in columns))
+        except (ValueError, TypeError) as error:
+            raise HTTPException(422, str(error) if str(error).startswith("Error:") else "Error: Invalid ML settings.") from None
+        # Scenarios saved before a setting existed ran with its default.
+        previous = ml_defaults() | row["config"]
+        editable = set(rules[body.step])
+        if any(config[name] != previous.get(name) for name in config if name not in editable):
+            raise HTTPException(422, f"Error: This re-run can change only settings used from {body.step.title()} on. "
+                                     "Create a new scenario to change the others.")
+        if body.step != "train" and body.retrain:
+            raise HTTPException(422, "Error: Models are retrained only when Train runs again.")
+        if (
+            body.step == "evaluate"
+            and not any(previous.get(name) for name in OOF_SETTINGS)
+            and any(config[name] for name in OOF_SETTINGS)
+        ):
+            raise HTTPException(
+                422,
+                "Error: Probability tuning and rank confidence need out-of-fold predictions that "
+                "Train saves only while one of them is on. Re-run Train to turn them on.",
+            )
+        if set(body.retrain) - set(config["selected_models"]):
+            raise HTTPException(422, "Error: Retrain only models that are selected.")
+        retrain = sorted(set(body.retrain) | required_retrain(previous, config, rules)) if body.step == "train" else []
+        completed_run(row["run_id"], user_id, conn=conn)
+        if not storage_available(1024**3):
+            raise HTTPException(507, "Error: Server storage limit reached.")
+        kept = [item for item in row["artifacts"] if not stale_artifact(item["name"], start)]
+        row = db.one(
+            "UPDATE ml_runs SET config=%s,steps_done=%s,artifacts=%s,status='queued',error=NULL,finished_at=NULL "
+            "WHERE ml_id=%s RETURNING *",
+            (Json(config), start, Json(kept), str(ml_id)),
+            conn=conn,
+        )
+        enqueue("ml", ml_id, user_id, {"through": len(STEPS), "rerun": start, "retrain": retrain}, conn=conn)
+        return public_ml(row)
+
+
 def owned_ml(ml_id, user_id):
     """Hide foreign runs and their artifacts behind the same not-found response."""
     row = db.one("SELECT * FROM ml_runs WHERE ml_id=%s AND app_user_id=%s", (str(ml_id), user_id))
     if not row:
         raise HTTPException(404, "Error: ML run not found.")
     return row
+
+
+class MLName(BaseModel):
+    """Accept only the display name of an existing scenario."""
+
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=200)
+
+
+@router.patch("/ml/{ml_id}/name")
+def rename_ml(ml_id: UUID, body: MLName, user: dict = Depends(current_user)):
+    """Rename an owned scenario without touching its settings, steps or results."""
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(422, "Error: Give the scenario a name.")
+    with db.connection() as conn:
+        row = db.one(
+            "SELECT * FROM ml_runs WHERE ml_id=%s AND app_user_id=%s FOR UPDATE",
+            (str(ml_id), user["app_user_id"]),
+            conn=conn,
+        )
+        if not row:
+            raise HTTPException(404, "Error: ML run not found.")
+        if row["status"] == "deleting":
+            raise HTTPException(409, "Error: This scenario is being deleted.")
+        db.execute("UPDATE ml_runs SET name=%s WHERE ml_id=%s", (name, str(ml_id)), conn=conn)
+        return public_ml(dict(row, name=name))
 
 
 @router.get("/ml/{ml_id}/report/{page}")

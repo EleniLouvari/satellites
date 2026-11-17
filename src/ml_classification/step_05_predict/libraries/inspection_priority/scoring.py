@@ -10,6 +10,7 @@ INSPECTION_OUTPUT_COLUMNS = (
     "confidence_risk",
     "data_risk",
     "geometry_risk",
+    "geometry_complexity_level",
     "inspection_data_reliability_low_threshold",
     "inspection_data_reliability_medium_threshold",
     "inspection_score",
@@ -109,6 +110,27 @@ def saved_data_reliability_thresholds(data: pd.DataFrame, config) -> tuple[float
     return saved[0], saved[1]
 
 
+def geometry_complexity_levels(complexity: pd.Series, geometry_risk: pd.Series, config) -> pd.Series:
+    """Grade each parcel's geometry LOW, MEDIUM or HIGH complexity; missing evidence stays null.
+
+    Percentile mode requires a parcel to pass both its percentile threshold (``geometry_risk``) and the
+    absolute complexity threshold, so a run made of simple parcels is not split in half by ranking alone.
+    Absolute mode uses the complexity thresholds only. Configurations written before the absolute
+    thresholds existed default them to 0, which reproduces the original percentile-only behaviour.
+    """
+    mode = getattr(config, "inspection_geometry_threshold_mode", "percentile")
+    absolute_medium = float(getattr(config, "inspection_medium_geometry_complexity_threshold", 0.0))
+    absolute_high = float(getattr(config, "inspection_high_geometry_complexity_threshold", 0.0))
+    medium = complexity >= absolute_medium
+    high = complexity >= absolute_high
+    if mode != "absolute":
+        medium &= geometry_risk >= config.inspection_medium_geometry_risk_threshold
+        high &= geometry_risk >= config.inspection_high_geometry_risk_threshold
+    levels = pd.Series(np.select([high.fillna(False), medium.fillna(False)], ["HIGH", "MEDIUM"], default="LOW"),
+                       index=complexity.index, dtype="string")
+    return levels.where(complexity.notna() & geometry_risk.notna())
+
+
 def _assign_check_type(status: pd.Series, need: pd.Series, config) -> pd.Series:
     """Map each priority to its operational check, keeping agreement without strong contrary evidence out of the queue."""
     check_type = pd.Series("INSUFFICIENT_EO_EVIDENCE", index=need.index, dtype="string")
@@ -128,6 +150,9 @@ def _apply_label_aware_policy(
     status = result["label_prediction_status"]
     geometry = result["geometry_risk"]
     valid = confidence.isin(["HIGH", "MEDIUM", "LOW"]) & reliability.notna() & geometry.notna()
+    geometry_level = result.get("geometry_complexity_level")
+    if geometry_level is not None:
+        valid &= geometry_level.notna()
     rank_valid = result.get(
         "prediction_rank_confidence_valid", result.get("prediction_confidence_valid", pd.Series(True, index=result.index))
     )
@@ -140,7 +165,12 @@ def _apply_label_aware_policy(
     class_medium = enabled & class_level.eq("MEDIUM")
     # Use the boundary frozen for this population; direct callers without it get the absolute threshold.
     high_data = reliability > saved_data_reliability_thresholds(result, config)[1]
-    good_geometry = geometry < config.inspection_medium_geometry_risk_threshold
+    # Use the level saved at scoring time; it combines percentile rank and absolute complexity per the mode.
+    # Frames scored before the level existed fall back to the percentile rank alone.
+    if geometry_level is not None:
+        good_geometry = geometry_level.eq("LOW")
+    else:
+        good_geometry = geometry < config.inspection_medium_geometry_risk_threshold
     high_rank, medium_rank = confidence.eq("HIGH"), confidence.eq("MEDIUM")
     conditions = [
         class_high & high_rank & high_data & good_geometry,
@@ -276,14 +306,24 @@ def _row_data_reliability_thresholds(row: pd.Series, config) -> tuple[float, flo
     )
 
 
-def _append_geometry_reasons(reasons: list[str], geometry_risk: float, config) -> None:
-    """Append geometry complexity reasons using configured threshold bands."""
-    if pd.isna(geometry_risk):
+def _row_geometry_level(row: pd.Series, config):
+    """Return the saved geometry level, or derive it from the percentile rank for rows scored without one."""
+    if "geometry_complexity_level" in row.index:
+        return row["geometry_complexity_level"]
+    risk = row.get("geometry_risk", np.nan)
+    if pd.isna(risk):
+        return pd.NA
+    if risk >= config.inspection_high_geometry_risk_threshold:
+        return "HIGH"
+    return "MEDIUM" if risk >= config.inspection_medium_geometry_risk_threshold else "LOW"
+
+
+def _append_geometry_reasons(reasons: list[str], geometry_level) -> None:
+    """Append geometry complexity reasons from the saved geometry complexity level."""
+    if pd.isna(geometry_level):
         reasons.append("MISSING_GEOMETRY_COMPLEXITY")
-    elif geometry_risk >= config.inspection_high_geometry_risk_threshold:
-        reasons.append("HIGH_GEOMETRY_COMPLEXITY")
-    elif geometry_risk >= config.inspection_medium_geometry_risk_threshold:
-        reasons.append("MEDIUM_GEOMETRY_COMPLEXITY")
+    elif geometry_level in {"HIGH", "MEDIUM"}:
+        reasons.append(f"{geometry_level}_GEOMETRY_COMPLEXITY")
 
 
 def _inspection_reasons(row: pd.Series, config) -> str:
@@ -293,14 +333,14 @@ def _inspection_reasons(row: pd.Series, config) -> str:
         row.get("prediction_rank_confidence_level", row[config.prediction_confidence_level_column])
     )
     reliability = _normalize_row_reliability(row[config.inspection_data_reliability_column])
-    geometry_risk = row["geometry_risk"]
+    geometry_level = _row_geometry_level(row, config)
     label_status = row["label_prediction_status"]
     check_type = row["inspection_check_type"]
 
     _append_label_alignment_reasons(reasons, label_status, check_type, row["inspection_need"])
     _append_confidence_reasons(reasons, confidence)
     _append_data_reliability_reasons(reasons, reliability, *_row_data_reliability_thresholds(row, config))
-    _append_geometry_reasons(reasons, geometry_risk, config)
+    _append_geometry_reasons(reasons, geometry_level)
 
     if row.get("inspection_rule") == "CLASS_RELIABILITY_UNAVAILABLE":
         reasons.append("CLASS_RELIABILITY_UNAVAILABLE")
@@ -349,6 +389,7 @@ def calculate_inspection_metrics(data: pd.DataFrame, config) -> pd.DataFrame:
     result["confidence_risk"] = confidence.map({"HIGH": 0.0, "MEDIUM": 0.5, "LOW": 1.0}).astype(float)
     result["data_risk"] = 1.0 - reliability
     result["geometry_risk"] = complexity.rank(method="average", pct=True)
+    result["geometry_complexity_level"] = geometry_complexity_levels(complexity, result["geometry_risk"], config)
     # Freeze the data-reliability boundaries so the rules, reasons, and reports all use the same values.
     low_threshold, medium_threshold = effective_data_reliability_thresholds(reliability, config)
     result["inspection_data_reliability_low_threshold"] = low_threshold

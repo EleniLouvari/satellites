@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import { downloadJson, sanitizeConfig, type Schema } from "../api";
 
@@ -16,6 +16,7 @@ export default function ConfigForm({
   onValidityChange,
   exportExtras,
   onImportExtras,
+  highlight = [],
 }: {
   schema: Schema;
   value: Record<string, unknown>;
@@ -25,6 +26,8 @@ export default function ConfigForm({
   exportExtras?: Record<string, unknown>;
   /** Receives the imported file and the settings it produced, to restore page-owned values. */
   onImportExtras?: (raw: Record<string, unknown>, config: Record<string, unknown>) => void;
+  /** Fields made prominent so they are not overlooked, e.g. the analysis name. */
+  highlight?: string[];
 }) {
   const [error, setError] = useState("");
   const [arrayDrafts, setArrayDrafts] = useState<Record<string, string>>({});
@@ -151,7 +154,9 @@ export default function ConfigForm({
     return (
       <div
         key={f.name}
-        className={`config-field ${disabledReason ? "is-disabled" : ""}`}
+        className={`config-field ${disabledReason ? "is-disabled" : ""} ${
+          highlight.includes(f.name) ? "is-highlighted" : ""
+        }`}
       >
         <fieldset
           className="config-fieldset"
@@ -221,29 +226,30 @@ export default function ConfigForm({
                       {members.map(field)}
                     </div>
                   );
+                function section(s: (typeof sections)[number]): ReactNode {
+                  const children = sections.filter((child) => child.parent === s.id);
+                  return (
+                    <section key={s.id} className="config-subgroup">
+                      {s.parent ? <h5>{s.label}</h5> : <h4>{s.label}</h4>}
+                      <div className="config-subgroup-explain">
+                        {s.description.map((text, i) => <p key={i}>{text}</p>)}
+                        {s.formula && <pre className="config-formula">{s.formula}</pre>}
+                      </div>
+                      {children.length > 0 && (
+                        <div className="config-subgroups">{children.map(section)}</div>
+                      )}
+                      <div className="formgrid">
+                        {members.filter((f) => f.subgroup === s.id).map(field)}
+                      </div>
+                    </section>
+                  );
+                }
                 return (
                   <div className="config-group-fields config-subgroups">
                     {loose.length > 0 && (
                       <div className="formgrid">{loose.map(field)}</div>
                     )}
-                    {sections.map((s) => (
-                      <section key={s.id} className="config-subgroup">
-                        <h4>{s.label}</h4>
-                        <div className="config-subgroup-explain">
-                          {s.description.map((text, i) => (
-                            <p key={i}>{text}</p>
-                          ))}
-                          {s.formula && (
-                            <pre className="config-formula">{s.formula}</pre>
-                          )}
-                        </div>
-                        <div className="formgrid">
-                          {members
-                            .filter((f) => f.subgroup === s.id)
-                            .map(field)}
-                        </div>
-                      </section>
-                    ))}
+                    {sections.filter((s) => !s.parent || !known.has(s.parent)).map(section)}
                   </div>
                 );
               })()}

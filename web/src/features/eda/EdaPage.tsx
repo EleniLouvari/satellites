@@ -9,6 +9,7 @@ import {
   type ProgressState,
 } from "../../api";
 import DeleteAction from "../../components/DeleteAction";
+import RenameAction from "../../components/RenameAction";
 import Progress from "../../components/Progress";
 import { Button, Heading, Notice, Status } from "../../components/ui";
 import ConfigForm from "../../components/ConfigForm";
@@ -26,6 +27,7 @@ type EdaArtifact = { artifact_id: string; name: string; size_bytes: number };
 type EdaRun = {
   progress?: ProgressState;
   eda_id: string;
+  name: string;
   status: string;
   selected_columns: string[];
   config: Record<string, unknown>;
@@ -213,7 +215,7 @@ export default function EdaPage({
             historyLabel="Previous analyses"
             items={history.map((item) => ({
               id: item.eda_id,
-              title: String(item.config.report_title ?? "EDA analysis"),
+              title: item.name,
               meta: `${date(item.created_at)} · ${item.selected_columns.length} columns`,
               status: item.status,
             }))}
@@ -337,6 +339,7 @@ export default function EdaPage({
                 value={config}
                 onChange={changeConfig}
                 onValidityChange={setValid}
+                highlight={["report_title"]}
               />
               <details className="sectiongap">
                 <summary>Managed output settings</summary>
@@ -376,7 +379,7 @@ export default function EdaPage({
               <section className="panel pad" key={item.eda_id}>
                 <div className="heading">
                   <div>
-                    <h3>{String(item.config.report_title)}</h3>
+                    <h3>{item.name}</h3>
                     <small>
                       {date(item.created_at)} · {item.selected_columns.length}{" "}
                       columns
@@ -399,10 +402,23 @@ export default function EdaPage({
                   </p>
                 )}
                 <div className="actions">
+                  <RenameAction<EdaRun>
+                    id={item.eda_id}
+                    name={item.name}
+                    path={`/eda/${item.eda_id}/name`}
+                    status={item.status}
+                    onRenamed={(renamed) =>
+                      setHistory((rows) =>
+                        rows.map((row) =>
+                          row.eda_id === renamed.eda_id ? renamed : row,
+                        ),
+                      )
+                    }
+                  />
                   <DeleteAction
                     kind="eda"
                     id={item.eda_id}
-                    name={String(item.config.report_title ?? "EDA analysis")}
+                    name={item.name}
                     status={item.status}
                     onDeleted={() => {
                       setHistory((rows) =>
@@ -430,7 +446,7 @@ export default function EdaPage({
                         onClick={() =>
                           onMl({
                             edaId: item.eda_id,
-                            title: String(item.config.report_title ?? "EDA"),
+                            title: item.name,
                             runName: run.name,
                           })
                         }

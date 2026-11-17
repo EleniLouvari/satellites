@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Self-contained on purpose: no scripts, no external fonts or images, so it opens offline and under the Parcel Studio CSP.
+     Source of truth: docs/data_preparation/openeo/WORKFLOW_DIAGRAM.html. web/public/help/ holds an identical copy for the Help dialog. -->
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>openEO Parcel Statistics Workflow</title>
+<style>
+/* Layout idea: one vertical flow, five stage bands, each step a numbered card with the flags that control it. */
+:root {
+  --bg: #f4f6f5;
+  --surface: #ffffff;
+  --ink: #17242b;
+  --muted: #55666e;
+  --line: #c9d3d2;
+  --remote: #1f6f8b;      /* runs on the openEO backend */
+  --local: #3d7a4f;       /* runs on your machine */
+  --flag-bg: #fff3d6;
+  --flag-ink: #6b4a00;
+  --gate-bg: #e6eef7;
+  --gate-ink: #234a78;
+  --display: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --body: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, Consolas, "Cascadia Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #10181c; --surface: #18242a; --ink: #e4ecec; --muted: #9db0b5; --line: #33454c;
+    --remote: #6dbbd6; --local: #86c598; --flag-bg: #3d3110; --flag-ink: #f3d489;
+    --gate-bg: #1d2f45; --gate-ink: #a9c8ee; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #10181c; --surface: #18242a; --ink: #e4ecec; --muted: #9db0b5; --line: #33454c;
+  --remote: #6dbbd6; --local: #86c598; --flag-bg: #3d3110; --flag-ink: #f3d489;
+  --gate-bg: #1d2f45; --gate-ink: #a9c8ee; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 var(--body); }
+main { max-width: 1040px; margin: 0 auto; padding: 32px 20px 64px; display: flex; flex-direction: column; gap: 28px; }
+h1, h2, h3 { font-family: var(--display); font-weight: 600; text-wrap: balance; margin: 0; }
+h1 { font-size: 34px; line-height: 1.1; }
+h2 { font-size: 24px; }
+h3 { font-size: 17px; font-family: var(--body); }
+p { margin: 0; }
+.lede { color: var(--muted); max-width: 68ch; margin-top: 8px; }
+code, .flag, .gate { font-family: var(--mono); font-size: 12.5px; }
+code { background: var(--flag-bg); color: var(--flag-ink); padding: 1px 5px; border-radius: 4px; }
+
+.legend { display: flex; flex-wrap: wrap; gap: 8px 20px; font-size: 13px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+
+.stage { display: flex; flex-direction: column; gap: 0; }
+.stage-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; padding: 10px 14px; border-radius: 8px 8px 0 0; color: #fff; }
+.stage-head h2 { color: inherit; }
+.stage-head .where { font-size: 13px; opacity: .92; }
+.stage.local .stage-head { background: var(--local); }
+.stage.remote .stage-head { background: var(--remote); }
+:root[data-theme="dark"] .stage-head { color: #0c1215; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .stage-head { color: #0c1215; } }
+.stage-body { border: 1px solid var(--line); border-top: 0; border-radius: 0 0 8px 8px; padding: 18px 14px 14px; display: flex; flex-direction: column; }
+.stage + .handoff { margin: -14px 0; }
+.handoff { text-align: center; font-size: 13px; color: var(--muted); }
+.handoff b { display: block; font-size: 20px; line-height: 1; color: var(--ink); }
+
+.step { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; display: grid; grid-template-columns: 34px 1fr; gap: 4px 10px; }
+.step .n { grid-row: 1 / span 4; width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; font: 600 14px var(--display); color: #fff; background: var(--ink); }
+:root[data-theme="dark"] .step .n { color: #10181c; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .step .n { color: #10181c; } }
+.step > * { grid-column: 2; }
+.step > .n { grid-column: 1; }
+.step p, .step li { font-size: 14px; }
+.step ul, .step ol { margin: 4px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 3px; }
+.flags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.flag { background: var(--flag-bg); color: var(--flag-ink); padding: 2px 7px; border-radius: 4px; white-space: nowrap; }
+.gate { display: inline-block; background: var(--gate-bg); color: var(--gate-ink); padding: 2px 8px; border-radius: 999px; margin-top: 2px; justify-self: start; }
+.const { color: var(--muted); font-size: 13px; }
+
+.arrow { height: 26px; position: relative; }
+.arrow::before { content: ""; position: absolute; left: 31px; top: 0; bottom: 6px; width: 2px; background: var(--muted); }
+.arrow::after { content: ""; position: absolute; left: 26px; bottom: 0; border: 6px solid transparent; border-top: 8px solid var(--muted); border-bottom: 0; }
+
+.split { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.split .step { align-content: start; }
+.sub { border-left: 3px solid var(--line); padding-left: 12px; margin-top: 8px; display: flex; flex-direction: column; gap: 10px; }
+.figs { display: grid; grid-template-columns: 1.6fr 1fr; gap: 12px; margin-top: 10px; }
+figure { margin: 0; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 10px; overflow-x: auto; }
+figure svg { display: block; max-width: 100%; height: auto; margin: 0 auto; color: var(--ink); }
+figcaption { font-size: 12.5px; color: var(--muted); margin-top: 6px; }
+
+.tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; min-width: 640px; font-size: 13.5px; }
+th, td { text-align: left; vertical-align: top; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+th { font-weight: 600; font-size: 12.5px; color: var(--muted); background: var(--bg); }
+tr:last-child td { border-bottom: 0; }
+td:first-child, td:nth-child(2) { white-space: nowrap; }
+td:nth-child(2) { font-family: var(--mono); font-size: 12.5px; }
+td:last-child { text-align: center; color: var(--muted); font-variant-numeric: tabular-nums; }
+.ref { display: flex; flex-direction: column; gap: 18px; }
+.ref section { display: flex; flex-direction: column; gap: 8px; }
+.notes { background: var(--surface); border: 1px solid var(--line); border-left: 4px solid var(--flag-ink); border-radius: 8px; padding: 14px 16px; }
+.notes ul { margin: 6px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; font-size: 14px; }
+@media (max-width: 640px) {
+  .split, .figs { grid-template-columns: 1fr; }
+  h1 { font-size: 28px; }
+}
+</style>
+</head>
+<body>
+<main>
+<header>
+  <h1>openEO parcel statistics workflow</h1>
+  <p class="lede">How <code>OpenEOZonalStats</code> turns parcel polygons into one ML-ready row per parcel: what is requested from openEO, how the downloaded pixels are cleaned and filled, and how the parcel statistics are calculated. Read from the code in <code>src/data_preparation/</code>. Defaults are the constructor defaults.</p>
+</header>
+
+<div class="legend">
+  <span><i class="swatch" style="background:var(--local)"></i> runs on your machine</span>
+  <span><i class="swatch" style="background:var(--remote)"></i> runs on the openEO backend (Copernicus Data Space)</span>
+  <span><span class="flag">flag = default</span> input that controls the step</span>
+  <span><span class="gate">only if …</span> step is conditional</span>
+</div>
+
+<!-- ============ STAGE 1 ============ -->
+<section class="stage local">
+  <div class="stage-head"><h2>1 · Prepare</h2><span class="where">your machine · once per run</span></div>
+  <div class="stage-body">
+    <div class="step" id="s1"><span class="n">1</span>
+      <h3>Validate the configuration</h3>
+      <p>Dates are parsed and ordered, the EPSG must be a projected CRS, band and index names are checked, and at least one Sentinel-1 or Sentinel-2 output must be selected. Bands needed by an index are added to the download list automatically, without becoming outputs themselves.</p>
+      <div class="flags"><span class="flag">start_date</span><span class="flag">end_date</span><span class="flag">working_epsg</span><span class="flag">output_dir</span><span class="flag">sentinel2_bands = B02,B03,B04,B05,B08</span><span class="flag">sentinel2_indices = None</span><span class="flag">sentinel1_bands = None</span><span class="flag">sentinel1_indices = None</span></div>
+    </div>
+    <div class="arrow"></div>
+    <div class="step" id="s2"><span class="n">2</span>
+      <h3>Prepare the parcels</h3>
+      <p>Geometries are repaired with <code>make_valid</code>, only polygon parts are kept, empty parcels are dropped, the ID column is cast to string and must be unique (it is created from the index when missing), and the parcels are reprojected to EPSG:4326 for openEO. All other attribute columns are kept and reach the final file.</p>
+      <div class="flags"><span class="flag">parcels</span><span class="flag">parcel_id_field = "parcel_id"</span></div>
+    </div>
+    <div class="arrow"></div>
+    <div class="step" id="s3"><span class="n">3</span>
+      <h3>Check for reusable results and build the cache key</h3>
+      <p>If the three final files exist and the completion manifest matches the current settings and parcel IDs, the run returns them immediately. Otherwise a 16-character signature of the processing options, parcel IDs and geometries names the raw-cube cache folder <code>monthly_cubes/&lt;signature&gt;/</code>.</p>
+      <div class="flags"><span class="flag">resume_completed_partitions = False</span></div>
+    </div>
+    <div class="arrow"></div>
+    <div class="split">
+      <div class="step" id="s4"><span class="n">4a</span>
+        <h3>Split into jobs: <code>OpenEOZonalStats</code></h3>
+        <p>Parcels are grouped by the 50 km grid cell of their centroid (in <code>working_epsg</code>), sorted by position, and cut into jobs of at most 5,000 parcels. Each job sends the parcel polygons themselves.</p>
+        <p class="const">Constants: GRID_SIZE_METRES 50,000 · MAX_FEATURES_PER_JOB 5,000</p>
+      </div>
+      <div class="step"><span class="n">4b</span>
+        <h3>Split into jobs: <code>OpenEOJobManagerZonalStats</code></h3>
+        <p>One job per square tile. Each parcel belongs to the tile holding its representative point; the tile is requested as a buffered bounding box, so a parcel on an edge is still fully covered.</p>
+        <div class="flags"><span class="flag">tile_size_metres = 50000</span><span class="flag">tile_buffer_metres = 500</span><span class="flag">fit_tiles_to_parcels = False</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="handoff"><b>↓</b>one process graph per batch</div>
+
+<!-- ============ STAGE 2 ============ -->
+<section class="stage remote">
+  <div class="stage-head"><h2>2 · Acquire from openEO</h2><span class="where">openEO backend · once per batch</span></div>
+  <div class="stage-body">
+    <div class="split">
+      <div class="step" id="s5"><span class="n">5</span>
+        <h3>Sentinel-2 branch</h3>
+        <span class="gate">only if any S2 band or index is selected</span>
+        <ol>
+          <li><b>Load</b> <code>SENTINEL2_L2A</code> for the date range: requested bands, index source bands and the SCL band. Scenes above the cloud-cover limit are dropped.</li>
+          <li><b>Filter spatially</b> to the batch parcels.</li>
+          <li><b>Resample</b> reflectance to 10 m (bilinear) and scale by 0.0001.</li>
+          <li><b>Mask invalid pixels</b> using SCL (resampled nearest): classes 0 no data, 1 defective, 3 cloud shadow, 8 and 9 cloud, 10 cirrus, 11 snow.</li>
+          <li><b>Buffer clouds</b>: classes 3, 8, 9, 10, 11 are grown by one pixel with a 3×3 kernel and masked too.</li>
+        </ol>
+        <div class="flags"><span class="flag">sentinel2_max_scene_cloud_cover = 70</span></div>
+      </div>
+      <div class="step" id="s6"><span class="n">6</span>
+        <h3>Sentinel-1 branch</h3>
+        <span class="gate">only if any S1 band or index is selected</span>
+        <ol>
+          <li><b>Load</b> <code>SENTINEL1_GRD</code> for the date range: VV and/or VH, optionally one orbit direction only.</li>
+          <li><b>Filter spatially</b> to the batch parcels.</li>
+          <li><b>Backscatter</b>: sigma0 over the ellipsoid, Copernicus 30 m DEM, kept in linear power (no dB conversion).</li>
+        </ol>
+        <div class="flags"><span class="flag">sentinel1_orbit_direction = "BOTH"</span></div>
+      </div>
+    </div>
+    <div class="arrow"></div>
+    <div class="step" id="s7"><span class="n">7</span>
+      <h3>Aggregate over time</h3>
+      <p>Each sensor cube is reduced into bins of <code>temporal_period</code>, labelled by the bin start date. Bins are half-open and the last calendar day is included.</p>
+      <ul>
+        <li><code>mean</code>, <code>median</code>, <code>min</code>, <code>max</code>, <code>sum</code>: one composite image per bin, per pixel.</li>
+        <li><code>none</code>: no remote aggregation. Every acquisition is downloaded and the pooling happens later, at step 18.</li>
+      </ul>
+      <div class="flags"><span class="flag">temporal_period = "1M"</span><span class="flag">temporal_reducer = "median"</span></div>
+    </div>
+    <div class="arrow"></div>
+    <div class="step" id="s8"><span class="n">8</span>
+      <h3>Put both sensors on one grid</h3>
+      <p>Sentinel-1 is resampled (bilinear) onto the Sentinel-2 grid and the cubes are merged. With Sentinel-1 only, it is resampled to 10 m. The cube keeps the source projection; nothing is reprojected to <code>working_epsg</code>.</p>
+    </div>
+    <div class="arrow"></div>
+    <div class="step" id="s9"><span class="n">9</span>
+      <h3>Run the batch job and download NetCDF</h3>
+      <p>Jobs run in waves. Each result is written to a <code>.partial.nc</code> file and renamed to <code>batch_00001_monthly.nc</code> only when complete, so an existing file is always a finished download and is reused on the next run. Login uses the username and password when given, otherwise the interactive OIDC flow.</p>
+      <div class="flags"><span class="flag">batch_workers = 1</span><span class="flag">openeo_username = None</span><span class="flag">openeo_password = None</span></div>
+      <p class="const">Tile variant instead uses: openeo_parallel_jobs 2 · job_poll_seconds 30 · max_job_retries 3 · job_retry_delay_seconds 60 · openeo_job_options · openeo_auto_memory_retry True · openeo_max_executor_memory "8G"</p>
+    </div>
+  </div>
+</section>
+
+<div class="handoff"><b>↓</b>raw cube: time × band × y × x</div>
+
+<!-- ============ STAGE 3 ============ -->
+<section class="stage local">
+  <div class="stage-head"><h2>3 · Clean and fill the pixels</h2><span class="where">your machine · per batch, one band × time-step layer at a time</span></div>
+  <div class="stage-body">
+    <div class="step" id="s10"><span class="n">10</span>
+      <h3>Open the cube and align the parcels</h3>
+      <p>The cube's own CRS and transform are read, and the batch parcels are projected into it. Batches run in parallel processes; a batch with saved statistics is skipped.</p>
+      <div class="flags"><span class="flag">batch_workers = 1</span></div>
+    </div>
+    <div class="arrow"></div>
+    <div class="step" id="s11"><span class="n">11</span>
+      <h3>Remove outliers (IQR)</h3>
+      <span class="gate">only if remove_outliers = True</span>
+      <p>For each layer, Q1 and Q3 are taken over all valid pixels of the batch raster. Pixels below Q1 − k·IQR or above Q3 + k·IQR become null. Layers with too few valid pixels are left untouched. Bounds are never shared between dates or bands.</p>
+      <div class="flags"><span class="flag">remove_outliers = False</span><span class="flag">iqr_quantiles = (0.25, 0.75)</span><span class="flag">iqr_multiplier = 1.5</span><span class="flag">iqr_min_valid_pixels = 20</span></div>
+      <p class="const">The values that survive this step are the "observed" pixels. Their mask is stored so every later fill can be traced.</p>
+    </div>
+    <div class="arrow"></div>
+    <div class="step" id="s12"><span class="n">12</span>
+      <h3>Coverage guard</h3>
+      <span class="gate">only if fill_nulls = True</span>
+      <p>A layer is filled only when its observed share of pixels reaches the minimum. A layer below it stays as it is and is also hidden as a donor, so a mostly cloudy date cannot spread into good dates.</p>
+      <div class="flags"><span class="flag">fill_nulls = False</span><span class="flag">minimum_observed_fraction_for_fill = 0.20</span></div>
+    </div>
+    <div class="arrow"></div>
+    <div class="step" id="s13"><span class="n">13</span>
+      <h3>Fill cascade: each stage only touches pixels that are still null</h3>
+      <span class="gate">only if fill_nulls = True</span>
+      <div class="sub">
+        <div>
+          <h3>13a · Temporal fill (same pixel, other dates)</h3>
+          <p>For each null pixel, look at the same pixel on neighbouring time steps. <code>past_only</code> copies the closest earlier value. <code>bidirectional</code> averages the closest earlier and later values, or uses whichever one exists. A window of 3 reaches one step each way; wider windows retry the gaps that remain, nearest step first, and always read original observations, never values filled a moment ago. <code>None</code> searches without limit. Steps where the band has no observation anywhere (Sentinel-1 dates for a Sentinel-2 band) are not counted as steps.</p>
+          <div class="flags"><span class="flag">temporal_fill_mode = "past_only"</span><span class="flag">temporal_fill_window_sizes = (3,)</span><span class="flag">temporal_fill_block_rows = 2048</span></div>
+        </div>
+        <div>
+          <h3>13b · Spatial mean fill (same date, neighbouring pixels)</h3>
+          <p>Each remaining null takes the mean of the valid pixels in a square window around it, when there is at least one. Windows run in order and only while nulls remain, and a larger window can use values written by a smaller one. Allowed settings: (3,), (3, 5), (3, 5, 7) or (3, 5, 7, 9).</p>
+          <div class="flags"><span class="flag">spatial_fill_window_sizes = (3, 5, 7)</span></div>
+        </div>
+        <div>
+          <h3>13c · Interpolation (last resort)</h3>
+          <p>Whatever is still null is interpolated per layer. <code>nearest</code> copies the nearest valid pixel, optionally only within a maximum distance. <code>idw</code> needs the maximum distance. <code>kriging</code> needs the variogram maximum distance.</p>
+          <div class="flags"><span class="flag">interpolation_method = "nearest"</span><span class="flag">interpolation_max_distance_in_meters = None</span><span class="flag">interpolation_variogram_lags = 15</span><span class="flag">interpolation_variogram_max_distance_in_meters = None</span></div>
+        </div>
+      </div>
+      <div class="figs">
+        <figure>
+          <svg viewBox="0 0 520 150" role="img" aria-label="Temporal fill: a null pixel takes the value from the previous time step, and also the next one in bidirectional mode">
+            <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker></defs>
+            <g font-family="Consolas, Menlo, monospace" font-size="12" text-anchor="middle" fill="currentColor">
+              <text x="75" y="38">t−2</text><text x="165" y="38">t−1</text><text x="255" y="38">t</text><text x="345" y="38">t+1</text><text x="435" y="38">t+2</text>
+              <g fill="none" stroke="currentColor" stroke-width="1.5">
+                <rect x="40" y="48" width="70" height="38" rx="4"/><rect x="130" y="48" width="70" height="38" rx="4"/>
+                <rect x="220" y="48" width="70" height="38" rx="4" stroke-dasharray="5 4"/>
+                <rect x="310" y="48" width="70" height="38" rx="4"/><rect x="400" y="48" width="70" height="38" rx="4"/>
+                <line x1="201" y1="67" x2="218" y2="67" marker-end="url(#ah)"/>
+                <line x1="309" y1="67" x2="292" y2="67" stroke-dasharray="3 3" marker-end="url(#ah)"/>
+                <path d="M130 100v8h250v-8"/><path d="M40 122v8h430v-8"/>
+              </g>
+              <text x="75" y="72">value</text><text x="165" y="72">value</text><text x="255" y="72">null</text><text x="345" y="72">value</text><text x="435" y="72">value</text>
+              <text x="255" y="104" font-size="11">window 3</text><text x="255" y="126" font-size="11">window 5, retry</text>
+            </g>
+          </svg>
+          <figcaption>13a. Solid arrow: <code>past_only</code>. Dashed arrow is added by <code>bidirectional</code>, and the two values are averaged.</figcaption>
+        </figure>
+        <figure>
+          <svg viewBox="0 0 240 240" role="img" aria-label="Spatial fill windows of 3 by 3, 5 by 5 and 7 by 7 pixels centred on the null pixel">
+            <g fill="none" stroke="currentColor">
+              <g stroke-width="0.5" opacity="0.45">
+                <path d="M22 22h196M22 50h196M22 78h196M22 106h196M22 134h196M22 162h196M22 190h196M22 218h196M22 22v196M50 22v196M78 22v196M106 22v196M134 22v196M162 22v196M190 22v196M218 22v196"/>
+              </g>
+              <rect x="106" y="106" width="28" height="28" fill="currentColor" opacity="0.8"/>
+              <rect x="78" y="78" width="84" height="84" stroke-width="2.5"/>
+              <rect x="50" y="50" width="140" height="140" stroke-width="1.8" stroke-dasharray="6 3"/>
+              <rect x="22" y="22" width="196" height="196" stroke-width="1.4" stroke-dasharray="2 3"/>
+            </g>
+            <g font-family="Consolas, Menlo, monospace" font-size="11" fill="currentColor">
+              <text x="82" y="92">3×3</text><text x="54" y="64">5×5</text><text x="26" y="36">7×7</text>
+            </g>
+          </svg>
+          <figcaption>13b. The null pixel (filled square) tries 3×3 first, then 5×5, then 7×7.</figcaption>
+        </figure>
+      </div>
+    </div>
+    <div class="arrow"></div>
+    <div class="step" id="s14"><span class="n">14</span>
+      <h3>Calculate indices from the cleaned bands</h3>
+      <p>Indices are computed locally, per pixel and per time step, from the cleaned and filled bands, so an index never has its own separate cleaning. Sentinel-2: NDVI, NDWI, MNDWI, NDMI, NBR, GNDVI, EVI, SAVI, MSAVI, NDRE, PSRI, CI. Sentinel-1: R = VV / VH and RVI = 4·VH / (VV + VH). A zero denominator gives null. Each index is also computed from observed-only and observed-plus-temporal bands to record whether its value was observed, temporally filled or spatially filled.</p>
+      <div class="flags"><span class="flag">sentinel2_indices</span><span class="flag">sentinel1_indices</span><span class="flag">keep_cleaned_checkpoint = False</span></div>
+      <p class="const">Checkpoints on disk: <code>…_cleaned.nc</code> (bands, removed afterwards unless kept), <code>…_final.nc</code> (bands and indices with the two provenance masks), <code>…_cleaning_report.parquet</code>.</p>
+    </div>
+  </div>
+</section>
+
+<div class="handoff"><b>↓</b>final cube: period × output variable × y × x</div>
+
+<!-- ============ STAGE 4 ============ -->
+<section class="stage local">
+  <div class="stage-head"><h2>4 · Parcel statistics</h2><span class="where">your machine · per parcel</span></div>
+  <div class="stage-body">
+    <div class="step" id="s15"><span class="n">15</span>
+      <h3>Select the parcel's pixels</h3>
+      <p>The parcel is rasterised once on its own bounding window with <code>all_touched=True</code>: every pixel the polygon touches belongs to the parcel. The same mask is reused for all variables and dates.</p>
+    </div>
+    <div class="arrow"></div>
+    <div class="step" id="s16"><span class="n">16</span>
+      <h3>Require a real observation</h3>
+      <span class="gate">only if require_parcel_observation = True</span>
+      <p>A date on which none of the parcel's pixels was observed for that variable is set to null, so a statistic is never built from filled values alone.</p>
+      <div class="flags"><span class="flag">require_parcel_observation = False</span></div>
+    </div>
+    <div class="arrow"></div>
+    <div class="step" id="s17"><span class="n">17</span>
+      <h3>Pool acquisitions into the period</h3>
+      <span class="gate">only if temporal_reducer = "none"</span>
+      <p>All valid parcel pixels of every acquisition inside the bin are pooled into one sample. With any other reducer each bin already holds one composite image.</p>
+    </div>
+    <div class="arrow"></div>
+    <div class="step" id="s18"><span class="n">18</span>
+      <h3>Reduce to statistics</h3>
+      <p>For every period and output variable the valid pixels are reduced to the requested statistics. <code>mean</code> is always included. Options: <code>median</code>, <code>sd</code> (sample, n − 1), <code>min</code>, <code>max</code>, <code>range</code>, <code>p10</code>, <code>p25</code>, <code>p75</code>, <code>p90</code>. Nulls are ignored; a parcel with no valid pixel gets null.</p>
+      <div class="flags"><span class="flag">spatial_statistics = ["mean"]</span></div>
+    </div>
+    <div class="arrow"></div>
+    <div class="step" id="s19"><span class="n">19</span>
+      <h3>Attach quality metrics</h3>
+      <p>Per parcel: <code>intersected_pixel_count</code>, <code>pixel_area</code>, <code>meets_minimum_pixel_count</code> (a flag only, small parcels are kept), counts and ratios of temporally and spatially filled values, and <code>data_reliability_score</code> = observed values ÷ expected values over all periods and variables.</p>
+      <div class="flags"><span class="flag">minimum_parcel_pixels = 3</span></div>
+    </div>
+    <div class="arrow"></div>
+    <div class="step" id="s20"><span class="n">20</span>
+      <h3>Save the batch</h3>
+      <p>Batch statistics and the cleaning report are saved to Parquet so a restart skips the batch. Only after that are the batch's NetCDF files deleted, if requested.</p>
+      <div class="flags"><span class="flag">remove_nc_after_completion = False</span></div>
+    </div>
+  </div>
+</section>
+
+<div class="handoff"><b>↓</b>long table: one row per parcel × period</div>
+
+<!-- ============ STAGE 5 ============ -->
+<section class="stage local">
+  <div class="stage-head"><h2>5 · Assemble the outputs</h2><span class="where">your machine · once per run</span></div>
+  <div class="stage-body">
+    <div class="step" id="s21"><span class="n">21</span>
+      <h3>Combine batches and add derived features</h3>
+      <p>Batches are concatenated and sorted by parcel and period. Geometry features are computed in <code>working_epsg</code>: area, compactness, perimeter to area ratio, shape index, elongation, interior area ratio, shape complexity score. Where the source statistics exist, each variable also gets variance, coefficient of variation, range, IQR, Bowley skewness and the p90 − p10 spread.</p>
+      <div class="flags"><span class="flag">working_epsg</span></div>
+    </div>
+    <div class="arrow"></div>
+    <div class="step" id="s22"><span class="n">22</span>
+      <h3>Pivot to one row per parcel</h3>
+      <p>Period rows become dated columns named <code>VARIABLE_statistic__YYYYMMDD</code>, for example <code>NDVI_median__20240701</code>. Missing periods are added as null columns so every partition has the same schema. The original parcel attributes and geometry are attached.</p>
+    </div>
+    <div class="arrow"></div>
+    <div class="step" id="s23"><span class="n">23</span>
+      <h3>Write the files to <code>output_dir</code></h3>
+      <ul>
+        <li><code>satellite_parcel_time_stats.geoparquet</code>: the wide, dated table for ML.</li>
+        <li><code>satellite_parcel_annual_stats.geoparquet</code>: dated columns replaced by the mean, min, max and standard deviation over the periods of each variable's <code>_median</code> columns.</li>
+        <li><code>satellite_pixel_cleaning_report.csv</code>: per batch, period and variable, the IQR bounds, outlier count and nulls left after each fill stage.</li>
+        <li><code>satellite_partition_completion.json</code> and four log files (orchestration, source, raster filling, parcel statistics).</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<aside class="notes">
+  <h3>Things to know before choosing values</h3>
+  <ul>
+    <li>Cleaning is off by default. With <code>remove_outliers=False</code> and <code>fill_nulls=False</code>, steps 11 to 13 are skipped and statistics use only the cloud-masked pixels openEO returned.</li>
+    <li>IQR bounds and the coverage guard are measured over the whole batch raster for that band and date, not per parcel. Changing how parcels are batched or tiled can therefore change which pixels count as outliers.</li>
+    <li>In <code>ParcelStatsBase</code>: the <code>spatial_fill_window_sizes</code> defaults to (3, 5, 7), and <code>temporal_fill_block_rows</code> defaults to 2048.</li>
+    <li>Raw downloads are keyed by acquisition settings and parcels; cleaned checkpoints are keyed by the cleaning settings. Changing only a fill option reuses the downloaded cubes and redoes the local work.</li>
+  </ul>
+</aside>
+
+<!-- ============ REFERENCE ============ -->
+<section class="ref">
+  <h2>Input flags and variables</h2>
+
+  <section>
+    <h3>What to process</h3>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Flag</th><th>Default</th><th>Meaning</th><th>Step</th></tr></thead>
+      <tbody>
+        <tr><td><code>parcels</code></td><td>required</td><td>GeoDataFrame of parcel polygons with a CRS. Extra columns such as labels are carried to the output.</td><td>2</td></tr>
+        <tr><td><code>start_date</code>, <code>end_date</code></td><td>required</td><td>Inclusive date range.</td><td>1, 5 to 7</td></tr>
+        <tr><td><code>output_dir</code></td><td>required</td><td>Folder for the cube cache, checkpoints, logs and final files.</td><td>3, 23</td></tr>
+        <tr><td><code>working_epsg</code></td><td>required</td><td>Projected CRS used for batching, geometry features and output geometry. Pixels stay in the cube's own CRS.</td><td>4, 21</td></tr>
+        <tr><td><code>parcel_id_field</code></td><td>"parcel_id"</td><td>Unique ID column. Created from the index when absent.</td><td>2</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h3>Sensors, bands and time</h3>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Flag</th><th>Default</th><th>Meaning</th><th>Step</th></tr></thead>
+      <tbody>
+        <tr><td><code>sentinel2_bands</code></td><td>B02 B03 B04 B05 B08</td><td>Reflectance bands to output, from B01 to B12 and B8A. An empty list turns standalone bands off.</td><td>5</td></tr>
+        <tr><td><code>sentinel2_indices</code></td><td>None</td><td>Indices to output. Their source bands are downloaded automatically.</td><td>5, 14</td></tr>
+        <tr><td><code>sentinel2_max_scene_cloud_cover</code></td><td>70</td><td>Scenes with more cloud than this percentage are not loaded. Pixel masking with SCL still applies to the rest.</td><td>5</td></tr>
+        <tr><td><code>sentinel1_bands</code></td><td>None</td><td>VV and/or VH, as linear-power sigma0.</td><td>6</td></tr>
+        <tr><td><code>sentinel1_indices</code></td><td>None</td><td>R and/or RVI. Both load VV and VH.</td><td>6, 14</td></tr>
+        <tr><td><code>sentinel1_orbit_direction</code></td><td>"BOTH"</td><td>ASCENDING, DESCENDING or BOTH (no filter).</td><td>6</td></tr>
+        <tr><td><code>temporal_period</code></td><td>"1M"</td><td>Bin width: a number plus D, M or Y, for example 15D, 1M, 3M, 1Y.</td><td>7</td></tr>
+        <tr><td><code>temporal_reducer</code></td><td>"median"</td><td>How acquisitions in a bin are combined per pixel: mean, median, min, max, sum. "none" keeps every acquisition and pools parcel pixels at step 17.</td><td>7, 17</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h3>Outlier removal</h3>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Flag</th><th>Default</th><th>Meaning</th><th>Step</th></tr></thead>
+      <tbody>
+        <tr><td><code>remove_outliers</code></td><td>False</td><td>Turn the IQR filter on.</td><td>11</td></tr>
+        <tr><td><code>iqr_quantiles</code></td><td>(0.25, 0.75)</td><td>Lower and upper quantile that define the IQR.</td><td>11</td></tr>
+        <tr><td><code>iqr_multiplier</code></td><td>1.5</td><td>k in Q1 − k·IQR and Q3 + k·IQR. Larger keeps more pixels.</td><td>11</td></tr>
+        <tr><td><code>iqr_min_valid_pixels</code></td><td>20</td><td>A layer with fewer valid pixels is not filtered.</td><td>11</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h3>Null filling</h3>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Flag</th><th>Default</th><th>Meaning</th><th>Step</th></tr></thead>
+      <tbody>
+        <tr><td><code>fill_nulls</code></td><td>False</td><td>Turn the whole fill cascade on.</td><td>12, 13</td></tr>
+        <tr><td><code>minimum_observed_fraction_for_fill</code></td><td>0.20</td><td>A band and date layer with a smaller observed share is neither filled nor used as a temporal donor.</td><td>12</td></tr>
+        <tr><td><code>temporal_fill_mode</code></td><td>"past_only"</td><td>"past_only" uses earlier dates only. "bidirectional" also uses later dates and averages both sides.</td><td>13a</td></tr>
+        <tr><td><code>temporal_fill_window_sizes</code></td><td>(3,)</td><td>Increasing odd widths in time steps, counting the target step. (3, 5) tries one step away, then two. None removes the limit.</td><td>13a</td></tr>
+        <tr><td><code>temporal_fill_block_rows</code></td><td>2048</td><td>Memory control only: maximum raster rows handled per temporal-fill block. None sizes blocks automatically. No effect on results.</td><td>13a</td></tr>
+        <tr><td><code>spatial_fill_window_sizes</code></td><td>(3, 5, 7)</td><td>Neighbourhood sizes for the mean fill, applied in order. Add 9 only when wider smoothing is acceptable.</td><td>13b</td></tr>
+        <tr><td><code>interpolation_method</code></td><td>"nearest"</td><td>Final method for remaining nulls: nearest, idw or kriging.</td><td>13c</td></tr>
+        <tr><td><code>interpolation_max_distance_in_meters</code></td><td>None</td><td>Search radius. Required for idw. For nearest, gaps farther than this stay null.</td><td>13c</td></tr>
+        <tr><td><code>interpolation_variogram_lags</code></td><td>15</td><td>Number of variogram lags for kriging.</td><td>13c</td></tr>
+        <tr><td><code>interpolation_variogram_max_distance_in_meters</code></td><td>None</td><td>Variogram range limit. Required for kriging.</td><td>13c</td></tr>
+        <tr><td><code>require_parcel_observation</code></td><td>False</td><td>Null a parcel's value on dates where it had no observed pixel, so filled values alone never produce a statistic.</td><td>16</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h3>Statistics and parcel quality</h3>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Flag</th><th>Default</th><th>Meaning</th><th>Step</th></tr></thead>
+      <tbody>
+        <tr><td><code>spatial_statistics</code></td><td>["mean"]</td><td>Statistics per parcel, period and variable. mean is always added. "count" is accepted but only yields the single intersected_pixel_count.</td><td>18</td></tr>
+        <tr><td><code>minimum_parcel_pixels</code></td><td>3</td><td>Threshold for the meets_minimum_pixel_count flag. Parcels below it are kept.</td><td>19</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h3>Execution, caching and login</h3>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Flag</th><th>Default</th><th>Meaning</th><th>Step</th></tr></thead>
+      <tbody>
+        <tr><td><code>batch_workers</code></td><td>1</td><td>openEO jobs run at once and local processes for cleaning and statistics. In the tile variant it controls local processes only.</td><td>9, 10</td></tr>
+        <tr><td><code>resume_completed_partitions</code></td><td>False</td><td>Return existing final files when they match this configuration.</td><td>3</td></tr>
+        <tr><td><code>keep_cleaned_checkpoint</code></td><td>False</td><td>Keep the intermediate bands-only cleaned NetCDF.</td><td>14</td></tr>
+        <tr><td><code>remove_nc_after_completion</code></td><td>False</td><td>Delete a batch's raw, cleaned and final NetCDF once its statistics are saved. Overrides keep_cleaned_checkpoint.</td><td>20</td></tr>
+        <tr><td><code>openeo_username</code>, <code>openeo_password</code></td><td>None</td><td>Copernicus Data Space credentials for unattended runs. Must be given together.</td><td>9</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h3>Extra flags of the tile variant, <code>OpenEOJobManagerZonalStats</code></h3>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Flag</th><th>Default</th><th>Meaning</th><th>Step</th></tr></thead>
+      <tbody>
+        <tr><td><code>tile_size_metres</code></td><td>50000</td><td>Side of the square core tile in working_epsg.</td><td>4b</td></tr>
+        <tr><td><code>tile_buffer_metres</code></td><td>500</td><td>Margin added around each requested tile.</td><td>4b</td></tr>
+        <tr><td><code>fit_tiles_to_parcels</code></td><td>False</td><td>Shrink each request to the parcel bounds plus buffer, splitting only when larger than the tile size.</td><td>4b</td></tr>
+        <tr><td><code>openeo_parallel_jobs</code></td><td>2</td><td>Jobs kept active on the backend. Maximum 2 per account.</td><td>9</td></tr>
+        <tr><td><code>job_poll_seconds</code></td><td>30</td><td>Delay between status checks.</td><td>9</td></tr>
+        <tr><td><code>max_job_retries</code>, <code>job_retry_delay_seconds</code></td><td>3, 60</td><td>Retries for a failed tile and the wait before each.</td><td>9</td></tr>
+        <tr><td><code>openeo_job_options</code></td><td>executor-memory 2G</td><td>Backend resource options.</td><td>9</td></tr>
+        <tr><td><code>openeo_auto_memory_retry</code>, <code>openeo_max_executor_memory</code></td><td>True, "8G"</td><td>After a confirmed out-of-memory failure, double the heap up to the cap.</td><td>9</td></tr>
+        <tr><td><code>openeo_memory_reference_area_km2</code></td><td>625</td><td>Tile area the base heap is sized for. Larger tiles start with more memory.</td><td>9</td></tr>
+        <tr><td><code>retry_exhausted_memory</code></td><td>False</td><td>Let tiles that used all retries on memory errors try higher memory tiers.</td><td>9</td></tr>
+        <tr><td><code>run_identifier</code></td><td>timestamp</td><td>Label placed in every job title of the run.</td><td>9</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+</section>
+</main>
+</body>
+</html>

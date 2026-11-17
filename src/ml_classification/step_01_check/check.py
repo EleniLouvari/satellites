@@ -73,10 +73,21 @@ class CheckStep(PipelineStepBase):
         if not insufficient.empty:
             raise ValueError(f"Error: Each class needs at least cv_folds distinct parcels. Found: {insufficient.to_dict()}")
 
-    def _flag_null_rows(self, dataset: pd.DataFrame, requested_features: list[str]) -> tuple[pd.DataFrame, int]:
+    def _flag_null_rows(
+        self, dataset: pd.DataFrame, requested_features: list[str], source_nulls: pd.DataFrame | None = None
+    ) -> tuple[pd.DataFrame, int]:
+        """Exclude rows with source nulls from training; IQR-blanked values are left to model imputation.
+
+        ``source_nulls`` marks the nulls present before the IQR filter ran. Only those count: a value
+        blanked by the IQR filter is a removed outlier, not missing data, and every model pipeline
+        imputes it from the training folds. Without ``source_nulls`` every remaining null counts.
+        """
         # All-null features are rejected later in the summary, so they must not flag every row here.
         checked = [name for name in requested_features if not dataset[name].isna().all()]
         null_mask = dataset[checked].isna()
+        if source_nulls is not None:
+            # Keep only nulls that already existed in the input, so outlier removal never costs whole rows.
+            null_mask &= source_nulls[checked].to_numpy()
         rows_with_nulls = null_mask.any(axis=1)
         # Flagged rows stay in the dataset so the final model still predicts them.
         dataset = dataset.copy()
@@ -201,6 +212,8 @@ class CheckStep(PipelineStepBase):
         # Normalize and validate the raw DataFrame (IDs, required columns, types).
         dataset = self._normalize_and_validate_input(df)
         requested_features = list(self.config.feature_columns)
+        # Remember the input's own nulls before IQR filtering adds more.
+        source_nulls = dataset[requested_features].isna()
 
         # Optionally apply IQR-based filtering to remove outlier extreme values per feature.
         dataset, iqr_summary = apply_iqr_filter(dataset, requested_features, self.config)
@@ -216,8 +229,10 @@ class CheckStep(PipelineStepBase):
         print_formatted_txt(f"Requested features: {requested_features}", "INFO")
         # Report parcels with remaining nulls; exclude them from training unless null filling is enabled.
         dataset, interpolation_summary["rows_excluded_from_training_with_nulls"] = self._flag_null_rows(
-            dataset, requested_features
+            dataset, requested_features, source_nulls
         )
+        # IQR-blanked values that stay null are imputed by each model pipeline; report how many there are.
+        iqr_summary["nulls_left_for_model_imputation"] = int((dataset[requested_features].isna() & ~source_nulls).sum().sum())
         # Optionally leave EDA outliers out of training as well; they also remain in the final predictions.
         dataset, outlier_rows_excluded = self._flag_outlier_rows(dataset)
 

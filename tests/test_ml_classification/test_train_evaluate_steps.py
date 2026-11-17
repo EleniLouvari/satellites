@@ -175,8 +175,10 @@ def test_config_requires_interpolation_method_when_fill_nulls_is_enabled():
         )
 
 
-def test_config_warns_when_iqr_nulls_are_not_filled():
-    with pytest.warns(UserWarning, match="apply_iqr=True with fill_nulls=False"):
+def test_config_accepts_iqr_without_null_filling_silently():
+    # IQR-blanked values no longer cost whole rows, so this combination needs no warning.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
         ClassificationPipelineConfig(
             project_dir="test_project",
             target_column="label",
@@ -185,8 +187,6 @@ def test_config_warns_when_iqr_nulls_are_not_filled():
             feature_importance_top_n=1,
             cv_folds=2,
         )
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
         ClassificationPipelineConfig(
             project_dir="test_project",
             target_column="label",

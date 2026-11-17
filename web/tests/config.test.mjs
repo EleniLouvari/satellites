@@ -18,7 +18,7 @@ const {includeRoleColumns, newlyCompletedReport} = await import(`data:text/javas
 
 const mlSource = fs.readFileSync(new URL("../src/features/ml/mlControls.ts", import.meta.url), "utf8");
 const mlCode = ts.transpileModule(mlSource, {compilerOptions: {module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022}}).outputText;
-const {stepStates, canContinue, withoutRoles, trainingCounts} = await import(`data:text/javascript;base64,${Buffer.from(mlCode).toString("base64")}`);
+const {stepStates, canContinue, withoutRoles, trainingCounts, canRerun, requiredRetrain} = await import(`data:text/javascript;base64,${Buffer.from(mlCode).toString("base64")}`);
 
 test("ML steps show what is done, where a run stopped, and when it can continue", () => {
   assert.deepEqual(stepStates("paused", 2), ["done", "done", "pending", "pending", "pending"]);
@@ -133,4 +133,62 @@ test("Train step counts finished, failed and reused models as done, skipping mis
   ];
   assert.deepEqual(trainingCounts(models), {total: 5, done: 3, failed: 1, unavailable: 1});
   assert.deepEqual(trainingCounts([]), {total: 0, done: 0, failed: 0, unavailable: 0});
+});
+
+// Render the real form to check nested grouping without a browser or API server.
+async function formModule(path, dependencies = {}) {
+  let code = ts.transpileModule(fs.readFileSync(new URL(path, import.meta.url), "utf8"), {
+    compilerOptions: {module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX},
+  }).outputText;
+  for (const [name, url] of Object.entries({
+    react: import.meta.resolve("react"),
+    "react/jsx-runtime": import.meta.resolve("react/jsx-runtime"),
+    ...dependencies,
+  })) code = code.replaceAll(`from "${name}"`, `from "${url}"`);
+  return `data:text/javascript;base64,${Buffer.from(code).toString("base64")}`;
+}
+
+test("threshold subsections render inside their parent once and retain disabled controls", async () => {
+  const {createElement} = await import("react");
+  const {renderToStaticMarkup} = await import("react-dom/server");
+  const formUrl = await formModule("../src/components/ConfigForm.tsx", {
+    "../api": await formModule("../src/api.ts"),
+    "./ui": await formModule("../src/components/ui.tsx"),
+    "./configControls": await formModule("../src/components/configControls.ts"),
+  });
+  const {default: ConfigForm} = await import(formUrl);
+  const groups = [{id: "inspection", label: "Inspection", description: "", subgroups: [
+    {id: "thresholds", label: "Thresholds", description: ["Choose thresholds."]},
+    {id: "data_reliability", parent: "thresholds", label: "Data reliability", description: ["Reliability modes."]},
+    {id: "geometry", parent: "thresholds", label: "Geometry", description: ["Geometry modes."]},
+  ]}];
+  const fields = [
+    {name: "score", subgroup: "thresholds", default: 25},
+    {name: "reliability", subgroup: "data_reliability", default: 0.8},
+    {name: "rank", subgroup: "geometry", default: 0.5, enabled_when: {mode: ["percentile"]}},
+  ].map((f) => ({...f, group: "inspection", type: "number"}));
+  const html = renderToStaticMarkup(createElement(ConfigForm, {
+    schema: {groups, fields, defaults: {}}, value: {mode: "absolute"}, onChange() {},
+  }));
+  assert.match(html, /<h4>Thresholds<\/h4>/);
+  assert.equal((html.match(/<h5>Data reliability<\/h5>/g) ?? []).length, 1);
+  assert.equal((html.match(/<h5>Geometry<\/h5>/g) ?? []).length, 1);
+  assert.match(html, /<h5>Geometry<\/h5>[\s\S]*?disabled=""/);
+  assert.ok(html.indexOf("<h4>Thresholds") < html.indexOf("<h5>Data reliability"));
+  assert.ok(html.indexOf("<h5>Geometry") < html.indexOf('value="25"'));
+  for (const value of ["25", "0.8", "0.5"]) {
+    assert.equal((html.match(new RegExp(`value="${value.replace(".", "\\.")}"`, "g")) ?? []).length, 1);
+  }
+});
+
+test("ML re-runs need the earlier steps and mark the models whose training is stale", () => {
+  assert.ok(canRerun("complete", 5, "train") && canRerun("complete", 5, "predict") && canRerun("paused", 2, "train"));
+  assert.ok(!canRerun("paused", 2, "predict") && !canRerun("running", 5, "train") && !canRerun("queued", 5, "predict"));
+  const rules = {train: [], predict: [], retrain_all_when: ["scoring_primary"], retrain_model_when: {keras_lstm: ["lstm_min_timesteps"]}};
+  const previous = {selected_models: ["knn", "bayesian", "keras_lstm"], scoring_primary: "f1_macro", lstm_min_timesteps: 6,
+    "tune_params.knn": {model__n_neighbors: [5]}};
+  assert.deepEqual([...requiredRetrain(previous, {...previous}, rules)], []);
+  assert.deepEqual([...requiredRetrain(previous, {...previous, "tune_params.knn": {model__n_neighbors: [3]}}, rules)], ["knn"]);
+  assert.deepEqual([...requiredRetrain(previous, {...previous, lstm_min_timesteps: 3}, rules)], ["keras_lstm"]);
+  assert.deepEqual([...requiredRetrain(previous, {...previous, scoring_primary: "accuracy"}, rules)], previous.selected_models);
 });

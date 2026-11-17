@@ -39,3 +39,7 @@ web/*.tsbuildinfo
 
 # npm cache written inside the frontend folder by the Docker build
 web/.npm-cache/
+
+# Generated from docs/ by npm run guide.
+web/public/guide/
+web/public/help/

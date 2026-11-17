@@ -1,8 +1,9 @@
 # Inspection Priority Decision Table
 
-Visual reference: [Full analytical workflow](<Full Workflow.png>), including
+Visual reference: [Detailed inspection evidence and priority workflow](INSPECTION_EVIDENCE_AND_PRIORITY_WORKFLOW.png), including
 evidence calculations, validation branches, all 20 base rules, the EDA outlier
-adjustment, and final queue ordering.
+adjustment, and final queue ordering. Step-by-step version with every setting
+and output column: [INSPECTION_WORKFLOW_DIAGRAM.html](INSPECTION_WORKFLOW_DIAGRAM.html).
 
 ## Policy and inputs
 
@@ -54,11 +55,37 @@ below are **before** outlier adjustment, recorded in `inspection_need_before_out
 
 The table shows the absolute thresholds. Data reliability must be **strictly
 greater than** the applied medium data-reliability threshold (0.8 unless
-percentile calibration lowers it, see below). Geometry is favorable only **below**
-`inspection_medium_geometry_risk_threshold` (default 0.5). A score exactly at the
-applied threshold is not high data reliability; exactly 0.5 is in the less
-favorable geometry band. These configuration settings remain customizable; the
-comparison operators do not change.
+percentile calibration lowers it, see below). Geometry is favorable when its
+saved `geometry_complexity_level` is LOW (see [geometry thresholds](#geometry-thresholds)).
+A score exactly at the applied threshold is not high data reliability; a parcel
+exactly at a geometry threshold is in the less favorable band. These configuration
+settings remain customizable; the comparison operators do not change.
+
+## Geometry thresholds
+
+`geometry_risk` is the parcel's percentile rank of `geom_shape_complexity_score`
+among the predicted parcels, so about half of any run ranks at or above 0.5 even
+when every parcel is simple. `inspection_geometry_threshold_mode` decides how the
+rank is used:
+
+| Mode | Medium complexity when | High complexity when |
+|---|---|---|
+| `percentile` (default) | `geometry_risk >= 0.50` and complexity `>= 0.60` | `geometry_risk >= 0.75` and complexity `>= 0.90` |
+| `absolute` | complexity `>= 0.60` | complexity `>= 0.90` |
+
+The percentile thresholds are `inspection_medium_geometry_risk_threshold` and
+`inspection_high_geometry_risk_threshold`; the complexity thresholds are
+`inspection_medium_geometry_complexity_threshold` and
+`inspection_high_geometry_complexity_threshold`. Medium or high complexity is
+"not favorable" in the rule table; the high level only adds the
+`HIGH_GEOMETRY_COMPLEXITY` reason. Setting both complexity thresholds to 0 in
+percentile mode reproduces the earlier percentile-only policy.
+
+Typical complexity scores, measured with the pipeline's own formula and a 10 m
+`all_touched` mask: compact parcels 0.09–0.27, 2:1 strips 0.34–0.52, 3:1 strips
+0.51–0.69, 5:1 strips 0.74–0.94 and 8:1 strips about 1.0. Smaller parcels score
+higher because of the pixel-agreement penalty. Check the defaults against the
+distribution of your own parcels.
 
 ## Data-reliability threshold calibration
 
@@ -111,7 +138,7 @@ flowchart TD
     Raise --> Audit[Final inspection_need, adjusted flag and reasons]
     Keep --> Audit
     Audit --> Queue[Preserve check type; NONE raised to Low-Medium or above enters evidence review]
-    Queue --> Sort[Queue by final priority, stable input-order ties]
+    Queue --> Sort[Queue by final priority, then inspection_score within a band]
 ```
 
 Set `inspection_include_outlier=True` in `ClassificationPipelineConfig` to apply
@@ -183,7 +210,8 @@ configuration alone cannot add EDA metadata to an older run.
 ## Confidence and class evidence
 
 Rank confidence remains HIGH/MEDIUM/LOW from Borda agreement, mean Borda,
-rank range, ties, and the minimum model count. Class reliability never changes
+rank range and ties. With fewer voting models than the minimum it is graded from
+the predicted-class probability instead, and stays valid evidence for these rules. Class reliability never changes
 its level, validity, reason, or confidence-only review flag. See the
 [confidence methodology](rank_based_ensemble_confidence_methodology.md).
 
@@ -242,6 +270,12 @@ Higher values indicate more complex/irregular parcel geometry.
 
 ## Outputs and diagnostic score
 
+- `label_prediction_status`: `SAME`, `DIFFERENT`, `NO_DECLARATION` (no declared
+  class) or `UNAVAILABLE` (no prediction). Codes are normalized first, so `1.0`
+  and `"1"` are the same class.
+- `confidence_risk`, `data_risk` (`1 - data_reliability_score`) and `geometry_risk`
+  (percentile rank of complexity): the three 0-1 risks behind `inspection_score`.
+- `geometry_complexity_level`: LOW, MEDIUM or HIGH, used by the rules and reasons.
 - `inspection_need`: machine-readable priority (`VERY_LOW`, `LOW`, `LOW_MEDIUM`,
   `MEDIUM`, `MEDIUM_HIGH`, `HIGH`, `VERY_HIGH`) or unscored `UNKNOWN`.
 - `inspection_priority_label`: readable final label after optional outlier adjustment.
@@ -277,13 +311,54 @@ inspection_score = 100 * (0.60*confidence_risk
 inspection_need_base = HIGH if score >= 50, MEDIUM if >= 25, otherwise LOW
 ```
 
-Weights and score thresholds affect only these diagnostic fields. Neither the
-score nor `inspection_need_base` enters any inspection-priority rule.
+Neither the score nor `inspection_need_base` enters any inspection-priority rule,
+so the score thresholds only band the score. The weights do matter for the queue:
 
 The inspection queue includes `inspection_check_type != NONE`, ordered Very
-High, High, Medium–High, Medium, Low–Medium, Low, Very Low, then Unknown. Ties
-preserve input order; diagnostic scores do not break ties. Exported queue rows
-include the class evidence, readable label, matched rule, and reasons.
+High, High, Medium–High, Medium, Low–Medium, Low, Very Low, then Unknown. Within
+a band, parcels with the higher `inspection_score` come first; rows without a
+score follow the scored rows of their band, and remaining ties preserve input
+order. Exported queue rows include the class evidence, readable label, matched
+rule, geometry level, and reasons.
+
+## Settings reference
+
+All settings belong to `ClassificationPipelineConfig`. Settings marked *frozen*
+are fixed in Step 4 and need Step 4 again to change; the others are read in Step 5
+and can be re-applied with `recalculate_prediction_quality()`.
+
+| Setting | Default | Effect |
+|---|---|---|
+| `inspection_scoring_enabled` | `True` | Run the inspection layer after prediction. |
+| `inspection_data_reliability_column` | `"data_reliability_score"` | Column with the observed share of pixel values (0-1). |
+| `inspection_geometry_complexity_column` | `"geom_shape_complexity_score"` | Column with the shape complexity score. |
+| `inspection_include_outlier` | `False` | Raise `is_outlier=True` parcels one band. |
+| `inspection_check_matching_declarations` | `False` | Also queue Low–Medium and Medium parcels whose declaration matches. |
+| `inspection_data_reliability_threshold_mode` | `"percentile"` | `percentile` relaxes the data limits to the run's percentiles; `absolute` applies them as written. |
+| `inspection_medium_data_reliability_threshold` | `0.80` | Data reliability must be strictly above the applied value to count as high (rules). |
+| `inspection_low_data_reliability_threshold` | `0.60` | Below the applied value the reason is `LOW_DATA_RELIABILITY` (reasons only). |
+| `inspection_medium_data_reliability_percentile`, `inspection_low_data_reliability_percentile` | `0.25`, `0.05` | Percentiles used in percentile mode. |
+| `inspection_geometry_threshold_mode` | `"percentile"` | `percentile` needs both rank and complexity; `absolute` uses complexity only. |
+| `inspection_medium_geometry_risk_threshold`, `inspection_high_geometry_risk_threshold` | `0.50`, `0.75` | Percentile-rank limits for medium and high geometry complexity (percentile mode). |
+| `inspection_medium_geometry_complexity_threshold`, `inspection_high_geometry_complexity_threshold` | `0.60`, `0.90` | Complexity-score limits; 0 disables this condition. High affects reasons only. |
+| `inspection_model_weight`, `inspection_data_weight`, `inspection_geometry_weight` | `0.60`, `0.25`, `0.15` | Weights of the three risks in `inspection_score`; they order the queue within a band and must sum to 1. |
+| `inspection_medium_score_threshold`, `inspection_high_score_threshold` | `25`, `50` | Score limits for `inspection_need_base` (diagnostic only). |
+| `class_reliability_enabled` | `True` | *Frozen.* Use class reliability in the rules. |
+| `class_reliability_minimum_oof_support` | `100` | *Frozen.* Out-of-fold predictions a class needs for a valid reliability. |
+| `class_reliability_high_min_precision`, `class_reliability_medium_min_precision` | `0.80`, `0.60` | *Frozen.* Precision limits for HIGH and MEDIUM class reliability. |
+| `rank_confidence_minimum_models` | `3` | *Frozen.* Fewer voting models switch confidence to the probability grade. |
+
+## Practical notes
+
+- About a quarter of parcels fall at or below the medium data boundary in
+  percentile mode and are therefore Medium, whatever their confidence.
+- A parcel with medium or high geometry complexity can reach at most Low or High,
+  never Very Low or Very High.
+- To change who is inspected, change the data or geometry thresholds, the outlier
+  option or the matching-declarations option. The weights only change the order
+  inside a band.
+- An outlier increase signals extra review priority, not stronger proof of a
+  wrong declaration.
 
 ## Updating existing runs
 

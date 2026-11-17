@@ -11,7 +11,7 @@ import {
 } from "../../api";
 import { Button, Empty, Heading, Notice, Status } from "../../components/ui";
 import DeleteAction from "../../components/DeleteAction";
-import RenameAction from "./RenameAction";
+import RenameAction from "../../components/RenameAction";
 import StopAction from "./StopAction";
 import Progress from "../../components/Progress";
 type Bundle = { status: string; artifact_id?: string; error?: string };
@@ -166,7 +166,13 @@ export default function RunDetail({
     <>
       <Heading title={run.name} subtitle={`Created ${date(run.created_at)}`}>
         <div className="actions">
-          <RenameAction run={run} onRenamed={setRun} />
+          <RenameAction<Run>
+            id={run.run_id}
+            name={run.name}
+            path={`/runs/${run.run_id}/name`}
+            status={run.status}
+            onRenamed={setRun}
+          />
           <Button
             disabled={run.status !== "complete"}
             onClick={() => onEda(run)}

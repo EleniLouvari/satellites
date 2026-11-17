@@ -1,0 +1,25 @@
+# Frontend build context is the repository root; include documentation, never runtime data or secrets.
+**
+!web/
+!web/Dockerfile
+!web/package.json
+!web/package-lock.json
+!web/index.html
+!web/tsconfig.json
+!web/vite.config.ts
+!web/nginx.conf
+!web/src/
+!web/src/**
+!web/scripts/
+!web/scripts/**
+!docs/
+!docs/**/
+!docs/**/*.md
+!docs/**/*.json
+!docs/**/*.png
+!docs/**/*.html
+docs/superpowers/**
+docs/manuals/**
+!src/
+!src/ml_classification/
+!src/ml_classification/*.md

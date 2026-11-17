@@ -104,7 +104,7 @@ def test_ml_subgroups_explain_fields_of_their_own_group():
     assert all(set(section[4]) <= members[group] for group, sections in SUBGROUPS.items() for section in sections)
     schema = ml_schema([{"name": "parcel_id"}, {"name": "crop"}])
     groups = {group["id"]: group for group in schema["groups"]}
-    assert [s["id"] for s in groups["inspection"]["subgroups"]] == ["inputs", "weights", "thresholds"]
+    assert [s["id"] for s in groups["inspection"]["subgroups"]] == ["inputs", "weights", "thresholds", "data_reliability", "geometry"]
     assert [s["id"] for s in groups["confidence"]["subgroups"]] == ["probability", "borda", "class_reliability"]
     assert all(s["description"] for group in groups.values() for s in group.get("subgroups", []))
     by_name = {field["name"]: field for field in schema["fields"]}
@@ -112,11 +112,19 @@ def test_ml_subgroups_explain_fields_of_their_own_group():
     assert by_name["inspection_data_weight"]["subgroup"] == "weights"
     # The percentile calibration is a choice whose two percentiles only apply in percentile mode.
     mode = by_name["inspection_data_reliability_threshold_mode"]
-    assert (mode["default"], mode["choices"], mode["subgroup"]) == ("percentile", ["percentile", "absolute"], "thresholds")
+    assert (mode["default"], mode["choices"], mode["subgroup"]) == ("percentile", ["percentile", "absolute"], "data_reliability")
     assert by_name["inspection_medium_data_reliability_percentile"]["enabled_when"] == {
         "inspection_scoring_enabled": [True],
         "inspection_data_reliability_threshold_mode": ["percentile"],
     }
+    sections = {section["id"]: section for section in groups["inspection"]["subgroups"]}
+    assert sections["data_reliability"]["parent"] == "thresholds"
+    assert sections["geometry"]["parent"] == "thresholds"
+    assert by_name["inspection_geometry_threshold_mode"]["subgroup"] == "geometry"
+    assert by_name["inspection_medium_score_threshold"]["subgroup"] == "thresholds"
+    assert all("percentile" in " ".join(sections[name]["description"]).lower()
+               and "absolute" in " ".join(sections[name]["description"]).lower()
+               for name in ("data_reliability", "geometry"))
     assert by_name["inspection_check_matching_declarations"]["default"] is False
     assert by_name["inspection_check_matching_declarations"]["subgroup"] == "inputs"
     assert by_name["target_column"]["subgroup"] is None
@@ -163,6 +171,20 @@ def test_ml_validates_columns_types_limits_and_managed_settings():
         validate_ml(FAST, FEATURES, COLUMNS, geometry=False)
     # An EDA-calculated column is offered like any other; only the target and ID are reserved.
     assert validate_ml(FAST, [*FEATURES, "is_outlier"], [*COLUMNS, "is_outlier"])["target_column"] == "crop"
+
+
+@pytest.mark.parametrize("add_centroids", [False, True])
+def test_existing_centroid_columns_can_be_selected_once(add_centroids):
+    """Accept coordinates offered by the picker without duplicating generated features."""
+    from parcel_app.pipelines.ml.config import pipeline_arguments, validate_ml
+
+    features = [*FEATURES, "centroid_x", "centroid_y"]
+    settings = validate_ml(FAST | {"add_centroid_features": add_centroids}, features, [*COLUMNS, "centroid_x", "centroid_y"])
+    assert pipeline_arguments(settings, features)["feature_columns"] == features
+    # Coordinates still cannot leak into the model when assigned as the target or ID.
+    for role in ("target_column", "id_column"):
+        with pytest.raises(ValueError, match="excluding the target and ID"):
+            validate_ml(FAST | {role: "centroid_x"}, features, [*COLUMNS, "centroid_x", "centroid_y"])
 
 
 def test_input_is_the_parcel_result_plus_selected_eda_columns(tmp_path):
@@ -305,6 +327,52 @@ def test_ml_log_is_readable_while_running_and_redacted(tmp_path, monkeypatch):
     assert error.value.status_code == 404
 
 
+def test_rerun_rules_keep_check_and_prepare_settings_and_force_stale_models():
+    from parcel_app.pipelines.ml.config import ml_defaults, required_retrain, rerun_rules
+
+    rules = rerun_rules()
+    train, evaluate, predict = set(rules["train"]), set(rules["evaluate"]), set(rules["predict"])
+    # Check and Prepare settings, and the columns Check loads, never change in a re-run.
+    for name in ("target_column", "apply_iqr", "cv_folds", "random_state", "inspection_data_reliability_column",
+                 "max_map_geometries"):
+        assert name not in train and name not in evaluate and name not in predict
+    assert {"selected_models", "tune_params.knn", "rank_confidence_enabled", "inspection_model_weight"} <= train
+    assert predict < evaluate < train
+    assert {"top_voting_models", "rank_confidence_enabled", "interpretability_top_models"} <= evaluate
+    # Settings read by Train stay locked when the trained models are reused.
+    assert not {"selected_models", "tune_params.knn", "scoring_primary", "label_balancing_method", "n_jobs"} & evaluate
+    assert "inspection_model_weight" in predict and "prediction_column" in predict
+    assert not {"selected_models", "tune_params.knn", "rank_confidence_enabled"} & predict
+
+    previous = ml_defaults() | FAST
+    assert required_retrain(previous, dict(previous)) == set()
+    grid = previous | {"tune_params.knn": {"model__n_neighbors": [3]}}
+    assert required_retrain(previous, grid) == {"knn"}
+    assert required_retrain(previous, previous | {"scoring_primary": "accuracy"}) == set(FAST["selected_models"])
+    lstm = previous | {"selected_models": ["knn", "keras_lstm"], "lstm_min_timesteps": 3}
+    assert required_retrain(previous | {"selected_models": ["knn", "keras_lstm"]}, lstm) == {"keras_lstm"}
+
+
+def test_rerun_cleanup_removes_replaced_steps_and_only_the_retrained_models(tmp_path):
+    from parcel_app.pipelines.ml.routes import stale_artifact
+    from parcel_app.pipelines.ml.tasks import clear_for_rerun
+
+    names = ["01_check/report.html", "03_train/models/knn/best_model.joblib", "04_evaluate/report.html",
+             "05_predict/inspection_queue.csv", "final_dashboard/report.html", "ml-results.zip", "ml.log"]
+    for name in names:
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text("x")
+    (tmp_path / "03_train/models/bayesian").mkdir()
+    assert [name for name in names if stale_artifact(name, 4)] == names[3:6]
+    assert [name for name in names if stale_artifact(name, 2)] == names[1:6]
+
+    clear_for_rerun(tmp_path, 2, ["bayesian"])
+    remaining = sorted(path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*") if path.is_file())
+    assert remaining == ["01_check/report.html", "03_train/models/knn/best_model.joblib", "ml.log"]
+    assert not (tmp_path / "03_train/models/bayesian").exists()
+    assert [name for name in names if stale_artifact(name, 3)] == names[2:6]
+
+
 def claim(kind, target):
     """Claim one queued job the way a worker does."""
     from parcel_app.core import db
@@ -434,6 +502,66 @@ def test_ml_scenarios_of_an_eda_run_step_by_step_through_the_queue(clients, tmp_
         assert "05_predict/final_predictions_preview.csv" in archive.namelist()
     predictions = owner.get(f"{link}/files/{files['05_predict/final_predictions_preview.csv']}")
     assert predictions.status_code == 200 and b"crop_prediction" in predictions.content
+    assert "05_predict/inspection_queue.csv" in files
+
+    # Predict runs again with new inspection weights; settings of earlier steps stay locked.
+    saved = row["config"]
+    weights = {"inspection_model_weight": 0.5, "inspection_data_weight": 0.3, "inspection_geometry_weight": 0.2}
+    rerun = {"step": "predict", "config": saved | weights}
+    assert stranger.post(f"{link}/rerun", json=rerun).status_code == 404
+    assert owner.post(f"{link}/rerun", json={**rerun, "config": saved | {"cv_folds": 4}}).status_code == 422
+    assert owner.post(f"{link}/rerun", json={**rerun, "config": saved | {"selected_models": ["knn"]}}).status_code == 422
+    assert owner.post(f"{link}/rerun", json={**rerun, "retrain": ["knn"]}).status_code == 422
+    response = owner.post(f"{link}/rerun", json=rerun)
+    assert response.status_code == 202, response.text
+    queued = response.json()
+    assert (queued["status"], queued["steps_done"]) == ("queued", 4)
+    assert not any(item["name"].startswith("05_predict/") for item in queued["artifacts"])
+    assert owner.get(f"{link}/report/evaluate").status_code == 200
+    assert owner.post(f"{link}/rerun", json=rerun).status_code == 409  # already queued
+    execute_task(claim("ml", ml_id))
+    row = state()
+    assert (row["status"], row["steps_done"], row["config"]["inspection_model_weight"]) == ("complete", 5, 0.5), row
+    assert "05_predict/inspection_queue.csv" in {item["name"] for item in row["artifacts"]}
+
+    # Evaluate runs again with a smaller vote; the trained models are reused and Train's settings stay locked.
+    models = ml_root / ml_id / "03_train" / "models"
+    trained = {name: (models / name / "best_model.joblib").stat().st_mtime_ns for name in ("bayesian", "decision_tree")}
+    # Lower the Borda minimum with the vote so two voting models are still graded by rank agreement.
+    smaller_vote = {"top_voting_models": 2, "rank_confidence_minimum_models": 2}
+    rerun = {"step": "evaluate", "config": row["config"] | smaller_vote}
+    locked = row["config"] | {"scoring_primary": "accuracy"}
+    assert owner.post(f"{link}/rerun", json={**rerun, "config": locked}).status_code == 422
+    assert owner.post(f"{link}/rerun", json={**rerun, "retrain": ["bayesian"]}).status_code == 422
+    response = owner.post(f"{link}/rerun", json=rerun)
+    assert response.status_code == 202, response.text
+    queued = response.json()
+    assert queued["steps_done"] == 3
+    assert not any(item["name"].startswith(("04_evaluate/", "05_predict/")) for item in queued["artifacts"])
+    assert owner.get(f"{link}/report/train").status_code == 200
+    execute_task(claim("ml", ml_id))
+    row = state()
+    assert (row["status"], row["steps_done"], row["config"]["top_voting_models"]) == ("complete", 5, 2), row
+    assert trained == {name: (models / name / "best_model.joblib").stat().st_mtime_ns for name in trained}
+
+    # Train runs again: the ticked model and the one whose grid changed are retrained, the third is reused.
+    # The default knn grid needs more parcels than these folds have, so knn trains only with the edited grid.
+    assert not (models / "knn" / "best_model.joblib").exists()
+    trained = {name: (models / name / "best_model.joblib").stat().st_mtime_ns for name in ("bayesian", "decision_tree")}
+    grid = {"tune_params.knn": {"model__n_neighbors": [3, 5]}}
+    response = owner.post(f"{link}/rerun", json={"step": "train", "config": row["config"] | grid, "retrain": ["bayesian"]})
+    assert response.status_code == 202, response.text
+    assert response.json()["steps_done"] == 2
+    job = db.one("SELECT payload FROM web_jobs WHERE target_id=%s AND status='pending'", (ml_id,))
+    assert job["payload"] == {"through": 5, "rerun": 2, "retrain": ["bayesian", "knn"]}
+    execute_task(claim("ml", ml_id))
+    row = state()
+    assert (row["status"], row["steps_done"]) == ("complete", 5), row
+    after = {name: (models / name / "best_model.joblib").stat().st_mtime_ns for name in ("bayesian", "decision_tree")}
+    assert after["decision_tree"] == trained["decision_tree"] and after["bayesian"] != trained["bayesian"]
+    assert (models / "knn" / "best_model.joblib").is_file()
+    files = {item["name"]: item["artifact_id"] for item in row["artifacts"]}
+    archive_link = f"{link}/files/{files['ml-results.zip']}"
 
     # A second scenario of the same EDA runs all steps at once with other models.
     other = {**body, "request_id": str(uuid4()), "name": "Bayes only", "features": FEATURES, "through": 5,

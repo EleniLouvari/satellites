@@ -17,7 +17,7 @@ band, capped at Very High, with Unknown unchanged. The Neuro workflow enables
 `inspection_include_outlier=True`. This does not change confidence, OOF class
 reliability, or the diagnostic inspection score. See the
 [OOF workflow](<OOF and Class Reliability Workflow.png>) and
-[full inspection workflow](<Full Workflow.png>).
+[detailed inspection evidence and priority workflow](INSPECTION_EVIDENCE_AND_PRIORITY_WORKFLOW.png).
 
 ## Parcel rank confidence
 
@@ -40,8 +40,24 @@ Default rules:
 | MEDIUM | Soft-voting class is the unique Borda winner; mean Borda >= 75; rank range <= 4; at least 3 models |
 | LOW | Everything else |
 
-Winner ties, disagreement between soft voting and the Borda winner, and too few
-models are explicitly retained as reasons for LOW confidence. Top-1/Top-2/Top-3
+Winner ties and disagreement between soft voting and the Borda winner are
+explicitly retained as reasons for LOW confidence.
+
+With fewer voting models than `rank_confidence_minimum_models` (default 3), rank
+agreement is not measured. The level is graded from the mean member probability
+of the soft-voting class instead:
+
+| Level | Required conditions (fewer than the minimum models) |
+|---|---|
+| HIGH | mean predicted-class probability >= `prediction_high_confidence_threshold` (0.80) |
+| MEDIUM | mean predicted-class probability >= `prediction_confidence_threshold` (0.60) |
+| LOW | Everything else |
+
+These levels are valid evidence for the inspection rules. Their reasons are
+`probability_fallback_high`, `probability_fallback_medium` or
+`probability_fallback_low`, `prediction_confidence_source` is
+`probability_fallback`, and `prediction_mean_probability` holds the graded value.
+Both limits are frozen in Step 4 with the rank thresholds. Top-1/Top-2/Top-3
 agreement, mean/median rank, standard deviation, IQR, margin, and runner-up may
 remain as diagnostics but do not determine the level.
 

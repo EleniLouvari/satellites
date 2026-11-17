@@ -197,12 +197,14 @@ When `apply_iqr=True`, numeric values outside the configured IQR fences are
 replaced with nulls. Spatial interpolation runs afterward only when
 `fill_nulls=True` (which requires `spatial_interpolation_method`) and can fill
 those nulls. `run_check` prints each `id_column` value that still has nulls and
-the null columns. With `fill_nulls=False` (the default), those rows get
-`excluded_from_training=True`: they are left out of the train/validation/test
-split, cross-validation, and the final refit, but are still predicted by the
-final model in `run_predict` (the model pipelines impute remaining nulls).
-All-null feature columns are ignored for this check because they are rejected
-as features. IQR bounds, replacement counts, and
+the null columns. With `fill_nulls=False` (the default), rows with nulls that
+were already in the input get `excluded_from_training=True`: they are left out
+of the train/validation/test split, cross-validation, and the final refit, but
+are still predicted by the final model in `run_predict`. Values blanked by the
+IQR filter do not exclude a row: they stay null and every model pipeline imputes
+them with statistics from its training folds (median for numeric features). All-null
+feature columns are ignored for this check because they are rejected as features.
+IQR bounds, replacement counts, `nulls_left_for_model_imputation`, and
 `rows_excluded_from_training_with_nulls` are written to the check summary.
 
 Set `exclude_outliers_from_training=True` to treat EDA outliers the same way:
@@ -234,7 +236,8 @@ config = ClassificationPipelineConfig(
     spatial_split=True,
     selection_type="soft_voting",
     top_voting_models=3,
-    prediction_confidence_threshold=0.60,  # Used only when rank confidence is disabled/unavailable.
+    prediction_confidence_threshold=0.60,  # Review cut-off without rank confidence; MEDIUM limit of the fallback.
+    prediction_high_confidence_threshold=0.80,  # HIGH limit of the probability fallback.
 )
 ```
 
@@ -246,6 +249,16 @@ predicted-class rank range, Borda-winner agreement/ties, and model count. The nu
 `prediction_max_probability` is retained as a diagnostic only; it is not
 treated as calibrated statistical confidence and does not control the review
 flag when rank confidence is available.
+
+Rank agreement needs at least `rank_confidence_minimum_models` voting models
+(default 3). With fewer (a single-model run, or a vote of two), the level is
+graded from the mean member probability of the predicted class instead: HIGH from
+`prediction_high_confidence_threshold` (0.80), MEDIUM from
+`prediction_confidence_threshold` (0.60), otherwise LOW. These predictions stay
+valid, so they still receive an inspection priority. Their reasons start with
+`probability_fallback_`, `prediction_confidence_source` is `probability_fallback`,
+and `prediction_mean_probability` holds the graded value. Both limits are frozen
+in Step 4 with the rank thresholds.
 
 By default, Step 4 uses selected-member OOF soft-voting predictions to calculate
 one precision value per predicted class. No Top-1 bins, neighboring-bin pooling,
@@ -277,7 +290,8 @@ geometry_risk = percentile_rank(geom_shape_complexity_score)
 inspection_score = 100 * (0.60*confidence_risk + 0.25*data_risk + 0.15*geometry_risk)
 ```
 
-The numeric score and `inspection_need_base` are diagnostics only. Final priority
+The score never sets the priority band, but it orders parcels inside a band in
+the queue; `inspection_need_base` is a diagnostic only. Final priority
 comes from a base rule table using class reliability, declared-versus-predicted
 agreement, rank confidence, data reliability, and geometry risk, followed by the
 optional `is_outlier` adjustment. When `inspection_include_outlier=True`, a true
@@ -299,8 +313,13 @@ calibrated to the predicted parcels by default
 saved as `inspection_data_reliability_low_threshold` and
 `inspection_data_reliability_medium_threshold`. Outlier adjustment preserves check
 type except NONE raised to Low–Medium or above enters evidence review; it never creates
-a declaration conflict. The queue uses final priority and stable input order,
-never the diagnostic score.
+a declaration conflict. The queue uses final priority first; within a band, parcels
+with the higher `inspection_score` come first (unscored rows last, remaining ties
+in input order), so the score weights set the visiting order inside a band.
+Geometry counts as medium or high complexity only when the parcel passes both its
+percentile threshold and the absolute complexity threshold
+(`inspection_geometry_threshold_mode="percentile"`, the default); the result is
+saved as `geometry_complexity_level`.
 
 With existing saved member probabilities and an OOF reliability contract,
 `pipeline.recalculate_prediction_quality()` updates prediction outputs without

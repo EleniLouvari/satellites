@@ -62,6 +62,10 @@ left to right using the matching A/B continuation connectors.
 
 [Open PNG](OPENEO_CLEANING_FLOWCHART.png)
 
+For a step-by-step diagram that also lists every constructor input with its
+default and the step it controls, open
+[WORKFLOW_DIAGRAM.html](WORKFLOW_DIAGRAM.html) in a browser.
+
 ![openEO acquisition, cleaning, and final GeoParquet flowchart](OPENEO_CLEANING_FLOWCHART.png)
 
 ```mermaid

@@ -9,11 +9,21 @@ import {
 import ConfigForm from "../../components/ConfigForm";
 import Chooser, { BackLink } from "../../components/Chooser";
 import DeleteAction from "../../components/DeleteAction";
+import RenameAction from "../../components/RenameAction";
 import Progress from "../../components/Progress";
 import MlLive from "./MlLive";
 import ColumnFilter, { useColumnFilter } from "../../components/ColumnFilter";
 import { Button, Heading, Notice, Status } from "../../components/ui";
-import { canContinue, STEPS, stepStates, withoutRoles } from "./mlControls";
+import {
+  canContinue,
+  canRerun,
+  requiredRetrain,
+  type RerunRules,
+  type RerunStep,
+  STEPS,
+  stepStates,
+  withoutRoles,
+} from "./mlControls";
 
 export type MlSource = { edaId: string; title: string; runName: string };
 type Column = {
@@ -29,6 +39,7 @@ type Options = {
   default_features: string[];
   default_name: string;
   schema: Schema & { managed: Record<string, unknown> };
+  rerun: RerunRules;
 };
 type MlArtifact = { artifact_id: string; name: string; size_bytes: number };
 type MlRun = {
@@ -64,7 +75,15 @@ const SECTIONS: { source: Column["source"]; title: string; hint: string }[] = [
   },
 ];
 const PREDICTIONS = "05_predict/final_predictions_preview.csv";
+const INSPECTION_QUEUE = "05_predict/inspection_queue.csv";
 const DASHBOARD = "final_dashboard/report.html";
+const TRAINED_MODEL = /^03_train\/models\/([^/]+)\/best_model\.joblib$/;
+type Rerun = {
+  mlId: string;
+  step: RerunStep;
+  config: Record<string, unknown>;
+  retrain: string[];
+};
 
 export default function MlPage({
   source,
@@ -86,6 +105,8 @@ export default function MlPage({
   const [busy, setBusy] = useState(false);
   const [valid, setValid] = useState(true);
   const [configKey, setConfigKey] = useState(0);
+  const [rerun, setRerun] = useState<Rerun>();
+  const [rerunValid, setRerunValid] = useState(true);
   const base = `/eda/${source.edaId}/ml`;
 
   useEffect(() => {
@@ -192,6 +213,32 @@ export default function MlPage({
       setError((e as Error).message);
     }
   }
+  async function submitRerun(run: MlRun, retrain: string[]) {
+    if (!rerun) return;
+    setBusy(true);
+    setError("");
+    try {
+      const row = await api<MlRun>(`/ml/${run.ml_id}/rerun`, "POST", {
+        step: rerun.step,
+        config: rerun.config,
+        retrain,
+      });
+      setRuns((rows) => rows.map((r) => (r.ml_id === row.ml_id ? row : r)));
+      setRerun(undefined);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  function openRerun(run: MlRun, step: RerunStep) {
+    setRerunValid(true);
+    setRerun(
+      rerun?.mlId === run.ml_id && rerun.step === step
+        ? undefined
+        : { mlId: run.ml_id, step, config: run.config, retrain: [] },
+    );
+  }
   const ready =
     !busy &&
     valid &&
@@ -262,6 +309,7 @@ export default function MlPage({
               </h3>
               <input
                 aria-label="Scenario name"
+                className="name-input"
                 value={name}
                 maxLength={200}
                 placeholder="For example: tree models, all indices"
@@ -543,6 +591,21 @@ export default function MlPage({
                       )}
                     </>
                   )}
+                  {canRerun(run.status, run.steps_done, "train") && (
+                    <Button onClick={() => openRerun(run, "train")}>
+                      Re-run Train…
+                    </Button>
+                  )}
+                  {canRerun(run.status, run.steps_done, "evaluate") && (
+                    <Button onClick={() => openRerun(run, "evaluate")}>
+                      Re-run Evaluate…
+                    </Button>
+                  )}
+                  {canRerun(run.status, run.steps_done, "predict") && (
+                    <Button onClick={() => openRerun(run, "predict")}>
+                      Re-run Predict…
+                    </Button>
+                  )}
                   {files.has(DASHBOARD) && (
                     <Button
                       primary
@@ -560,6 +623,14 @@ export default function MlPage({
                       href={`/api/ml/${run.ml_id}/files/${files.get(PREDICTIONS)!.artifact_id}`}
                     >
                       Download predictions (.csv)
+                    </a>
+                  )}
+                  {run.status === "complete" && files.has(INSPECTION_QUEUE) && (
+                    <a
+                      className="btn primary"
+                      href={`/api/ml/${run.ml_id}/files/${files.get(INSPECTION_QUEUE)!.artifact_id}`}
+                    >
+                      Download inspection queue (.csv)
                     </a>
                   )}
                   {run.status === "complete" && files.has("ml-results.zip") && (
@@ -587,6 +658,21 @@ export default function MlPage({
                   >
                     Use as a new scenario
                   </Button>
+                  <RenameAction<MlRun>
+                    id={run.ml_id}
+                    name={run.name}
+                    path={`/ml/${run.ml_id}/name`}
+                    status={run.status}
+                    noun="scenario"
+                    maxLength={200}
+                    onRenamed={(renamed) =>
+                      setRuns((rows) =>
+                        rows.map((row) =>
+                          row.ml_id === renamed.ml_id ? renamed : row,
+                        ),
+                      )
+                    }
+                  />
                   <DeleteAction
                     kind="ml"
                     id={run.ml_id}
@@ -601,6 +687,126 @@ export default function MlPage({
                     }}
                   />
                 </div>
+                {rerun?.mlId === run.ml_id &&
+                  options &&
+                  canRerun(run.status, run.steps_done, rerun.step) &&
+                  (() => {
+                    const train = rerun.step === "train";
+                    const editable = new Set(options.rerun[rerun.step]);
+                    const models = Array.isArray(rerun.config.selected_models)
+                      ? (rerun.config.selected_models as string[])
+                      : [];
+                    const forced = train
+                      ? requiredRetrain(run.config, rerun.config, options.rerun)
+                      : new Set<string>();
+                    const trained = new Set(
+                      run.artifacts.map((f) => TRAINED_MODEL.exec(f.name)?.[1]),
+                    );
+                    const retrain = models.filter(
+                      (model) =>
+                        forced.has(model) || rerun.retrain.includes(model),
+                    );
+                    return (
+                      <section className="panel pad sectiongap ml-rerun">
+                        <h4>
+                          {train
+                            ? "Re-run Train, Evaluate and Predict"
+                            : rerun.step === "evaluate"
+                              ? "Re-run Evaluate and Predict"
+                              : "Re-run Predict"}
+                        </h4>
+                        <p className="footnote">
+                          {train
+                            ? "The checked data, the features and the train/test split stay as they are. You can change the models, their search grids and every setting used from Train on. Evaluate and Predict run again after Train."
+                            : rerun.step === "evaluate"
+                              ? "The checked data, the split and the trained models stay as they are. You can change the final model and probability tuning, the prediction confidence, the explanations, the inspection priority settings and the output column names. Predict runs again after Evaluate."
+                              : "The trained models and the evaluation stay as they are. You can change the inspection priority settings and the output column names."}{" "}
+                          Results of the steps that run again are replaced.
+                        </p>
+                        {train && (
+                          <div className="ml-retrain">
+                            <strong>Models to retrain</strong>
+                            <p className="footnote">
+                              A ticked model is trained again from scratch. The
+                              others reuse their saved training. A model is
+                              ticked for you when its search grid or a training
+                              setting shared by all models changed.
+                            </p>
+                            <div className="eda-column-list">
+                              {models.map((model) => {
+                                const isNew = !trained.has(model);
+                                const locked = isNew || forced.has(model);
+                                return (
+                                  <label key={model}>
+                                    <input
+                                      type="checkbox"
+                                      checked={locked || retrain.includes(model)}
+                                      disabled={locked}
+                                      onChange={(e) =>
+                                        setRerun(
+                                          (current) =>
+                                            current && {
+                                              ...current,
+                                              retrain: e.target.checked
+                                                ? [...current.retrain, model]
+                                                : current.retrain.filter(
+                                                    (name) => name !== model,
+                                                  ),
+                                            },
+                                        )
+                                      }
+                                    />
+                                    <span>
+                                      {model.replaceAll("_", " ")}
+                                      <small>
+                                        {isNew
+                                          ? "Not trained yet: it will be trained"
+                                          : forced.has(model)
+                                            ? "Its settings changed: it must be retrained"
+                                            : "Saved training is reused unless ticked"}
+                                      </small>
+                                    </span>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+                        <ConfigForm
+                          schema={{
+                            ...options.schema,
+                            defaults: { ...options.schema.defaults, ...run.config },
+                            fields: options.schema.fields.filter((f) =>
+                              editable.has(f.name),
+                            ),
+                          }}
+                          value={rerun.config}
+                          onChange={(config) =>
+                            setRerun((current) => current && { ...current, config })
+                          }
+                          onValidityChange={setRerunValid}
+                        />
+                        <div className="actions sectiongap">
+                          <Button
+                            primary
+                            disabled={busy || !rerunValid || !models.length}
+                            onClick={() => void submitRerun(run, retrain)}
+                          >
+                            {busy
+                              ? "Submitting…"
+                              : train
+                                ? "Re-run from Train"
+                                : rerun.step === "evaluate"
+                                  ? "Re-run from Evaluate"
+                                  : "Re-run Predict"}
+                          </Button>
+                          <Button onClick={() => setRerun(undefined)}>
+                            Cancel
+                          </Button>
+                        </div>
+                      </section>
+                    );
+                  })()}
                 <details className="sectiongap">
                   <summary>Saved features and configuration</summary>
                   <pre className="json">

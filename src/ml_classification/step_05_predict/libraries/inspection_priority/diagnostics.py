@@ -111,12 +111,20 @@ def _evidence_quality_table(data: pd.DataFrame, config) -> pd.DataFrame:
     """Cross data reliability and geometry risk using the configured policy thresholds."""
     working = data.copy()
     working["data_reliability_level"] = _data_reliability_levels(working, config)
-    working["geometry_quality_level"] = pd.cut(
-        pd.to_numeric(working["geometry_risk"], errors="coerce"),
-        bins=[-np.inf, config.inspection_medium_geometry_risk_threshold, config.inspection_high_geometry_risk_threshold, np.inf],
-        labels=["GOOD", "MODERATE", "COMPLEX"],
-        right=False,
-    )
+    if "geometry_complexity_level" in working:
+        # Band with the level saved at scoring time, so the table matches the rules that were applied.
+        working["geometry_quality_level"] = pd.Categorical(
+            working["geometry_complexity_level"].map({"LOW": "GOOD", "MEDIUM": "MODERATE", "HIGH": "COMPLEX"}),
+            categories=["GOOD", "MODERATE", "COMPLEX"],
+        )
+    else:
+        # Runs saved before the level existed were scored on the percentile rank alone.
+        working["geometry_quality_level"] = pd.cut(
+            pd.to_numeric(working["geometry_risk"], errors="coerce"),
+            bins=[-np.inf, config.inspection_medium_geometry_risk_threshold, config.inspection_high_geometry_risk_threshold, np.inf],
+            labels=["GOOD", "MODERATE", "COMPLEX"],
+            right=False,
+        )
     working["needs_operational_check"] = working["inspection_check_type"].ne("NONE")
     grouped = (
         working.dropna(subset=["data_reliability_level", "geometry_quality_level"])
@@ -171,12 +179,23 @@ def _confidence_data_score_table(data: pd.DataFrame, config) -> pd.DataFrame:
     )
 
 
+def inspection_queue_order(data: pd.DataFrame) -> pd.Index:
+    """Return row labels in queue order: final priority first, then inspection score, highest first.
+
+    The rule table decides the band. Inside a band the weighted score ranks parcels, so the inspection
+    weights decide which parcels of equal priority are visited first. Rows without a score follow the
+    scored rows of their band, and remaining ties keep input order.
+    """
+    priority_rank = {need: rank for rank, need in enumerate(_NEED_ORDER)}
+    ranks = data["inspection_need"].map(priority_rank).fillna(len(priority_rank))
+    score = pd.to_numeric(data["inspection_score"], errors="coerce") if "inspection_score" in data else None
+    keys = pd.DataFrame({"rank": ranks, "score": -score if score is not None else 0.0}, index=data.index)
+    return keys.sort_values(["rank", "score"], kind="stable", na_position="last").index
+
+
 def _top_priority_parcels(data: pd.DataFrame, config, limit: int = 100) -> pd.DataFrame:
     """Return the highest-priority parcel-level audit queue with its explanations."""
-    # Stable ties preserve input order; diagnostic scores do not determine queue priority.
-    priority_rank = {need: rank for rank, need in enumerate(_NEED_ORDER)}
     working = data.loc[data["inspection_check_type"].ne("NONE")].copy()
-    working["_priority_rank"] = working["inspection_need"].map(priority_rank).fillna(len(priority_rank))
     columns = [
         config.id_column,
         config.target_column,
@@ -184,6 +203,7 @@ def _top_priority_parcels(data: pd.DataFrame, config, limit: int = 100) -> pd.Da
         config.prediction_confidence_level_column,
         config.inspection_data_reliability_column,
         "geometry_risk",
+        "geometry_complexity_level",
         "inspection_score",
         "inspection_need",
         "inspection_priority_label",
@@ -197,7 +217,7 @@ def _top_priority_parcels(data: pd.DataFrame, config, limit: int = 100) -> pd.Da
         "inspection_reasons",
     ]
     columns = [column for column in columns if column in working]
-    return working.sort_values("_priority_rank", kind="stable").head(limit)[columns].reset_index(drop=True)
+    return working.loc[inspection_queue_order(working)].head(limit)[columns].reset_index(drop=True)
 
 
 def _save_figure(fig: plt.Figure, output_path: Path) -> Path:

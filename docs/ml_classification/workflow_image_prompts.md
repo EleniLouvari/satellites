@@ -4,7 +4,7 @@ The workflow PNGs were updated using the built-in image generation tool in edit 
 The scoring implementation and [decision table](INSPECTION_PRIORITY_DECISION_TABLE.md)
 remain the authoritative policy; the images are visual companions.
 
-## Full Workflow.png
+## INSPECTION_EVIDENCE_AND_PRIORITY_WORKFLOW.png
 
 Edit this existing technical workflow infographic, preserving all other content and the detailed original layout/style and readable high resolution text. Add the EDA is_outlier input and an explicit stage BETWEEN the base 20-rule matrix (section 6) and final outputs/queue (section 7). Expand the canvas vertically if necessary; do not squeeze or remove original sections. New stage title: '7. EDA outlier adjustment (optional)'. Exact policy: 'inspection_include_outlier=True AND is_outlier=True: raise one priority band'. Show 'Very Low → Low → Low–Medium → Medium → Medium–High → High → Very High'. Add 'Very High stays Very High; Unknown stays Unknown. Disabled, false, missing or invalid flag: unchanged.' Add 'Preserve inspection_rule; record inspection_need_before_outlier and inspection_outlier_adjusted. Reason: OUTLIER_PRIORITY_INCREASE only when raised.' Add 'Preserve check type; NONE raised to Low–Medium becomes INSUFFICIENT_EO_EVIDENCE. Outliers alone do not establish a declaration conflict.' Show a distinct input arrow 'EDA is_outlier: join by parcel ID; metadata, not a model feature'. Renumber old section 7 to 8 and old 8 to 9. Final queue sorts FINAL post-outlier priority with stable input-order ties. Diagnostic score is unaffected by is_outlier. Correct the section 5 false statement 'Declared labels are always available': missing declaration + valid evidence → Medium / NO_DECLARATION → outlier adjustment. Enabled unavailable class evidence → Medium → outlier adjustment. No change to rank confidence or class reliability.
 
@@ -27,6 +27,27 @@ of the image is unchanged. Apply the same content if the image is regenerated:
   `DIFFERENT at Medium–High or above → DECLARATION_CONFLICT`;
   `Other cases → INSUFFICIENT_EO_EVIDENCE`;
   `Outlier raise of NONE: evidence review, never a conflict.`
+
+### November 2026 patch 2 (confidence fallback, geometry level, queue order)
+
+`INSPECTION_EVIDENCE_AND_PRIORITY_WORKFLOW.png` still shows the earlier policy in
+these regions. Apply this content when the image is next edited or regenerated:
+
+- Section 1, the diamond `Unique Borda winner = c* AND at least 3 models?`: change
+  to `Unique Borda winner = c*?` and add a separate first branch
+  `Fewer than 3 models? → probability grade: p >= 0.80 HIGH, p >= 0.60 MEDIUM,
+  else LOW (p = mean member probability of c*)`.
+- Section 4, box `Favorable geometry: g < 0.50`: replace with
+  `Geometry level: MEDIUM if g >= 0.50 AND complexity >= 0.60;
+  HIGH if g >= 0.75 AND complexity >= 0.90; else LOW (favorable)`,
+  `(absolute mode: complexity only)`.
+- Section 6, column `Geometry g`: header `Geometry level`; rows `< 0.50` → `LOW`
+  and `>= 0.50` → `MEDIUM/HIGH`.
+- Section 8, queue box: replace `Stable input-order ties.` with
+  `Within a band: higher inspection_score first; ties keep input order.`
+- Section 9, dashed note: replace `Score and base category do NOT assign priority
+  or break queue ties.` with `Score never assigns priority; it orders the queue
+  within a band.`
 
 ## OOF and Class Reliability Workflow.png
 

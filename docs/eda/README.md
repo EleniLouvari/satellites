@@ -116,9 +116,11 @@ available votes gives `False`, so rows with no finite selected features are not
 outliers; `eda_outlier_methods_available` shows how many methods voted. IQR and
 z-score vote if any selected feature exceeds their configured threshold.
 
-All five methods use the first `max_multivariate_features` numeric predictors
-in input order, excluding target, configured ID, prior EDA diagnostics and
-Boolean (True/False) columns. `OutlierAnalysis` never analyses Boolean columns:
+All five methods use the best-ranked `max_multivariate_features` numeric
+predictors, in the same order as the plots: proposal rank first (when a target
+is set), then data quality and missingness, with any remaining features in input
+order. Target, configured ID, prior EDA diagnostics and Boolean (True/False)
+columns are excluded. `OutlierAnalysis` never analyses Boolean columns:
 their IQR bounds are undefined and they are never flagged.
 All-null and constant features are removed. Multivariate methods median-impute
 remaining gaps and standardize internally; original values are preserved.

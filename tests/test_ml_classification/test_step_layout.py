@@ -239,3 +239,41 @@ def test_sensitivity_uses_owned_result_plot_and_report_helpers(tmp_path):
     expect_true((runner.output_dir / "sensitivity_results.csv").is_file())
     expect_true((runner.output_dir / "accuracy_by_seed.png").is_file())
     expect_in("Sensitivity", (runner.output_dir / "sensitivity_report.html").read_text(encoding="utf-8"))
+
+
+def test_iqr_outliers_stay_in_training_while_source_nulls_are_excluded(tmp_path):
+    rng = np.random.default_rng(3)
+    classes = np.repeat([0, 1], 30)
+    data = pd.DataFrame(
+        {
+            "row_id": [f"parcel-{i}" for i in range(len(classes))],
+            "label": np.array([f"crop-{i}" for i in classes], dtype=object),
+            "feature": classes + rng.normal(0, 0.15, len(classes)),
+            "other_feature": rng.normal(size=len(classes)),
+        }
+    )
+    # Two extreme values become IQR nulls; one value is missing in the input itself.
+    data.loc[[2, 40], "other_feature"] = [50.0, -50.0]
+    data.loc[7, "feature"] = np.nan
+    config = ClassificationPipelineConfig(
+        project_dir=tmp_path / "run",
+        target_column="label",
+        feature_columns=["feature", "other_feature"],
+        feature_importance_top_n=2,
+        apply_iqr=True,
+        cv_folds=2,
+        open_html_report=False,
+        reset_project_dir_on_run_check=False,
+    )
+    pipeline = GeospatialClassificationPipeline(config)
+
+    summary = pipeline.run_check(data)
+
+    checked = joblib.load(config.check_dir / "input_dataset.joblib")
+    excluded = set(checked.loc[checked["excluded_from_training"].astype(bool), "row_id"])
+    # Only the row with a source null leaves training; both IQR rows stay and are imputed by the models.
+    expect_equal(excluded, {"parcel-7"})
+    expect_true(checked.loc[[2, 40], "other_feature"].isna().all())
+    expect_equal(summary["spatial_interpolation"]["rows_excluded_from_training_with_nulls"], 1)
+    expect_equal(summary["iqr_filter"]["nulls_left_for_model_imputation"], 2)
+    expect_equal(summary["rows_labeled"], len(data) - 1)

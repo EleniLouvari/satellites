@@ -4,6 +4,7 @@ import contextlib
 import json
 import os
 import random
+import shutil
 import traceback
 from pathlib import Path
 from uuid import uuid4
@@ -18,7 +19,7 @@ from parcel_app.pipelines.eda.routes import completed_run, source_artifact, sour
 from parcel_app.settings import get_settings
 
 from .config import CENTROID_COLUMNS, OUTLIER_COLUMN, pipeline_arguments, validate_ml
-from .routes import STEPS, annotated_source
+from .routes import STEPS, annotated_source, stale_artifact
 
 BUNDLE = "ml-results.zip"
 
@@ -160,6 +161,27 @@ def publish(output, complete):
     return artifacts
 
 
+def clear_for_rerun(output, start, retrain):
+    """Remove the outputs a re-run from step index ``start`` replaces.
+
+    Train keeps its folder so that every model not named in ``retrain`` is reused; the
+    models named there lose their saved artifacts and are trained afresh.
+    """
+    output = Path(output)
+    train = STEPS[2][3].split("/", 1)[0]
+    for candidate in sorted(output.iterdir()) if output.is_dir() else ():
+        if candidate.name != train and stale_artifact(candidate.name, start):
+            path = contained(output, candidate)
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+    for model in retrain:
+        folder = contained(output, output / train / "models" / model)
+        if folder.is_dir():
+            shutil.rmtree(folder)
+
+
 def execute_ml(job):
     """Run the requested steps of one owned ML run, saving progress after every step."""
     target = job["target_id"]
@@ -200,6 +222,8 @@ def execute_ml(job):
             with contextlib.suppress(Exception):
                 save("UPDATE ml_runs SET progress=%s WHERE ml_id=%s", (Json(progress), target))
 
+    if job["payload"].get("rerun") is not None:
+        clear_for_rerun(output, int(job["payload"]["rerun"]), job["payload"].get("retrain", []))
     try:
         run_ml_steps(source, eda_source, output, row["feature_columns"], row["config"], start, through, on_step)
     except Exception:

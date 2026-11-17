@@ -19,6 +19,7 @@ from ml_classification.shared.models.modeling_context import (
 from ml_classification.shared.persistence import load_joblib, load_json, save_frame_csv, save_joblib, save_json
 from ml_classification.shared.reports.final_dashboard import write_pipeline_final_dashboard
 from ml_classification.shared.reports.report_index import write_index_report
+from ml_classification.step_05_predict.libraries.inspection_priority.diagnostics import inspection_queue_order
 from ml_classification.step_05_predict.libraries.inspection_priority.plots import save_inspection_relationship_plot
 from ml_classification.step_05_predict.libraries.inspection_priority.scoring import INSPECTION_OUTPUT_COLUMNS
 from ml_classification.step_05_predict.libraries.plots import save_prediction_fill_plot
@@ -49,6 +50,13 @@ class PredictStep(PipelineStepBase):
     def _calculate_rank_confidence(self, selection, predictions, member_probabilities):
         """Calculate confidence using the definition frozen during evaluation."""
         return calculate_rank_confidence(self.config, selection, predictions, member_probabilities)
+
+    @staticmethod
+    def _final_confidence_rule(rank_confidence: dict[str, Any] | None) -> str:
+        """Name the rule that produced the confidence level: rank agreement or the probability fallback."""
+        if rank_confidence is None:
+            return "maximum_probability"
+        return str(rank_confidence.get("prediction_confidence_source", "rank_only"))
 
     def _load_prediction_inputs(self):
         # Load persisted dataset and modeling artifacts needed for prediction.
@@ -135,13 +143,24 @@ class PredictStep(PipelineStepBase):
         # Persist full predictions, a compact CSV preview, and the summary JSON.
         save_joblib(final_df, self.config.predict_dir / "final_predictions.joblib")
         save_frame_csv(final_df[preview_columns], self.config.predict_dir / "final_predictions_preview.csv")
+        csv_contracts = {"final_predictions_preview.csv": preview_columns}
+        if "inspection_check_type" in final_df:
+            # Every parcel that needs a field check, in the order inspectors should visit them.
+            queue = final_df.loc[final_df["inspection_check_type"].ne("NONE"), preview_columns]
+            queue = queue.loc[inspection_queue_order(final_df.loc[queue.index])]
+            queue.insert(0, "inspection_queue_rank", range(1, len(queue) + 1))
+            save_frame_csv(queue, self.config.predict_dir / "inspection_queue.csv")
+            csv_contracts["inspection_queue.csv"] = list(queue.columns)
+        else:
+            # A recalculation without inspection metrics must not leave an older queue behind.
+            (self.config.predict_dir / "inspection_queue.csv").unlink(missing_ok=True)
         save_json(summary, self.config.predict_dir / "predict_summary.json")
         # Record expected schema/contracts for downstream validation and reporting.
         self._save_schema_manifest(
             self.config.predict_dir,
             "predict_step_schema_manifest",
             json_contracts={"predict_summary.json": sorted(summary)},
-            csv_contracts={"final_predictions_preview.csv": preview_columns},
+            csv_contracts=csv_contracts,
         )
 
     def _save_prediction_plots(self, final_df):
@@ -235,7 +254,7 @@ class PredictStep(PipelineStepBase):
             "class_reliability_method": (
                 rank_contract["class_reliability"].get("method") if rank_contract["class_reliability"] is not None else None
             ),
-            "final_confidence_rule": "rank_only",
+            "final_confidence_rule": self._final_confidence_rule(rank_confidence),
             "rank_confidence_minimum_models": rank_contract["minimum_models"],
             "rank_confidence_level_counts": (
                 final_df[self.config.prediction_confidence_level_column].value_counts().to_dict()
@@ -315,7 +334,7 @@ class PredictStep(PipelineStepBase):
             "class_reliability_method": (
                 rank_contract["class_reliability"].get("method") if rank_contract["class_reliability"] is not None else None
             ),
-            "final_confidence_rule": "rank_only",
+            "final_confidence_rule": self._final_confidence_rule(rank_confidence),
             "rank_confidence_minimum_models": rank_contract["minimum_models"],
             **inspection_summary,
         }

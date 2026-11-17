@@ -32,10 +32,13 @@ def _build_pca_summary(df: pd.DataFrame, numeric_columns: list[str], config: EDA
     return pd.DataFrame(rows)
 
 def _build_multivariate_outlier_scores(
-    df: pd.DataFrame, numeric_columns: list[str], config: EDAConfig
+    df: pd.DataFrame, numeric_columns: list[str], config: EDAConfig, priority: list[str] | None = None
 ) -> pd.DataFrame:
-    """Score every usable row and retain both positional and original-index identifiers."""
-    feature_columns = _multivariate_feature_columns(numeric_columns, config)
+    """Score every usable row and retain both positional and original-index identifiers.
+
+    ``priority`` orders the candidate features before the ``max_multivariate_features`` cap is applied.
+    """
+    feature_columns = _multivariate_feature_columns(numeric_columns, config, priority)
     positional_df = df[feature_columns].reset_index(drop=True)
     combined = _outlier_analysis(positional_df, config).detect_all_outliers()
     diagnostics = [column for column in combined if column not in feature_columns]

@@ -154,10 +154,38 @@ The submitted run keeps its normalized configuration and account order. Adding
 accounts later does not change a run that may need to resume. A referenced account
 cannot be deleted. Account passwords can be replaced without changing identity.
 
-**Help** in the top bar opens guidance for parcel statistics, EDA and ML
-classification, with the workflow diagrams. It opens on the topic of the current
-page. The diagrams are copies in `web/src/features/help/images/` (the frontend
-image is built from `web/` only); update them there when the originals in `docs/` change.
+**Pipeline guide** in the sidebar opens a dedicated reading page at
+`/guide/index.html`. **Help** opens the relevant stage in a new tab, preserving
+the current form or run view. The contents follow acquisition → local statistics →
+optional feature enrichment → EDA → ML → inspection. Each stage explains its
+inputs, processing order and outputs, followed by a reading list and relevant
+workflow diagrams. Articles have an in-page contents list and Previous/Next links.
+
+The guide renders the current Markdown documents, links the HTML workflow references
+and displays the PNG diagrams at their relevant stages. The inspection section
+includes the detailed evidence/decision-rule diagram and out-of-fold reliability.
+Feature enrichment is explicitly identified as Python/notebook functionality;
+it is not a separate web-app stage. Historical Word manuals, internal plans and
+image-generation prompts are excluded from the learning path.
+
+### Maintaining the pipeline guide
+
+Edit the original Markdown/HTML/PNG in `docs/`. The ordered catalog is
+`docs/guide/contents.json`: each section defines its explanation, inputs/outputs,
+steps, articles and assets. `web/scripts/build-guide.mjs` generates the pages and
+assets under `web/public/guide/`; old `/help/*_workflow.html` URLs are regenerated
+as compatibility copies. Generated files are ignored by Git; do not edit them.
+
+`npm run dev`, `npm run build` and `npm test` generate the guide automatically.
+After editing docs while the development server is running, run `npm run guide`
+from `web/` and refresh the browser. Tests crawl all generated internal links and
+anchors, check Markdown rendering and verify workflow assets against the originals.
+
+The frontend Docker build uses the repository root as its context and
+`web/Dockerfile.dockerignore` limits the files sent to that build. Compose already
+uses this configuration. For a manual frontend-only build, run
+`docker build -f web/Dockerfile .` from the repository root. Rebuild the frontend
+image to publish documentation changes; no database migration is needed.
 
 ## Progress and permanent deletion
 
@@ -223,6 +251,14 @@ listed under Managed output settings. Each submission receives a separate server
 directory; it never clears parcel outputs or an earlier EDA directory. Saved
 configurations and selected columns can be reused for another analysis.
 
+An EDA analysis is listed under its **Report title** (default `EDA: <run name>`),
+highlighted in the first settings panel.
+To tell analyses of the same run apart, select **Rename** in an analysis's details
+and enter a name (up to 120 characters). Renaming changes only the display name,
+which also becomes the default name of new ML scenarios; the saved settings, the
+title inside the HTML report and all results are preserved. Renaming is unavailable
+while an analysis is being deleted.
+
 EDA uses the heavy worker queue and continues when the dialog/browser closes.
 An analysis's details show queued/running/complete/failed/interrupted status, timestamps,
 duration, the saved request and downloads. Results include the HTML report (when
@@ -237,8 +273,9 @@ and open `report.html`. Failed analyses offer a diagnostic log when available;
 new failures retain the exception traceback and show its type in the analysis details.
 
 The additive migration creates `eda_runs`, linked to `analysis_runs` and
-`app_users`, with input checksum, selected columns, configuration, status,
-timestamps and published-file metadata. Apply the migration before starting an
+`app_users`, with display name, input checksum, selected columns, configuration, status,
+timestamps and published-file metadata. Existing analyses take their report title as
+display name. Apply the migration before starting an
 updated worker:
 
 ```powershell
@@ -259,7 +296,9 @@ a page that starts with **New scenario** beside the list of saved scenarios (dat
 steps done, status); pick one to open it. There you create *scenarios*: one combination of features, models and settings. An EDA
 analysis can have any number of scenarios, so different models or search grids can be compared.
 
-1. **Name** the scenario.
+1. **Name** the scenario in the highlighted box (default `ML: <EDA name>`). Select **Rename**
+   in a scenario's details to change it later (up to 200 characters); settings, steps and
+   results are preserved.
 2. **Choose the features.** Columns analysed in EDA are listed first and the ones EDA proposed
    are pre-selected. Columns calculated by EDA (for example `is_outlier`) are listed but not
    selected. The remaining parcel-result columns follow. The model input is always the parcel
@@ -272,13 +311,48 @@ analysis can have any number of scenarios, so different models or search grids c
    probabilities are optimised over five passes.
 4. **Run** all five steps, or only the first one.
 
+Under **Inspection priority ? Thresholds**, **Data reliability** and **Geometry**
+have separate controls, mode explanations and worked examples. For data reliability,
+**absolute** uses the entered cutoffs; **percentile** uses the smaller of each cutoff
+and the reliability score at its chosen percentile in the current prediction run.
+For geometry, **absolute** uses complexity cutoffs alone; **percentile** requires both
+the complexity cutoff and its percentile rank cutoff. Percentile-only inputs are
+disabled in absolute mode. The score-band thresholds remain below these subsections
+and only set `inspection_need_base`.
+
 The steps are Check, Prepare, Train, Evaluate and Predict. In a scenario's details each step shows
 whether it is done and links to its report. A waiting scenario offers **Run next step** and
 **Run all remaining steps**. After a failure or a worker interruption, **Retry step** continues
-from the step that stopped; finished steps and already trained models are reused. A scenario's
-settings cannot be changed afterwards: use **Use as a new scenario** to start from them.
+from the step that stopped; finished steps and already trained models are reused.
 
-A finished scenario offers the final dashboard, the prediction table (CSV), a ZIP of all
+An idle scenario can run a later step again with changed settings. The checked data, the
+features and the train/test split stay fixed: the settings of Target and parcels, Data
+cleaning and Train/test split, the inspection input columns and the Prepare report limits
+are locked. Use **Use as a new scenario** to change those.
+
+- **Re-run Train…** (after Prepare) edits the models, their search grids and every setting
+  used from Train on, then runs Train, Evaluate and Predict. Each selected model has a
+  **retrain** tick box: ticked models are trained afresh, the others reuse their saved
+  training. A model is always retrained when it has not been trained yet, when its search
+  grid changed, or when a setting shared by all models changed (search candidates, scoring,
+  CV ranking, class balancing, rare-category frequency). LSTM settings retrain `keras_lstm`.
+- **Re-run Evaluate…** (after Train) keeps every trained model and edits the final model and
+  probability tuning, prediction confidence, explanation, inspection priority and output
+  settings, then runs Evaluate and Predict. Probability tuning and rank confidence can be
+  turned on here only when one of them was already on during Train, because Train saves
+  the out-of-fold probabilities they need only then; otherwise re-run Train.
+- **Re-run Predict…** (after Evaluate) edits only the inspection priority settings and the
+  output column names, then runs Predict.
+
+`POST /api/ml/{id}/rerun` takes `{step, config, retrain}` with `step` one of `train`,
+`evaluate` or `predict`. The server rejects locked changes, adds the models that must be
+retrained, removes the replaced steps' files from the download list, and queues the steps.
+The worker deletes the outputs of the steps that run again and the dashboard (Train's
+folder is kept so unticked models are reused) and the folders of the models to retrain
+before it starts.
+
+A finished scenario offers the final dashboard, the prediction table (CSV), the full
+inspection queue (CSV, every parcel that needs a field check in visit order), a ZIP of all
 outputs and the log. ML uses the heavy worker queue, like parcel runs and EDA, so a long
 training occupies that queue; it cannot be stopped from the browser. The worker image needs
 the `ml` extra (`xgboost`, `lightgbm`, `imbalanced-learn`, `shap`); models whose library is

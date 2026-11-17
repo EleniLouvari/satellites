@@ -43,6 +43,8 @@ GROUPS = {
     "output": ("Output and reproducibility", ["include_html_report", "print_feature_selection_summary", "random_state"]),
 }
 DESCRIPTIONS = {
+    "report_title": "The name of this analysis in your list and the title of its report. Give each analysis a "
+    "distinct name; you can rename it later.",
     "feature_selection_max_features": "Leave blank for no feature-count limit.",
     "feature_selection_exclude_columns": "Columns never proposed as features. The parcel ID and geometry are added "
     "automatically. The target and ID columns chosen above are always excluded, even when not listed here; add "

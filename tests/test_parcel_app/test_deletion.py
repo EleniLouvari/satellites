@@ -55,8 +55,8 @@ def seed_run(client, root, upload=None, legacy=False):
     eda_output.mkdir(parents=True)
     (eda_output / "report.html").write_text("report")
     db.execute(
-        "INSERT INTO eda_runs(eda_id,run_id,app_user_id,selected_columns,config,input_sha256,output_dir,status) "
-        "VALUES(%s,%s,%s,'[]','{}','test',%s,'complete')",
+        "INSERT INTO eda_runs(eda_id,run_id,app_user_id,name,selected_columns,config,input_sha256,output_dir,status) "
+        "VALUES(%s,%s,%s,'EDA','[]','{}','test',%s,'complete')",
         (eda_id, run_id, user_id, str(eda_output)),
     )
     for kind, target in [("run", run_id), ("bundle", run_id), ("eda", eda_id), ("inspect", str(upload["upload_id"]))]:

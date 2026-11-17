@@ -4,6 +4,11 @@ This folder contains a restartable supervised-classification workflow for pandas
 DataFrames and GeoPandas GeoDataFrames, a ready-made output-directory template,
 and a runner for measuring sensitivity to the random seed.
 
+For step-by-step diagrams that list every configuration input with its default
+and the step it controls, open [WORKFLOW_DIAGRAM.html](WORKFLOW_DIAGRAM.html) (the
+five pipeline steps) and [INSPECTION_WORKFLOW_DIAGRAM.html](INSPECTION_WORKFLOW_DIAGRAM.html)
+(inspection priority) in a browser.
+
 ## Package layout
 
 - `src/ml_classification/` contains `step_01_check/` through

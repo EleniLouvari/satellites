@@ -1,0 +1,408 @@
+[
+  {
+    "id": "index",
+    "title": "Start here",
+    "description": "Follow a parcel from satellite observations to an inspection decision.",
+    "input": "Parcel geometries and a unique identifier; labels are needed for supervised classification.",
+    "output": "Parcel features, diagnostic reports, predictions and inspection priorities.",
+    "steps": [
+      [
+        "Prepare your parcels",
+        "Upload and inspect a GeoPackage, GeoParquet or GeoJSON; select its layer and unique parcel ID."
+      ],
+      [
+        "Acquire and summarize observations",
+        "openEO retrieves imagery. Local processing turns cleaned pixels into one row per parcel."
+      ],
+      [
+        "Understand and classify",
+        "EDA describes the data. ML trains and evaluates models, then predicts every row."
+      ],
+      [
+        "Review the evidence",
+        "Use confidence, reliability and inspection rules to prioritize human review."
+      ]
+    ],
+    "articles": [
+      [
+        "getting-started",
+        "The complete journey",
+        "docs/guide/README.md"
+      ]
+    ]
+  },
+  {
+    "id": "openeo",
+    "title": "openEO acquisition",
+    "description": "Plan the spatial work and acquire Sentinel observations through Copernicus.",
+    "input": "Parcel geometries, dates, Sentinel settings and Copernicus accounts.",
+    "output": "Downloaded raster cubes ready for local processing.",
+    "steps": [
+      [
+        "Configure inputs and accounts",
+        "Choose parcels, dates, bands, cloud masking and the accounts that will execute remote jobs."
+      ],
+      [
+        "Plan partitions and batches",
+        "Split the input into outer partitions, then plan buffered or tile-based remote batches."
+      ],
+      [
+        "Build Sentinel cubes",
+        "Acquire Sentinel-2 and/or Sentinel-1 observations, with the configured masking, resampling and temporal behavior."
+      ],
+      [
+        "Schedule, monitor and download",
+        "Submit jobs, apply the retry policy and download completed cubes. Remote completion is only one stage of the run."
+      ]
+    ],
+    "articles": [
+      [
+        "openeo-workflow",
+        "Acquisition to statistics: detailed workflow",
+        "docs/data_preparation/openeo/WORKFLOW.md"
+      ],
+      [
+        "openeo-configuration",
+        "Configuration and settings",
+        "docs/data_preparation/openeo/README.md"
+      ],
+      [
+        "parcel-grouping",
+        "Parcel grouping and tile planning",
+        "docs/data_preparation/openeo/PARCEL_GROUPING.md"
+      ],
+      [
+        "scheduling",
+        "Scheduling, retries and resume",
+        "docs/data_preparation/openeo/SCHEDULING.md"
+      ],
+      [
+        "accounts",
+        "Account setup reference",
+        "docs/data_preparation/openeo/CREDENTIALS.md"
+      ],
+      [
+        "multiuser",
+        "Multi-account orchestration",
+        "docs/data_preparation/openeo/MULTIUSER_IMPLEMENTATION_GUIDE.md"
+      ],
+      [
+        "calling-example",
+        "Python calling example",
+        "docs/data_preparation/openeo/CALLING_EXAMPLE.md"
+      ],
+      [
+        "multiuser-example",
+        "Multi-account example",
+        "docs/data_preparation/openeo/MULTIUSER_USAGE_EXAMPLE.md"
+      ]
+    ],
+    "assets": [
+      [
+        "Open the interactive workflow reference",
+        "docs/data_preparation/openeo/WORKFLOW_DIAGRAM.html",
+        "openeo_parcel_statistics_workflow.html"
+      ]
+    ]
+  },
+  {
+    "id": "statistics",
+    "title": "Parcel statistics",
+    "description": "Turn downloaded raster cubes into quality-aware parcel features.",
+    "input": "Downloaded cubes, parcel geometries and local processing settings.",
+    "output": "Dated and reduced GeoParquet tables, cleaning reports and completion records.",
+    "steps": [
+      [
+        "Open and validate each cube",
+        "Check physical bands, coordinates and coverage before local calculation."
+      ],
+      [
+        "Clean and fill physical bands",
+        "Apply configured IQR cleaning and observation checks, then temporal filling before spatial filling and interpolation."
+      ],
+      [
+        "Calculate indices",
+        "Derive spectral indices from the cleaned physical bands and preserve observed-versus-filled provenance."
+      ],
+      [
+        "Aggregate parcel pixels",
+        "Mask pixels by parcel, calculate the selected statistics, and reshape dated values into one row per parcel."
+      ],
+      [
+        "Persist and publish results",
+        "Assemble parcel tables and cleaning reports. Completion is recorded after the required outputs are saved and verified."
+      ]
+    ],
+    "articles": [
+      [
+        "netcdf-processing",
+        "Local processing, quality counts and checkpoints",
+        "docs/data_preparation/NETCDF_PROCESSING.md"
+      ],
+      [
+        "statistics-api",
+        "Parcel statistics API and output files",
+        "docs/data_preparation/README.md"
+      ]
+    ],
+    "assets": [
+      [
+        "Acquisition, cleaning and parcel statistics",
+        "docs/data_preparation/openeo/OPENEO_CLEANING_FLOWCHART.png"
+      ]
+    ]
+  },
+  {
+    "id": "features",
+    "title": "Feature enrichment",
+    "description": "Optional enrichment for Python and notebook workflows.",
+    "input": "A parcel feature table and any required environmental reference datasets.",
+    "output": "A parcel table with temporal summaries or environmental attributes.",
+    "steps": [
+      [
+        "Reduce dated features",
+        "Summarize observations over time when appropriate. The statistics pipeline already writes a reduced sibling table."
+      ],
+      [
+        "Add environmental context",
+        "Optional functions add elevation, soil and nearest-lake features from separately supplied reference data."
+      ],
+      [
+        "Choose the analysis table",
+        "Keep one row per parcel and retain ID, target and geometry roles for downstream analysis."
+      ]
+    ],
+    "articles": [
+      [
+        "feature-enrichment",
+        "Available features and where to use them",
+        "docs/guide/FEATURE_ENRICHMENT.md"
+      ]
+    ]
+  },
+  {
+    "id": "eda",
+    "title": "EDA",
+    "description": "Understand data quality, relationships and candidate features before training.",
+    "input": "A completed parcel-statistics result in the app, plus chosen column roles and EDA settings.",
+    "output": "Diagnostic tables, plots, annotated rows, an HTML report and an initial feature proposal.",
+    "steps": [
+      [
+        "Validate and profile",
+        "Validate configuration, prepare the output folder, identify column types and summarize missingness and distributions."
+      ],
+      [
+        "Calculate statistical evidence",
+        "Measure feature relationships and target-dependent associations where labels are available."
+      ],
+      [
+        "Screen candidate features",
+        "Apply quality, association, redundancy and stability gates to form an exploratory proposal."
+      ],
+      [
+        "Run multivariate diagnostics",
+        "Calculate configured VIF, PCA and outlier diagnostics, then annotate input rows."
+      ],
+      [
+        "Write artifacts and report",
+        "Generate plots, save diagnostic tables and render the HTML report. Final feature selection requires train-only validation."
+      ]
+    ],
+    "articles": [
+      [
+        "eda-workflow",
+        "EDA execution order and artifacts",
+        "docs/eda/WORKFLOW.md"
+      ],
+      [
+        "eda-configuration",
+        "EDA configuration and usage",
+        "docs/eda/README.md"
+      ],
+      [
+        "feature-screening",
+        "Feature-screening criteria",
+        "docs/eda/FEATURE_SELECTION_GUIDE.md"
+      ]
+    ],
+    "assets": [
+      [
+        "Open the EDA workflow reference",
+        "docs/eda/WORKFLOW_DIAGRAM.html",
+        "eda_workflow.html"
+      ],
+      [
+        "EDA pipeline flowchart",
+        "docs/eda/EDA_PIPELINE_FLOWCHART.png"
+      ],
+      [
+        "Feature-screening workflow",
+        "docs/eda/FEATURE_SELECTION_WORKFLOW.png"
+      ]
+    ]
+  },
+  {
+    "id": "ml",
+    "title": "ML classification",
+    "description": "Run a reproducible classification scenario in five restartable steps.",
+    "input": "A completed EDA analysis in the app, selected features and a target with labelled rows.",
+    "output": "Saved models, evaluation reports, predictions, probabilities and inspection evidence.",
+    "steps": [
+      [
+        "Check",
+        "Validate input, feature and target roles; record diagnostics and prepare the run artifacts."
+      ],
+      [
+        "Prepare",
+        "Build the training/test split and cross-validation folds, optionally using spatial separation."
+      ],
+      [
+        "Train",
+        "Tune selected classifiers using training data and cross-validation."
+      ],
+      [
+        "Evaluate",
+        "Evaluate the candidate models and configured prediction strategies; persist the selected strategy."
+      ],
+      [
+        "Predict",
+        "Refit and predict all rows, including unlabelled parcels, then calculate confidence and inspection evidence."
+      ]
+    ],
+    "articles": [
+      [
+        "ml-overview",
+        "Five-step workflow and outputs",
+        "docs/ml_classification/OVERVIEW.md"
+      ],
+      [
+        "ml-configuration",
+        "Configuration, models and reports",
+        "docs/ml_classification/README.md"
+      ],
+      [
+        "incremental",
+        "Incremental training and reruns",
+        "docs/ml_classification/INCREMENTAL_WORKFLOW.md"
+      ],
+      [
+        "ml-structure",
+        "Step ownership and saved artifacts",
+        "docs/ml_classification/STRUCTURE.md"
+      ],
+      [
+        "output-folders",
+        "Output folder reference",
+        "docs/ml_classification/output_template/README.md"
+      ]
+    ],
+    "assets": [
+      [
+        "Open the ML workflow reference",
+        "docs/ml_classification/WORKFLOW_DIAGRAM.html",
+        "ml_classification_workflow.html"
+      ]
+    ]
+  },
+  {
+    "id": "inspection",
+    "title": "Inspection",
+    "description": "Understand how prediction evidence becomes a human review priority.",
+    "input": "Predictions, declared labels, confidence, class reliability, geometry and available quality diagnostics.",
+    "output": "Inspection priorities and a ranked review queue; these support human decisions.",
+    "steps": [
+      [
+        "Calculate confidence and reliability",
+        "Combine model evidence, rank-based confidence and class reliability diagnostics."
+      ],
+      [
+        "Apply the decision rules",
+        "Compare predictions with declarations and assess data and geometry reliability."
+      ],
+      [
+        "Apply optional outlier adjustment",
+        "Use EDA outlier evidence when configured. EDA is required before ML in the app, but this adjustment is optional."
+      ],
+      [
+        "Review the prioritized parcels",
+        "Inspect the reasons and evidence behind each priority rather than treating priority as a probability."
+      ]
+    ],
+    "articles": [
+      [
+        "confidence",
+        "Rank confidence and class reliability",
+        "docs/ml_classification/rank_based_ensemble_confidence_methodology.md"
+      ],
+      [
+        "inspection-rules",
+        "Inspection decision table",
+        "docs/ml_classification/INSPECTION_PRIORITY_DECISION_TABLE.md"
+      ]
+    ],
+    "assets": [
+      [
+        "Open the inspection workflow reference",
+        "docs/ml_classification/INSPECTION_WORKFLOW_DIAGRAM.html",
+        "inspection_priority_workflow.html"
+      ],
+      [
+        "Inspection priorities and review queue",
+        "docs/ml_classification/INSPECTION_WORKFLOW_DIAGRAM.png"
+      ],
+      [
+        "Detailed inspection evidence and all decision rules",
+        "docs/ml_classification/INSPECTION_EVIDENCE_AND_PRIORITY_WORKFLOW.png"
+      ],
+      [
+        "Out-of-fold and class reliability",
+        "docs/ml_classification/OOF and Class Reliability Workflow.png"
+      ]
+    ]
+  },
+  {
+    "id": "reference",
+    "title": "Advanced reference",
+    "description": "Setup, command-line use and implementation details for technical readers.",
+    "input": "The workflow you want to configure, operate or extend.",
+    "output": "Practical setup instructions and the source ownership map.",
+    "steps": [],
+    "articles": [
+      [
+        "web-app",
+        "Using and running Parcel Studio",
+        "docs/web_app/README.md"
+      ],
+      [
+        "cli",
+        "Parcel statistics command line",
+        "docs/data_preparation/openeo/CLI.md"
+      ],
+      [
+        "docker",
+        "Parcel statistics Docker image",
+        "docs/data_preparation/openeo/DOCKER.md"
+      ],
+      [
+        "repository",
+        "Repository structure",
+        "docs/repository_structure.md"
+      ],
+      [
+        "ml-source",
+        "Classification source guide",
+        "src/ml_classification/README.md"
+      ],
+      [
+        "ml-files",
+        "Classification file usage index",
+        "src/ml_classification/FILE_USAGE.md"
+      ],
+      [
+        "extending",
+        "Extending Parcel Studio",
+        "docs/web_app/EXTENDING.md"
+      ]
+    ]
+  }
+]

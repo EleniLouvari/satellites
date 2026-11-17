@@ -571,8 +571,8 @@ def test_no_declaration_is_medium_and_missing_prediction_is_unknown():
     expect_equal(result["label_prediction_status"].tolist(), ["UNAVAILABLE"] + ["NO_DECLARATION"] * 3)
 
 
-def test_seven_priority_queue_order_and_stable_ties():
-    """Queue order follows categories, includes intermediate priorities, and ignores score ties."""
+def test_seven_priority_queue_order_then_score_within_a_band():
+    """Queue order follows the priority bands; within a band the higher inspection score comes first."""
     from ml_classification.step_05_predict.libraries.inspection_priority.diagnostics import _top_priority_parcels
 
     config = _config()
@@ -586,7 +586,7 @@ def test_seven_priority_queue_order_and_stable_ties():
         }
     )
     queue = _top_priority_parcels(frame, config)
-    expect_equal(queue["id"].tolist(), ["very-high", "high", "medium-high", "medium", "medium-second", "low-medium"])
+    expect_equal(queue["id"].tolist(), ["very-high", "high", "medium-high", "medium-second", "medium", "low-medium"])
 
 
 @pytest.mark.parametrize("enabled", [True, False])
@@ -714,3 +714,184 @@ def test_inspection_outlier_config_defaults_and_validation(tmp_path):
     expect_true(ClassificationPipelineConfig(**arguments, inspection_include_outlier=True).inspection_include_outlier)
     with pytest.raises(TypeError, match="inspection_include_outlier must be a bool"):
         ClassificationPipelineConfig(**arguments, inspection_include_outlier="true")
+
+
+def _geometry_parcels(complexity) -> pd.DataFrame:
+    """Return agreeing, fully reliable parcels that differ only in geometry complexity."""
+    rows = len(complexity)
+    return pd.DataFrame(
+        {
+            "declared_crop": ["A"] * rows,
+            "predicted_crop": ["A"] * rows,
+            "prediction_confidence_level": ["HIGH"] * rows,
+            "prediction_class_reliability_level": ["HIGH"] * rows,
+            "prediction_class_reliability_valid": [True] * rows,
+            "data_reliability_score": [0.95] * rows,
+            "geom_shape_complexity_score": complexity,
+        }
+    )
+
+
+def test_percentile_geometry_mode_does_not_penalise_a_run_of_simple_parcels():
+    """Simple parcels stay favourable even when half of them rank above the median complexity."""
+    config = _config()
+    config.inspection_geometry_threshold_mode = "percentile"
+    config.inspection_medium_geometry_complexity_threshold = 0.60
+    config.inspection_high_geometry_complexity_threshold = 0.90
+
+    result = calculate_inspection_metrics(_geometry_parcels([0.10, 0.15, 0.20, 0.25]), config)
+
+    expect_equal(result["geometry_complexity_level"].tolist(), ["LOW"] * 4)
+    expect_equal(result["inspection_need"].tolist(), ["VERY_LOW"] * 4)
+    expect_true(result["inspection_reasons"].eq("NONE").all())
+
+
+def test_percentile_geometry_mode_needs_both_rank_and_complexity():
+    config = _config()
+    config.inspection_geometry_threshold_mode = "percentile"
+    config.inspection_medium_geometry_complexity_threshold = 0.60
+    config.inspection_high_geometry_complexity_threshold = 0.90
+
+    # Percentile ranks 0.25, 0.5, 0.75, 1.0: the 0.4 parcel ranks high enough but is not complex enough.
+    result = calculate_inspection_metrics(_geometry_parcels([0.10, 0.40, 0.70, 1.20]), config)
+
+    expect_equal(result["geometry_complexity_level"].tolist(), ["LOW", "LOW", "MEDIUM", "HIGH"])
+    expect_equal(result["inspection_need"].tolist(), ["VERY_LOW", "VERY_LOW", "LOW", "LOW"])
+    expect_in("MEDIUM_GEOMETRY_COMPLEXITY", result.loc[2, "inspection_reasons"])
+    expect_in("HIGH_GEOMETRY_COMPLEXITY", result.loc[3, "inspection_reasons"])
+
+
+def test_absolute_geometry_mode_ignores_the_rank():
+    config = _config()
+    config.inspection_geometry_threshold_mode = "absolute"
+    config.inspection_medium_geometry_complexity_threshold = 0.60
+    config.inspection_high_geometry_complexity_threshold = 0.90
+
+    # The 0.65 parcel has the lowest rank (0.5 after the tie) yet is a 3:1 strip, so it is medium complexity.
+    result = calculate_inspection_metrics(_geometry_parcels([0.65, 0.65, 0.95, 0.95]), config)
+
+    expect_equal(result["geometry_complexity_level"].tolist(), ["MEDIUM", "MEDIUM", "HIGH", "HIGH"])
+
+
+def test_zero_absolute_thresholds_reproduce_the_percentile_only_policy():
+    config = _config()
+    config.inspection_geometry_threshold_mode = "percentile"
+    config.inspection_medium_geometry_complexity_threshold = 0.0
+    config.inspection_high_geometry_complexity_threshold = 0.0
+    legacy = _config()  # No absolute thresholds: the original percentile-only behaviour.
+    parcels = _geometry_parcels([0.10, 0.15, 0.20, 0.25])
+
+    result = calculate_inspection_metrics(parcels, config)
+    expected = calculate_inspection_metrics(parcels, legacy)
+
+    # Percentile ranks 0.25, 0.5, 0.75 and 1.0 against the 0.50 and 0.75 thresholds.
+    expect_equal(result["geometry_complexity_level"].tolist(), ["LOW", "MEDIUM", "HIGH", "HIGH"])
+    expect_equal(result["inspection_need"].tolist(), expected["inspection_need"].tolist())
+    expect_equal(result["inspection_reasons"].tolist(), expected["inspection_reasons"].tolist())
+
+
+def test_missing_geometry_complexity_is_unknown_in_both_modes():
+    for mode in ("percentile", "absolute"):
+        config = _config()
+        config.inspection_geometry_threshold_mode = mode
+        config.inspection_medium_geometry_complexity_threshold = 0.60
+        config.inspection_high_geometry_complexity_threshold = 0.90
+
+        result = calculate_inspection_metrics(_geometry_parcels([0.2, np.nan]), config)
+
+        expect_true(pd.isna(result.loc[1, "geometry_complexity_level"]))
+        expect_equal(result.loc[1, "inspection_need"], "UNKNOWN")
+        expect_in("MISSING_GEOMETRY_COMPLEXITY", result.loc[1, "inspection_reasons"])
+
+
+def test_geometry_threshold_config_defaults_and_validation(tmp_path):
+    from ml_classification import ClassificationPipelineConfig
+
+    arguments = {"project_dir": tmp_path, "target_column": "crop", "feature_columns": ["x"], "feature_importance_top_n": 1}
+    config = ClassificationPipelineConfig(**arguments)
+    expect_equal(config.inspection_geometry_threshold_mode, "percentile")
+    expect_equal(config.inspection_medium_geometry_complexity_threshold, 0.60)
+    expect_equal(config.inspection_high_geometry_complexity_threshold, 0.90)
+    with pytest.raises(ValueError, match="Error: inspection_geometry_threshold_mode must be either"):
+        ClassificationPipelineConfig(**arguments, inspection_geometry_threshold_mode="rank")
+    with pytest.raises(ValueError, match="Error: Inspection geometry-complexity thresholds must satisfy"):
+        ClassificationPipelineConfig(
+            **arguments, inspection_medium_geometry_complexity_threshold=1.0, inspection_high_geometry_complexity_threshold=0.5
+        )
+
+
+def test_queue_orders_by_score_within_a_band_with_unscored_rows_last_and_stable_ties():
+    from ml_classification.step_05_predict.libraries.inspection_priority.diagnostics import (
+        _top_priority_parcels,
+        inspection_queue_order,
+    )
+
+    config = _config()
+    config.id_column = "id"
+    frame = pd.DataFrame(
+        {
+            "id": ["m-unscored", "m-30", "m-80-first", "h-10", "m-80-second", "none"],
+            "inspection_need": ["MEDIUM", "MEDIUM", "MEDIUM", "HIGH", "MEDIUM", "VERY_LOW"],
+            "inspection_check_type": ["INSUFFICIENT_EO_EVIDENCE"] * 5 + ["NONE"],
+            "inspection_score": [np.nan, 30.0, 80.0, 10.0, 80.0, 99.0],
+        }
+    )
+
+    queue = _top_priority_parcels(frame, config)
+
+    # Higher band first whatever the score; inside Medium the score decides, ties keep input order, no score goes last.
+    expect_equal(queue["id"].tolist(), ["h-10", "m-80-first", "m-80-second", "m-30", "m-unscored"])
+    expect_equal(frame.loc[inspection_queue_order(frame), "id"].tolist()[-1], "none")
+
+
+def test_inspection_weights_change_the_order_within_a_band():
+    from ml_classification.step_05_predict.libraries.inspection_priority.diagnostics import inspection_queue_order
+
+    parcels = _geometry_parcels([0.10, 0.95])
+    parcels["prediction_confidence_level"] = ["LOW", "LOW"]  # Both are MEDIUM priority (rules R09).
+    parcels["data_reliability_score"] = [0.95, 0.95]
+    data_first, geometry_first = _config(), _config()
+    data_first.inspection_model_weight, data_first.inspection_data_weight, data_first.inspection_geometry_weight = 1.0, 0.0, 0.0
+    geometry_first.inspection_model_weight, geometry_first.inspection_geometry_weight = 0.5, 0.5
+    geometry_first.inspection_data_weight = 0.0
+
+    tied = calculate_inspection_metrics(parcels, data_first)
+    ranked = calculate_inspection_metrics(parcels, geometry_first)
+
+    expect_equal(tied["inspection_need"].tolist(), ["MEDIUM", "MEDIUM"])
+    expect_equal(list(inspection_queue_order(tied)), [0, 1])
+    # With geometry weighted, the complex parcel scores higher and moves to the front of its band.
+    expect_equal(list(inspection_queue_order(ranked)), [1, 0])
+
+
+def test_persisted_inspection_queue_lists_every_checked_parcel_in_queue_order(tmp_path):
+    from ml_classification import ClassificationPipelineConfig
+
+    config = ClassificationPipelineConfig(
+        project_dir=tmp_path, target_column="crop", feature_columns=["x"], id_column="id", feature_importance_top_n=1
+    )
+    step = PredictStep(config)
+    frame = pd.DataFrame(
+        {
+            "id": ["m-30", "none", "h-10", "m-80"],
+            "crop": ["a", "a", "b", "b"],
+            config.prediction_column: ["a", "a", "a", "b"],
+            config.prediction_confidence_column: [0.5, 0.9, 0.4, 0.6],
+            config.prediction_review_column: [True, False, True, False],
+            config.prediction_filled_column: ["a", "a", "b", "b"],
+            "inspection_need": ["MEDIUM", "VERY_LOW", "HIGH", "MEDIUM"],
+            "inspection_check_type": ["INSUFFICIENT_EO_EVIDENCE", "NONE", "DECLARATION_CONFLICT", "INSUFFICIENT_EO_EVIDENCE"],
+            "inspection_score": [30.0, 99.0, 10.0, 80.0],
+        }
+    )
+
+    step._persist_predictions(frame, {})
+
+    queue = pd.read_csv(config.predict_dir / "inspection_queue.csv")
+    expect_equal(queue["id"].tolist(), ["h-10", "m-80", "m-30"])
+    expect_equal(queue["inspection_queue_rank"].tolist(), [1, 2, 3])
+    expect_equal(queue.columns[0], "inspection_queue_rank")
+
+    # Recalculating without inspection metrics removes the stale queue.
+    step._persist_predictions(frame.drop(columns=["inspection_need", "inspection_check_type", "inspection_score"]), {})
+    expect_false((config.predict_dir / "inspection_queue.csv").exists())

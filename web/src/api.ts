@@ -69,6 +69,7 @@ export type Schema = {
       label: string;
       description: string[];
       formula?: string | null;
+      parent?: string | null;
     }[];
   }[];
   fields: {

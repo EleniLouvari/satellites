@@ -117,7 +117,9 @@ def build_eda_artifacts(df: pd.DataFrame, config: EDAConfig) -> dict[str, Any]:
     summary["plot_feature_order"] = plot_feature_order
     missingness_target_tests = _build_missingness_target_tests(dataset, config)
     pca_summary = _build_pca_summary(dataset, numeric_columns, config)
-    multivariate_scores = _build_multivariate_outlier_scores(dataset, numeric_columns, config)
+    # Vote on the best-ranked numeric features, not on the first columns of the table.
+    multivariate_priority = plot_feature_order["numeric"]
+    multivariate_scores = _build_multivariate_outlier_scores(dataset, numeric_columns, config, multivariate_priority)
     outlier_mask = multivariate_scores["is_outlier"].eq(True)
     # The outlier table contains flagged rows; annotated_data below retains the full input population.
     multivariate_outliers = multivariate_scores.loc[outlier_mask].reset_index(drop=True)
@@ -135,7 +137,7 @@ def build_eda_artifacts(df: pd.DataFrame, config: EDAConfig) -> dict[str, Any]:
         for column in method_columns
     ])
     # Record the configured feature subset so consumers can interpret the multivariate diagnostic.
-    summary["multivariate_features_used"] = _multivariate_feature_columns(numeric_columns, config)
+    summary["multivariate_features_used"] = _multivariate_feature_columns(numeric_columns, config, multivariate_priority)
     target_summary = _build_target_summary(dataset, config)
 
     return {

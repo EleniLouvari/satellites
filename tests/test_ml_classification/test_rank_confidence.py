@@ -153,14 +153,61 @@ def test_prediction_disagreement_is_explicitly_low_but_data_remain_valid():
     expect_true(result["borda_margin"][0] < 0)
 
 
-def test_too_few_models_is_flagged_and_downgraded():
-    probabilities = np.repeat(np.array([[[0.8, 0.15, 0.05]]]), repeats=2, axis=0)
+def test_too_few_models_fall_back_to_predicted_class_probability():
+    # Rows: confident, borderline and weak support for class "a" from both of the two voting models.
+    member = np.array([[0.85, 0.10, 0.05], [0.65, 0.30, 0.05], [0.40, 0.35, 0.25]])
+    probabilities = np.repeat(member[np.newaxis], repeats=2, axis=0)
 
     result = classify_ensemble_rank_based(probabilities, ["a", "b", "c"], minimum_models=3)
 
-    expect_equal(result["rank_confidence_level"].tolist(), ["LOW"])
-    expect_equal(result["rank_confidence_valid"].tolist(), [False])
-    expect_equal(result["rank_confidence_reason"].tolist(), ["insufficient_models"])
+    expect_equal(result["rank_confidence_level"].tolist(), ["HIGH", "MEDIUM", "LOW"])
+    expect_equal(result["rank_confidence_valid"].tolist(), [True, True, True])
+    expect_equal(
+        result["rank_confidence_reason"].tolist(),
+        ["probability_fallback_high", "probability_fallback_medium", "probability_fallback_low"],
+    )
+    expect_equal(result["rank_confidence_source"], "probability_fallback")
+    np.testing.assert_allclose(result["prediction_mean_probability"], [0.85, 0.65, 0.40])
+
+
+def test_single_model_strategy_gets_valid_fallback_confidence_for_its_own_prediction():
+    probabilities = np.array([[[0.10, 0.90], [0.45, 0.55]]])
+
+    result = classify_ensemble_rank_based(
+        probabilities,
+        ["a", "b"],
+        predicted_class_indices=np.array([1, 0]),
+        confidence_thresholds={
+            "high_min_borda": 90.0, "high_max_range": 2.0, "medium_min_borda": 75.0, "medium_max_range": 4.0,
+            "fallback_high_min_probability": 0.9, "fallback_medium_min_probability": 0.5,
+        },
+        minimum_models=3,
+    )
+
+    # The second row is graded on the class that was actually predicted (0.45), not on the model's top class.
+    expect_equal(result["rank_confidence_level"].tolist(), ["HIGH", "LOW"])
+    expect_true(result["rank_confidence_valid"].all())
+
+
+def test_enough_models_keep_rank_agreement_and_report_the_rank_source():
+    probabilities = np.repeat(np.array([[[0.8, 0.15, 0.05]]]), repeats=3, axis=0)
+
+    result = classify_ensemble_rank_based(probabilities, ["a", "b", "c"], minimum_models=3)
+
+    expect_equal(result["rank_confidence_level"].tolist(), ["HIGH"])
+    expect_equal(result["rank_confidence_reason"].tolist(), ["rank_confidence_high"])
+    expect_equal(result["rank_confidence_source"], "rank_only")
+
+
+def test_probability_fallback_thresholds_are_validated():
+    probabilities = np.repeat(np.array([[[0.8, 0.2]]]), repeats=1, axis=0)
+    thresholds = {
+        "high_min_borda": 90.0, "high_max_range": 2.0, "medium_min_borda": 75.0, "medium_max_range": 4.0,
+        "fallback_high_min_probability": 0.5, "fallback_medium_min_probability": 0.7,
+    }
+
+    with np.testing.assert_raises_regex(ValueError, "Probability-fallback thresholds"):
+        classify_ensemble_rank_based(probabilities, ["a", "b"], confidence_thresholds=thresholds, minimum_models=3)
 
 
 def test_invalid_values_and_class_mismatch_are_rejected():

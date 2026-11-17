@@ -23,6 +23,7 @@ def apply_rank_confidence_columns(config, final_df: pd.DataFrame, rank_confidenc
         "prediction_confidence_valid": "prediction_confidence_valid",
         "prediction_confidence_reason": "prediction_confidence_reason",
         "prediction_confidence_source": "prediction_confidence_source",
+        "prediction_mean_probability": "prediction_mean_probability",
         "prediction_class_reliability_applied": "prediction_class_reliability_applied",
         "inspection_class_reliability_enabled": "inspection_class_reliability_enabled",
         "prediction_mean_borda": "prediction_mean_borda",
@@ -130,12 +131,17 @@ def _disabled_rank_contract() -> dict[str, Any]:
 
 def _rank_thresholds_from_frozen(rank: dict[str, Any]) -> dict[str, Any]:
     """Extract frozen rank thresholds from the selection summary payload."""
-    return {
+    thresholds = {
         "high_min_borda": rank["high_min_borda"],
         "high_max_range": rank["high_max_range"],
         "medium_min_borda": rank["medium_min_borda"],
         "medium_max_range": rank["medium_max_range"],
     }
+    # Contracts frozen before the probability fallback existed fall back to its defaults.
+    for name in ("fallback_high_min_probability", "fallback_medium_min_probability"):
+        if name in rank:
+            thresholds[name] = rank[name]
+    return thresholds
 
 
 def calculate_rank_confidence(config, selection, predictions, member_probabilities):
@@ -177,7 +183,8 @@ def calculate_rank_confidence(config, selection, predictions, member_probabiliti
     # Class reliability is a policy input, never a cap on confidence or its validity.
     result["inspection_class_reliability_enabled"] = bool(contract.get("class_reliability_enabled", False))
     result["prediction_class_reliability_applied"] = False
-    result["prediction_confidence_source"] = "rank_only"
+    # "rank_only", or "probability_fallback" when there were too few voting models for rank agreement.
+    result["prediction_confidence_source"] = result.pop("rank_confidence_source")
     for suffix in ("level", "valid", "reason"):
         result[f"prediction_confidence_{suffix}"] = result[f"rank_confidence_{suffix}"]
     # Return both parcel results and contract provenance for output summaries.
@@ -226,6 +233,15 @@ def add_inspection_metrics(config, final_df: pd.DataFrame) -> tuple[pd.DataFrame
             "low": float(scored["inspection_data_reliability_low_threshold"].iloc[0]) if len(scored) else None,
             "medium": float(scored["inspection_data_reliability_medium_threshold"].iloc[0]) if len(scored) else None,
         },
+        "inspection_geometry_thresholds": {
+            "mode": getattr(config, "inspection_geometry_threshold_mode", "percentile"),
+            "medium_percentile": float(config.inspection_medium_geometry_risk_threshold),
+            "high_percentile": float(config.inspection_high_geometry_risk_threshold),
+            "medium_complexity": float(getattr(config, "inspection_medium_geometry_complexity_threshold", 0.0)),
+            "high_complexity": float(getattr(config, "inspection_high_geometry_complexity_threshold", 0.0)),
+        },
+        "inspection_geometry_level_counts": scored["geometry_complexity_level"].value_counts(dropna=False).to_dict(),
+        "inspection_queue_order": "final priority, then inspection_score (highest first)",
         "inspection_outlier_column_available": "is_outlier" in scored,
         "inspection_outlier_adjusted_count": int(scored["inspection_outlier_adjusted"].sum()),
         "class_reliability_applied_to_inspection_policy": bool(scored["inspection_class_reliability_applied"].any()),

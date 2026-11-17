@@ -7,6 +7,8 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import numpy as np
+
 from ml_classification.shared.config.tune_params import _default_tune_params
 
 
@@ -41,7 +43,8 @@ class ClassificationPipelineConfig:
     iqr_upper_quantile: float = 0.75
     iqr_multiplier: float = 1.5
     enforce_unique_ids: bool = True
-    # When False, rows with nulls in any feature are dropped in run_check.
+    # When False, rows whose input has nulls in any feature are excluded from training in run_check;
+    # values blanked by apply_iqr stay null and are imputed by the model pipelines instead.
     # When True, nulls are filled with spatial_interpolation_method.
     fill_nulls: bool = False
     spatial_interpolation_method: str | None = None
@@ -130,6 +133,9 @@ class ClassificationPipelineConfig:
     prediction_filled_column: str | None = None
     probability_prefix: str = "probability"
     prediction_confidence_threshold: float = 0.60
+    # With fewer voting models than rank_confidence_minimum_models, confidence is graded from the mean member
+    # probability of the predicted class: HIGH from this value, MEDIUM from prediction_confidence_threshold.
+    prediction_high_confidence_threshold: float = 0.80
     # This field stores the maximum final class probability for diagnostics;
     # it is not the rank-based confidence level.
     prediction_confidence_column: str = "prediction_max_probability"
@@ -159,6 +165,13 @@ class ClassificationPipelineConfig:
     inspection_check_matching_declarations: bool = False
     inspection_medium_geometry_risk_threshold: float = 0.50
     inspection_high_geometry_risk_threshold: float = 0.75
+    # "percentile" counts a parcel's geometry as medium (or high) complexity only when it is above both the
+    # percentile threshold above AND the absolute complexity threshold below, so a run of simple parcels is not
+    # penalised just for being ranked. "absolute" uses only the complexity thresholds. Score scale: compact
+    # parcels about 0.1-0.3, 2:1 strips about 0.35-0.5, 3:1 about 0.5-0.7, 5:1 about 0.75-0.95.
+    inspection_geometry_threshold_mode: str = "percentile"
+    inspection_medium_geometry_complexity_threshold: float = 0.60
+    inspection_high_geometry_complexity_threshold: float = 0.90
     inspection_medium_score_threshold: float = 25.0
     inspection_high_score_threshold: float = 50.0
 
@@ -308,6 +321,11 @@ class ClassificationPipelineConfig:
                 {"absolute", "percentile"},
                 "Error: inspection_data_reliability_threshold_mode must be either 'absolute' or 'percentile'.",
             ),
+            (
+                self.inspection_geometry_threshold_mode,
+                {"absolute", "percentile"},
+                "Error: inspection_geometry_threshold_mode must be either 'absolute' or 'percentile'.",
+            ),
         )
         for value, accepted_values, message in allowed_values:
             if value not in accepted_values:
@@ -364,15 +382,8 @@ class ClassificationPipelineConfig:
         """Validate required interpolation arguments per selected method."""
         if self.fill_nulls and self.spatial_interpolation_method is None:
             raise ValueError("Error: fill_nulls=True requires spatial_interpolation_method ('nearest', 'idw', or 'kriging').")
-        # IQR outliers become nulls, so without filling every row with any outlier leaves the training set.
-        if self.apply_iqr and not self.fill_nulls:
-            warnings.warn(
-                "apply_iqr=True with fill_nulls=False: IQR outliers are replaced with nulls and not filled, so every "
-                "row with an outlier in any feature is excluded from train/validation/test (it is still predicted). "
-                "Set fill_nulls=True to fill these values instead.",
-                UserWarning,
-                stacklevel=2,
-            )
+        # IQR outliers that are not filled spatially stay null and are imputed by each model pipeline, so they
+        # never remove rows from training. Only nulls already present in the input do that when fill_nulls=False.
         interpolation_requirements = {
             "idw": (
                 self.spatial_interpolation_max_distance_in_meters is not None,
@@ -487,6 +498,10 @@ class ClassificationPipelineConfig:
                 "prediction_confidence_threshold must be between 0 and 1.",
             ),
             (
+                float(self.prediction_confidence_threshold) <= float(self.prediction_high_confidence_threshold) <= 1.0,
+                "prediction_high_confidence_threshold must be between prediction_confidence_threshold and 1.",
+            ),
+            (
                 all(
                     float(weight) >= 0.0
                     for weight in (self.inspection_model_weight, self.inspection_data_weight, self.inspection_geometry_weight)
@@ -534,6 +549,10 @@ class ClassificationPipelineConfig:
         geometry_high = float(self.inspection_high_geometry_risk_threshold)
         if not 0.0 <= geometry_medium <= geometry_high <= 1.0:
             raise ValueError("Error: Inspection geometry-risk thresholds must satisfy 0 <= MEDIUM <= HIGH <= 1.")
+        complexity_medium = float(self.inspection_medium_geometry_complexity_threshold)
+        complexity_high = float(self.inspection_high_geometry_complexity_threshold)
+        if not (np.isfinite(complexity_high) and 0.0 <= complexity_medium <= complexity_high):
+            raise ValueError("Error: Inspection geometry-complexity thresholds must satisfy 0 <= MEDIUM <= HIGH.")
         score_medium = float(self.inspection_medium_score_threshold)
         score_high = float(self.inspection_high_score_threshold)
         if not 0.0 <= score_medium <= score_high <= 100.0:
@@ -575,7 +594,8 @@ class ClassificationPipelineConfig:
         ):
             warnings.warn(
                 "The configured soft-voting strategy can use fewer models than "
-                "rank_confidence_minimum_models; affected predictions will receive LOW confidence.",
+                "rank_confidence_minimum_models; those predictions are graded from the predicted-class probability "
+                "(prediction_confidence_threshold and prediction_high_confidence_threshold) instead of rank agreement.",
                 stacklevel=2,
             )
 

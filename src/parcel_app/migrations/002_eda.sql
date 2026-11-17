@@ -8,3 +8,7 @@ CREATE TABLE IF NOT EXISTS public.eda_runs (
 );
 CREATE INDEX IF NOT EXISTS eda_runs_owner_run ON public.eda_runs(app_user_id,run_id,created_at);
 ALTER TABLE public.eda_runs ADD COLUMN IF NOT EXISTS progress jsonb NOT NULL DEFAULT '{}';
+-- Editable display name; report_title stays unchanged in the saved config and report.
+ALTER TABLE public.eda_runs ADD COLUMN IF NOT EXISTS name text;
+UPDATE public.eda_runs SET name=COALESCE(NULLIF(btrim(config->>'report_title'),''),'EDA analysis') WHERE name IS NULL;
+ALTER TABLE public.eda_runs ALTER COLUMN name SET NOT NULL;
