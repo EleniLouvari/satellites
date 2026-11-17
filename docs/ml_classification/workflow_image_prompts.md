@@ -12,6 +12,22 @@ Final corrections required exactly ten paired base-rule rows (twenty Same/Differ
 matching the decision table, preserved check types in the outputs stage, and the heading
 `6. Base decision table – 10 paired rows / 20 rules`.
 
+### November 2026 patch (data-reliability calibration and matching declarations)
+
+These four regions were repainted directly in the PNG rather than regenerated, so the rest
+of the image is unchanged. Apply the same content if the image is regenerated:
+
+- Section 3, policy box: `HIGH data for policy: d > T`, `T = min(0.80, 25th percentile of d)`,
+  `(d = T is NOT high; absolute mode: T = 0.80)`.
+- Section 6, data column: header `Data d vs T`; rows `> T` and the last row `<= T`.
+- Section 7, check-type note: `NONE raised to Low–Medium or above becomes
+  INSUFFICIENT_EO_EVIDENCE.`
+- Section 8, first box: `Very Low/Low, and SAME at Low–Medium/Medium → NONE`;
+  `(inspection_check_matching_declarations=True queues SAME)`;
+  `DIFFERENT at Medium–High or above → DECLARATION_CONFLICT`;
+  `Other cases → INSUFFICIENT_EO_EVIDENCE`;
+  `Outlier raise of NONE: evidence review, never a conflict.`
+
 ## OOF and Class Reliability Workflow.png
 
 Edit the provided OOF → CLASS RELIABILITY technical infographic. Preserve every existing section, formula, numerical example, layout, text and style except the small rightmost box in section 7 'Freeze, validate, and apply'. Expand that section slightly if required for readable text. Replace that box with: 'Step 5 inspection: base rules use class reliability (when enabled), label agreement, rank confidence, data and geometry. Then optional EDA is_outlier adjustment: inspection_include_outlier=True + is_outlier=True raises one priority band, capped at Very High. Unknown unchanged. Neuro enables this option.' Add a separate small footer note in section 7: 'EDA flag is parcel metadata, not fitted OOF class evidence. Outlier adjustment does not change rank confidence, class reliability, or diagnostic score.' Keep the OOF fitting workflow unchanged and preserve all original accuracy and support thresholds. Final output high resolution with text readable.

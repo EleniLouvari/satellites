@@ -418,6 +418,40 @@ def test_reports_band_data_reliability_with_saved_thresholds():
     expect_equal(saved_data_reliability_thresholds(legacy, _config()), (0.60, 0.80))
 
 
+def test_workload_chart_stacks_every_predicted_parcel_and_is_titled_distinctly(monkeypatch, tmp_path):
+    """The workload chart splits all parcels of each crop into check types that add up to 100%."""
+    from ml_classification.step_05_predict.libraries.inspection_priority import diagnostics
+
+    table = pd.DataFrame({
+        "predicted_class": ["wheat", "kiwi"],
+        "parcels": [10, 4],
+        "needs_check": [3, 0],
+        "declaration_conflicts": [1, 0],
+        "insufficient_eo_evidence": [2, 0],
+        "needs_check_rate_percent": [30.0, 0.0],
+    })
+    captured = {}
+
+    def capture(fig, output_path):
+        captured["axes"] = fig.axes[0]
+        return output_path
+
+    monkeypatch.setattr(diagnostics, "_save_figure", capture)
+    path = diagnostics._save_predicted_class_priority(table, tmp_path / "workload.png")
+
+    ax = captured["axes"]
+    expect_equal(path, tmp_path / "workload.png")
+    expect_equal(ax.get_title(loc="left"), "Inspection workload by predicted crop")
+    expect_equal([text.get_text() for text in ax.get_legend().get_texts()],
+                 ["Declaration conflict", "Insufficient evidence", "No check needed"])
+    # Bars are drawn per segment in plot order (kiwi, then wheat); each crop's widths sum to the whole crop.
+    widths = np.array([patch.get_width() for patch in ax.patches]).reshape(3, 2)
+    expect_equal(widths.sum(axis=0).tolist(), pytest.approx([1.0, 1.0]))
+    expect_equal(widths[:, 1].tolist(), pytest.approx([0.1, 0.2, 0.7]))
+    expect_in("3/10 queued (30%)", [text.get_text() for text in ax.texts])
+    expect_true(diagnostics._save_predicted_class_priority(table.iloc[0:0], tmp_path / "empty.png") is None)
+
+
 def test_inspection_calibration_config_defaults_and_validation(tmp_path):
     """The public calibration options default to the relaxed policy and reject invalid values."""
     from ml_classification import ClassificationPipelineConfig

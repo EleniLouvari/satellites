@@ -429,6 +429,7 @@ def test_eda_submission_queue_isolation_and_download(clients, tmp_path):
     assert stranger.get(f"/api/runs/{run_id}/eda/options").status_code == 404
     options = owner.get(f"/api/runs/{run_id}/eda/options").json()
     assert {c["name"] for c in options["columns"]} == {"parcel_id", "value", "excluded"}
+    assert options["schema"]["defaults"]["feature_selection_exclude_columns"] == ["parcel_id"]
     body = {"request_id": str(uuid4()), "columns": ["parcel_id", "value"], "config": {"id_column": "parcel_id"}}
     assert stranger.post(f"/api/runs/{run_id}/eda", json=body).status_code == 404
     response = owner.post(f"/api/runs/{run_id}/eda", json=body)

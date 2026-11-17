@@ -298,15 +298,16 @@ def _save_diagnostic_overview(group_summary: pd.DataFrame, output_path: Path) ->
 
 
 def _save_class_risk(class_risk: pd.DataFrame, output_path: Path) -> Path | None:
-    """Save need-to-check rate and support by predicted class."""
+    """Save the model error rate among ensemble-agreed predictions, with OOF precision, by predicted class."""
     if class_risk.empty:
         return None
     output_path.parent.mkdir(parents=True, exist_ok=True)
     plot = class_risk.sort_values("need_to_check_rate", ascending=True)
-    fig_height = min(18.0, max(6.0, 0.48 * len(plot) + 2.0))
+    fig_height = min(18.0, max(6.0, 0.48 * len(plot) + 2.5))
     fig, ax = plt.subplots(figsize=(13.5, fig_height))
+    # Orange keeps this model-quality chart visually distinct from the blue inspection workload chart.
     bars = ax.barh(
-        plot["predicted_class"].astype(str), plot["need_to_check_rate"], color="#2e6f95", edgecolor="#173f5f", linewidth=0.6
+        plot["predicted_class"].astype(str), plot["need_to_check_rate"], color="#E07A3F", edgecolor="#9A3412", linewidth=0.6
     )
     max_rate = max(float(plot["need_to_check_rate"].max()), 0.01)
     axis_max = min(1.0, max_rate * 1.48 + 0.02)
@@ -316,15 +317,17 @@ def _save_class_risk(class_risk: pd.DataFrame, output_path: Path) -> Path | None
         ax.text(
             min(bar.get_width() + axis_max * 0.008, axis_max * 0.985),
             bar.get_y() + bar.get_height() / 2,
-            f"{int(row['need_to_check']):,}/{int(row['total']):,} | OOF {precision_text}",
+            f"{int(row['need_to_check']):,} wrong / {int(row['total']):,} | OOF precision {precision_text}",
             va="center",
             fontsize=8,
         )
     ax.set_xlim(0, axis_max)
     ax.xaxis.set_major_formatter(mtick.PercentFormatter(1))
-    ax.set_xlabel("Incorrect predictions among Borda-agreement parcels")
+    ax.set_xlabel("Share of agreed predictions that differ from the declared crop")
     ax.set_ylabel("Predicted class")
-    ax.set_title("Need-to-check rate by predicted class", loc="left", fontweight="bold")
+    ax.set_title("Model error rate among agreed predictions, by predicted class", loc="left", fontweight="bold", pad=26)
+    ax.text(0.0, 1.015, "Labelled parcels only, where the ensemble's consensus (Borda) class matches the final prediction",
+            transform=ax.transAxes, fontsize=10, color="#52606D")
     ax.grid(axis="x", color="#d9e2e8", linewidth=0.7)
     ax.grid(axis="y", visible=False)
     fig.tight_layout()

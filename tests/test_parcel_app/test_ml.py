@@ -110,6 +110,15 @@ def test_ml_subgroups_explain_fields_of_their_own_group():
     by_name = {field["name"]: field for field in schema["fields"]}
     assert by_name["rank_confidence_high_min_borda"]["subgroup"] == "borda"
     assert by_name["inspection_data_weight"]["subgroup"] == "weights"
+    # The percentile calibration is a choice whose two percentiles only apply in percentile mode.
+    mode = by_name["inspection_data_reliability_threshold_mode"]
+    assert (mode["default"], mode["choices"], mode["subgroup"]) == ("percentile", ["percentile", "absolute"], "thresholds")
+    assert by_name["inspection_medium_data_reliability_percentile"]["enabled_when"] == {
+        "inspection_scoring_enabled": [True],
+        "inspection_data_reliability_threshold_mode": ["percentile"],
+    }
+    assert by_name["inspection_check_matching_declarations"]["default"] is False
+    assert by_name["inspection_check_matching_declarations"]["subgroup"] == "inputs"
     assert by_name["target_column"]["subgroup"] is None
 
 

@@ -42,6 +42,12 @@ GROUPS = {
     ),
     "output": ("Output and reproducibility", ["include_html_report", "print_feature_selection_summary", "random_state"]),
 }
+DESCRIPTIONS = {
+    "feature_selection_max_features": "Leave blank for no feature-count limit.",
+    "feature_selection_exclude_columns": "Columns never proposed as features. The parcel ID and geometry are added "
+    "automatically. The target and ID columns chosen above are always excluded, even when not listed here; add "
+    "other identifiers or post-outcome (leaky) columns.",
+}
 
 
 def eda_defaults():
@@ -83,7 +89,7 @@ def eda_schema(columns):
                 "default": value,
                 "choices": choices.get(name),
                 "group": next((group for group, (_, members) in GROUPS.items() if name in members), "output"),
-                "description": "Leave blank for no feature-count limit." if name == "feature_selection_max_features" else "",
+                "description": DESCRIPTIONS.get(name, ""),
             }
         )
     return {

@@ -289,10 +289,16 @@ The seven priorities are Very Low, Low, Low–Medium, Medium, Medium–High, Hig
 and Very High. `UNKNOWN` is an unscored status. Outputs include `inspection_need`,
 `inspection_priority_label`, `inspection_rule`, `inspection_class_reliability_applied`,
 `inspection_need_before_outlier`, `inspection_outlier_adjusted`,
-`inspection_check_type`, and `inspection_reasons`. Base Very Low/Low need no check;
+`inspection_check_type`, and `inspection_reasons`. Base Very Low/Low need no check,
+and neither do Low–Medium/Medium parcels whose declaration matches the prediction
+(set `inspection_check_matching_declarations=True` to queue them);
 base Medium–High/High/Very High disagreements are suspected declaration conflicts;
-remaining cases need evidence verification. Outlier adjustment preserves check
-type except NONE raised to Low–Medium enters evidence review; it never creates
+remaining cases need evidence verification. The data-reliability thresholds are
+calibrated to the predicted parcels by default
+(`inspection_data_reliability_threshold_mode="percentile"`); the applied values are
+saved as `inspection_data_reliability_low_threshold` and
+`inspection_data_reliability_medium_threshold`. Outlier adjustment preserves check
+type except NONE raised to Low–Medium or above enters evidence review; it never creates
 a declaration conflict. The queue uses final priority and stable input order,
 never the diagnostic score.
 

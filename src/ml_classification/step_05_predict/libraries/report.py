@@ -214,7 +214,7 @@ def _build_inspection_sections(
             "Diagonal cells are unchanged; off-diagonal cells show increases. The original inspection_rule is "
             "preserved, with inspection_need_before_outlier, inspection_outlier_adjusted, and reason "
             "OUTLIER_PRIORITY_INCREASE recording actual increases. Check type is preserved except NONE raised "
-            "to Low–Medium becomes INSUFFICIENT_EO_EVIDENCE. Outliers alone do not establish declaration conflicts. "
+            "to Low–Medium or above becomes INSUFFICIENT_EO_EVIDENCE. Outliers alone do not establish declaration conflicts. "
             "All operational charts and queue ordering use final priority. The score and confidence plots are unaffected. "
             "If saved before-outlier fields are absent, this audit is unavailable; regenerate prediction quality first."
         ),
@@ -245,9 +245,11 @@ def _build_inspection_sections(
         "title": "Operational Check Types",
         "text": (
             "DECLARATION_CONFLICT identifies reliable EO evidence supporting a crop different from the farmer "
-            "declaration. INSUFFICIENT_EO_EVIDENCE identifies parcels where confidence, observation coverage, "
-            "class reliability, or geometry does not support a reliable verification, or an outlier adjustment "
-            "raises a NONE row into review. These types are mutually exclusive."
+            "declaration. INSUFFICIENT_EO_EVIDENCE identifies parcels with a different or missing declaration where "
+            "confidence, observation coverage, class reliability, or geometry does not support a reliable "
+            "verification, or an outlier adjustment raises a NONE row into review. A declaration that matches the "
+            "prediction is NONE up to Medium priority unless inspection_check_matching_declarations=True. "
+            "These types are mutually exclusive."
         ),
         "table": inspection_artifacts.tables["inspection_check_type_summary"],
     }
@@ -278,7 +280,10 @@ def _build_inspection_sections(
         "title": "Data Reliability and Geometry Evidence",
         "text": (
             "The heatmap reports the operational inspection rate for each data-reliability and geometry-quality "
-            "combination. Cell support in the table should be considered before interpreting extreme rates."
+            "combination. Cell support in the table should be considered before interpreting extreme rates. "
+            f"Data reliability is LOW below {inspection_artifacts.summary['data_reliability_low_threshold']:.3f} and HIGH "
+            f"above {inspection_artifacts.summary['data_reliability_medium_threshold']:.3f}; these are the thresholds "
+            "saved at scoring time, which percentile calibration derives from the predicted parcels."
         ),
         "table": inspection_artifacts.tables["inspection_evidence_quality_matrix"],
     }
@@ -288,17 +293,23 @@ def _build_inspection_sections(
     sections.append(evidence_section)
 
     class_section: dict[str, Any] = {
-        "title": "Operational Inspection Priority by Predicted Crop",
+        "title": "Inspection Workload by Predicted Crop",
         "text": (
-            "Rates use every parcel predicted as each crop. Counts distinguish high-priority cases, reliable "
-            "declaration conflicts, and parcels where EO evidence is insufficient. Small crop groups should be "
-            "interpreted together with their parcel denominators."
+            "Each bar covers every parcel predicted as that crop (100%), labelled or not, and splits it by the "
+            "field check the inspection policy assigns: declaration conflicts (amber), insufficient evidence "
+            "(blue), and no check needed (grey). The label gives the queued parcels, the crop's total, and the "
+            "queued share. This is the operational workload to plan field visits with. It differs from the "
+            "Model Error Rate Among Agreed Predictions chart on the Confidence tab, which only measures how often "
+            "the model is wrong on labelled parcels where the ensemble agreed. A crop can have a low error rate "
+            "and still a large workload, for example when many of its parcels have weak satellite evidence or "
+            "the crop's out-of-fold reliability is low. Small crop groups should be read together with their "
+            "parcel counts."
         ),
         "table": inspection_artifacts.tables["inspection_priority_by_predicted_class"],
     }
     class_path = inspection_artifacts.images.get("predicted_class")
     if class_path is not None:
-        class_section["images"] = [{"title": "Operational Inspection Rate by Predicted Crop", "path": class_path}]
+        class_section["images"] = [{"title": "Inspection Workload by Predicted Crop", "path": class_path}]
     sections.append(class_section)
 
     conflict_section: dict[str, Any] = {
@@ -479,16 +490,21 @@ def _build_confidence_sections(confidence_artifacts) -> list[dict[str, Any]]:
     if class_rate_path is not None:
         confidence_sections.append(
             {
-                "title": "Class Reliability by Predicted Class",
+                "title": "Model Error Rate Among Agreed Predictions by Predicted Class",
                 "text": (
-                    "This view shows the class-reliability signal used by the inspection policy. "
-                    "Each row groups parcels by predicted class and reports the rate that needs checking, the "
-                    "median out-of-fold precision for that class, and the support count. When "
-                    "class_reliability_enabled is false, the same class-reliability table is still shown as a "
-                    "diagnostic, but it does not enter inspection policy. Class reliability never lowers rank confidence. This is the same view previously "
-                    "described as Need-to-Check Rate by Predicted Class."
+                    "This chart measures model quality, not inspection workload. For each predicted class it "
+                    "takes only labelled parcels where the ensemble's consensus (Borda) class matches the final "
+                    "prediction, and the orange bar is the share of those parcels whose prediction differs from "
+                    "the declared crop. The label gives the wrong and total counts and the class's median "
+                    "out-of-fold precision, the class-reliability signal the inspection policy uses. A high bar "
+                    "means the models agree but are often wrong for that class. Parcels without a label and "
+                    "parcels the models disagree on are not counted, so these rates are much lower than the "
+                    "queued shares in Inspection Workload by Predicted Crop on the Inspection Priority tab. When "
+                    "class_reliability_enabled is false, the precision is shown as a diagnostic only. Class "
+                    "reliability never lowers rank confidence. Earlier reports called this chart Need-to-Check "
+                    "Rate by Predicted Class."
                 ),
-                "images": [{"title": "Class Reliability by Predicted Class", "path": class_rate_path}],
+                "images": [{"title": "Model Error Rate Among Agreed Predictions by Predicted Class", "path": class_rate_path}],
                 "table": prepare_class_risk_display_table(confidence_artifacts.tables["need_to_check_by_predicted_class"]),
             }
         )
@@ -655,7 +671,7 @@ def _build_output_links(config, confidence_artifacts, inspection_artifacts) -> l
                     "path": config.predict_dir / "data" / "confidence_metric_median_summary.csv",
                 },
                 {
-                    "label": "Need-to-Check by Predicted Class",
+                    "label": "Model Errors Among Agreed Predictions by Class",
                     "path": config.predict_dir / "data" / "need_to_check_by_predicted_class.csv",
                 },
                 {"label": "Confidence Component Matrix", "path": config.predict_dir / "data" / "need_to_check_reason_matrix.csv"},
@@ -666,7 +682,7 @@ def _build_output_links(config, confidence_artifacts, inspection_artifacts) -> l
         inspection_output_labels = {
             "inspection_need_summary": "Inspection Need Summary",
             "inspection_check_type_summary": "Inspection Check Type Summary",
-            "inspection_priority_by_predicted_class": "Inspection Priority by Predicted Crop",
+            "inspection_priority_by_predicted_class": "Inspection Workload by Predicted Crop",
             "inspection_declaration_conflict_matrix": "Declaration Conflict Matrix",
             "inspection_evidence_quality_matrix": "EO Evidence Quality Matrix",
             "inspection_confidence_review_comparison": "Confidence Review Comparison",

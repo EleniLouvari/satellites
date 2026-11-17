@@ -11,6 +11,7 @@ import Chooser, { BackLink } from "../../components/Chooser";
 import DeleteAction from "../../components/DeleteAction";
 import Progress from "../../components/Progress";
 import MlLive from "./MlLive";
+import ColumnFilter, { useColumnFilter } from "../../components/ColumnFilter";
 import { Button, Heading, Notice, Status } from "../../components/ui";
 import { canContinue, STEPS, stepStates, withoutRoles } from "./mlControls";
 
@@ -81,7 +82,6 @@ export default function MlPage({
   const [tab, setTab] = useState("Start");
   const [openId, setOpenId] = useState<string>();
   const [report, setReport] = useState<{ run: MlRun; page: string }>();
-  const [search, setSearch] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [valid, setValid] = useState(true);
@@ -118,31 +118,42 @@ export default function MlPage({
   }, [base]);
 
   const selectedSet = useMemo(() => new Set(selected), [selected]);
-  // Geometry, the target and the parcel ID can never be features, so they are not offered at all.
-  const selectable = useMemo(() => {
-    const roles = [config.target_column, config.id_column];
-    return (
-      options?.columns.filter(
-        (column) => !column.geometry && !roles.includes(column.name),
-      ) ?? []
-    );
-  }, [options, config.target_column, config.id_column]);
+  const columnNames = useMemo(
+    () => options?.columns.map((c) => c.name) ?? [],
+    [options],
+  );
+  const filter = useColumnFilter(columnNames);
+  // Geometry, the target and the parcel ID are shown but locked: they can never be features.
+  const locked = useMemo(
+    () =>
+      new Set(
+        options?.columns
+          .filter(
+            (c) =>
+              c.geometry ||
+              c.name === config.target_column ||
+              c.name === config.id_column,
+          )
+          .map((c) => c.name) ?? [],
+      ),
+    [options, config.target_column, config.id_column],
+  );
+  const selectable = useMemo(
+    () => options?.columns.filter((column) => !locked.has(column.name)) ?? [],
+    [options, locked],
+  );
   const proposed = selectable.filter((column) => column.proposed);
-  // Columns matching the search box, excluding the target and ID columns.
-  const matches = useMemo(() => {
-    const term = search.trim().toLowerCase();
-    if (!term) return [];
-    return withoutRoles(
-      selectable
-        .filter((column) => column.name.toLowerCase().includes(term))
-        .map((column) => column.name),
-      config,
-    );
-  }, [search, selectable, config]);
+  // EDA diagnostics such as is_outlier are only ever added by ticking them.
+  const bulk = selectable.filter((column) => column.source !== "calculated");
+  const visibleNames = selectable
+    .filter((column) => filter.matches(column.name))
+    .map((column) => column.name);
 
   function choose(features: string[]) {
     requestId.current = crypto.randomUUID();
-    setSelected(withoutRoles([...new Set(features)], config));
+    setSelected(
+      withoutRoles([...new Set(features)], config).filter((n) => !locked.has(n)),
+    );
   }
   function changeConfig(value: Record<string, unknown>) {
     requestId.current = crypto.randomUUID();
@@ -268,10 +279,10 @@ export default function MlPage({
                     <b>2</b> Choose the features
                   </h3>
                   <p>
-                    {selected.length} selected. The model input is the parcel
-                    result; EDA supplies the proposal and its calculated
-                    columns. The parcel ID, the target and the geometry are
-                    left out automatically.
+                    {selected.length} of {selectable.length} selected. The
+                    model input is the parcel result; EDA supplies the proposal
+                    and its calculated columns. The parcel ID, the target and
+                    the geometry are never features.
                   </p>
                 </div>
                 <div className="actions">
@@ -284,7 +295,7 @@ export default function MlPage({
                   <Button
                     onClick={() =>
                       choose(
-                        selectable
+                        bulk
                           .filter((c) => c.source === "eda" && c.numeric)
                           .map((c) => c.name),
                       )
@@ -292,49 +303,36 @@ export default function MlPage({
                   >
                     All analysed in EDA
                   </Button>
+                  <Button onClick={() => choose(bulk.map((c) => c.name))}>
+                    Select all
+                  </Button>
+                  <Button
+                    onClick={() =>
+                      choose(bulk.filter((c) => c.numeric).map((c) => c.name))
+                    }
+                  >
+                    Numeric only
+                  </Button>
                   <Button onClick={() => choose([])}>Clear</Button>
                 </div>
               </div>
-              <input
-                aria-label="Search columns"
-                placeholder="Search columns…"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
+              <ColumnFilter
+                filter={filter}
+                visible={visibleNames}
+                selected={selected}
+                onChoose={choose}
               />
-              {search.trim() && (
-                <div className="actions">
-                  <Button
-                    disabled={!matches.length}
-                    onClick={() => choose(matches)}
-                  >
-                    Select only matches ({matches.length})
-                  </Button>
-                  <Button
-                    disabled={!matches.length}
-                    onClick={() => choose([...selected, ...matches])}
-                  >
-                    Add matches
-                  </Button>
-                  <Button
-                    disabled={!matches.some((n) => selectedSet.has(n))}
-                    onClick={() => {
-                      const drop = new Set(matches);
-                      choose(selected.filter((n) => !drop.has(n)));
-                    }}
-                  >
-                    Remove matches
-                  </Button>
-                </div>
-              )}
               {SECTIONS.map((section) => {
-                const members = selectable.filter(
-                  (column) => column.source === section.source,
-                );
+                const members =
+                  options.columns.filter(
+                    (column) => column.source === section.source,
+                  );
                 const visible = members.filter((column) =>
-                  column.name.toLowerCase().includes(search.trim().toLowerCase()),
+                  filter.matches(column.name),
                 );
                 if (!members.length) return null;
-                const count = members.filter((c) =>
+                const eligible = members.filter((c) => !locked.has(c.name));
+                const count = eligible.filter((c) =>
                   selectedSet.has(c.name),
                 ).length;
                 return (
@@ -346,7 +344,7 @@ export default function MlPage({
                     <summary>
                       <strong>{section.title}</strong>
                       <span className="badge">
-                        {count} of {members.length} selected
+                        {count} of {eligible.length} selected
                       </span>
                       <small>{section.hint}</small>
                     </summary>
@@ -357,6 +355,7 @@ export default function MlPage({
                             <input
                               type="checkbox"
                               checked={selectedSet.has(column.name)}
+                              disabled={locked.has(column.name)}
                               onChange={(e) =>
                                 choose(
                                   e.target.checked
@@ -370,7 +369,12 @@ export default function MlPage({
                               {column.proposed && (
                                 <em className="ml-proposed">EDA proposed</em>
                               )}
-                              <small>{column.dtype}</small>
+                              <small>
+                                {column.geometry ? "Geometry" : column.dtype}
+                                {locked.has(column.name)
+                                  ? " · target, ID or geometry, never a feature"
+                                  : ""}
+                              </small>
                             </span>
                           </label>
                         );

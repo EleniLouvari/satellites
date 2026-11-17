@@ -13,12 +13,8 @@ import Progress from "../../components/Progress";
 import { Button, Heading, Notice, Status } from "../../components/ui";
 import ConfigForm from "../../components/ConfigForm";
 import Chooser, { BackLink } from "../../components/Chooser";
-import {
-  includeRoleColumns,
-  keywordOptions,
-  matchesKeywords,
-  newlyCompletedReport,
-} from "./edaControls";
+import ColumnFilter, { useColumnFilter } from "../../components/ColumnFilter";
+import { includeRoleColumns, newlyCompletedReport } from "./edaControls";
 
 type Column = {
   name: string;
@@ -63,9 +59,6 @@ export default function EdaPage({
   const [reportId, setReportId] = useState<string>();
   const [tab, setTab] = useState("Start");
   const [openId, setOpenId] = useState<string>();
-  const [search, setSearch] = useState("");
-  const [keywords, setKeywords] = useState<string[]>([]);
-  const [keywordMode, setKeywordMode] = useState<"any" | "all">("any");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [valid, setValid] = useState(true);
@@ -118,29 +111,18 @@ export default function EdaPage({
     (value): value is string => typeof value === "string",
   );
   const selectedSet = useMemo(() => new Set(selected), [selected]);
-  const keywordChoices = useMemo(
-    () => keywordOptions(options?.columns.map((c) => c.name) ?? []),
+  const columnNames = useMemo(
+    () => options?.columns.map((c) => c.name) ?? [],
     [options],
   );
-  const filtering = keywords.length > 0 || search.trim() !== "";
+  const filter = useColumnFilter(columnNames);
   const visible =
-    options?.columns.filter(
-      (column) =>
-        column.name.toLowerCase().includes(search.trim().toLowerCase()) &&
-        matchesKeywords(column.name, keywords, keywordMode),
-    ) ?? [];
+    options?.columns.filter((column) => filter.matches(column.name)) ?? [];
   const visibleNames = visible.map((c) => c.name);
-  const keptGeometry =
-    options?.columns
-      .filter((c) => c.geometry && selectedSet.has(c.name))
-      .map((c) => c.name) ?? [];
-  function toggleKeyword(keyword: string) {
-    setKeywords((previous) =>
-      previous.includes(keyword)
-        ? previous.filter((k) => k !== keyword)
-        : [...previous, keyword],
-    );
-  }
+  const geometryNames =
+    options?.columns.filter((c) => c.geometry).map((c) => c.name) ?? [];
+  // Target, ID and geometry are always analysed and cannot be deselected.
+  const locked = [...roles, ...geometryNames];
   function changeConfig(value: Record<string, unknown>) {
     requestId.current = crypto.randomUUID();
     setConfig(value);
@@ -154,18 +136,25 @@ export default function EdaPage({
   }
   function chooseColumns(columns: string[]) {
     requestId.current = crypto.randomUUID();
-    const next = [...new Set([...columns, ...roles])];
+    const next = [...new Set([...columns, ...locked])];
+    // Parcel ID and geometry are re-excluded whenever they are (re)selected.
+    const automatic = (
+      (options?.schema.defaults.feature_selection_exclude_columns as
+        | string[]
+        | undefined) ?? []
+    ).filter((c) => next.includes(c) && !selected.includes(c));
     setSelected(next);
-    setConfig((previous) => ({
-      ...previous,
-      feature_selection_exclude_columns: Array.isArray(
-        previous.feature_selection_exclude_columns,
-      )
-        ? previous.feature_selection_exclude_columns.filter((c) =>
-            next.includes(c),
-          )
-        : [],
-    }));
+    setConfig((previous) => {
+      const current = Array.isArray(previous.feature_selection_exclude_columns)
+        ? (previous.feature_selection_exclude_columns as string[])
+        : [];
+      return {
+        ...previous,
+        feature_selection_exclude_columns: [
+          ...new Set([...current.filter((c) => next.includes(c)), ...automatic]),
+        ],
+      };
+    });
   }
   const formSchema = options && {
     ...options.schema,
@@ -299,102 +288,19 @@ export default function EdaPage({
                     <Button onClick={() => chooseColumns([])}>Clear</Button>
                   </div>
                 </div>
-                <input
-                  aria-label="Search result columns"
-                  placeholder="Search columns…"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
+                <ColumnFilter
+                  filter={filter}
+                  visible={visibleNames}
+                  selected={selected}
+                  onChoose={chooseColumns}
                 />
-                {keywordChoices.length > 0 && (
-                  <div className="eda-keywords">
-                    <div className="eda-keywords-head">
-                      <span>Filter by keyword</span>
-                      <label>
-                        <input
-                          type="radio"
-                          name="eda-keyword-mode"
-                          checked={keywordMode === "any"}
-                          onChange={() => setKeywordMode("any")}
-                        />
-                        any keyword
-                      </label>
-                      <label>
-                        <input
-                          type="radio"
-                          name="eda-keyword-mode"
-                          checked={keywordMode === "all"}
-                          onChange={() => setKeywordMode("all")}
-                        />
-                        all keywords
-                      </label>
-                    </div>
-                    <div className="eda-keyword-chips">
-                      {keywordChoices.map(({ keyword, count }) => (
-                        <button
-                          type="button"
-                          key={keyword}
-                          className={
-                            keywords.includes(keyword) ? "chip active" : "chip"
-                          }
-                          aria-pressed={keywords.includes(keyword)}
-                          onClick={() => toggleKeyword(keyword)}
-                        >
-                          {keyword} <small>{count}</small>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                {filtering && (
-                  <div className="eda-filter-actions">
-                    <span>
-                      {visible.length} column{visible.length === 1 ? "" : "s"}{" "}
-                      match
-                    </span>
-                    <Button
-                      disabled={!visible.length}
-                      primary
-                      onClick={() =>
-                        chooseColumns([...visibleNames, ...keptGeometry])
-                      }
-                    >
-                      Select only filtered
-                    </Button>
-                    <Button
-                      disabled={!visible.length}
-                      onClick={() =>
-                        chooseColumns([...selected, ...visibleNames])
-                      }
-                    >
-                      Add filtered
-                    </Button>
-                    <Button
-                      disabled={!visible.length}
-                      onClick={() =>
-                        chooseColumns(
-                          selected.filter((n) => !visibleNames.includes(n)),
-                        )
-                      }
-                    >
-                      Remove filtered
-                    </Button>
-                    <Button
-                      onClick={() => {
-                        setKeywords([]);
-                        setSearch("");
-                      }}
-                    >
-                      Clear filter
-                    </Button>
-                  </div>
-                )}
                 <div className="eda-column-list">
                   {visible.map((column) => (
                     <label key={column.name}>
                       <input
                         type="checkbox"
                         checked={selectedSet.has(column.name)}
-                        disabled={roles.includes(column.name)}
+                        disabled={locked.includes(column.name)}
                         onChange={(e) =>
                           chooseColumns(
                             e.target.checked
@@ -406,7 +312,9 @@ export default function EdaPage({
                       <span>
                         {column.name}
                         <small>
-                          {column.geometry ? "Geometry" : column.dtype}
+                          {column.geometry
+                            ? "Geometry · always included"
+                            : column.dtype}
                           {roles.includes(column.name)
                             ? " · selected as target or ID"
                             : ""}
@@ -416,10 +324,10 @@ export default function EdaPage({
                   ))}
                 </div>
                 <p className="footnote">
-                  Only selected columns enter EDA. Keep geometry selected for
-                  spatial summaries. Keywords match whole name parts, e.g.
+                  Only selected columns enter EDA. Geometry is always included
+                  for spatial summaries. Keywords match whole name parts, e.g.
                   “sd” matches NDVI_sd but not NDVI_sdx; “Select only
-                  filtered” keeps target, ID and selected geometry. Choose target and ID roles below; numeric
+                  filtered” keeps target, ID and geometry. Choose target and ID roles below; numeric
                   class labels need the classification task.
                 </p>
               </section>
@@ -551,8 +459,21 @@ export default function EdaPage({
                       ))}
                   <Button
                     onClick={() => {
-                      changeConfig(item.config);
-                      setSelected(item.selected_columns);
+                      // Older analyses may lack geometry; it is now always included and excluded from screening.
+                      const exclusions = Array.isArray(
+                        item.config.feature_selection_exclude_columns,
+                      )
+                        ? (item.config.feature_selection_exclude_columns as string[])
+                        : [];
+                      changeConfig({
+                        ...item.config,
+                        feature_selection_exclude_columns: [
+                          ...new Set([...exclusions, ...geometryNames]),
+                        ],
+                      });
+                      setSelected([
+                        ...new Set([...item.selected_columns, ...geometryNames]),
+                      ]);
                       setConfigKey((key) => key + 1);
                       setTab("Setup");
                     }}

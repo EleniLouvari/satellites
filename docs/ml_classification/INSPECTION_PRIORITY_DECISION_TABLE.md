@@ -52,12 +52,46 @@ below are **before** outlier adjustment, recorded in `inspection_need_before_out
 | R19 | Any | Different | Low | Any | Any | Medium |
 | R20 | Any | Different | Any | <= 0.8 | Any | Medium |
 
-The table uses default thresholds. Data reliability must be **strictly greater
-than** `inspection_medium_data_reliability_threshold` (default 0.8).
-Geometry is favorable only **below** `inspection_medium_geometry_risk_threshold`
-(default 0.5). Exactly 0.8 is not high data reliability; exactly 0.5 is in the
-less favorable geometry band. These existing configuration settings remain
-customizable; the comparison operators do not change.
+The table shows the absolute thresholds. Data reliability must be **strictly
+greater than** the applied medium data-reliability threshold (0.8 unless
+percentile calibration lowers it, see below). Geometry is favorable only **below**
+`inspection_medium_geometry_risk_threshold` (default 0.5). A score exactly at the
+applied threshold is not high data reliability; exactly 0.5 is in the less
+favorable geometry band. These configuration settings remain customizable; the
+comparison operators do not change.
+
+## Data-reliability threshold calibration
+
+`data_reliability_score` is the share of observed (not filled) pixel values, so
+its level depends on cloud cover and season length. A fixed 0.8 boundary can
+classify almost every parcel as weak evidence (rules R10/R20) in a season with
+ordinary cloud gaps. `inspection_data_reliability_threshold_mode` controls how
+the two data-reliability thresholds are applied:
+
+| Mode | Applied LOW threshold | Applied MEDIUM threshold |
+|---|---|---|
+| `percentile` (default) | `min(inspection_low_data_reliability_threshold, P_low)` | `min(inspection_medium_data_reliability_threshold, P_medium)` |
+| `absolute` | `inspection_low_data_reliability_threshold` (0.60) | `inspection_medium_data_reliability_threshold` (0.80) |
+
+`P_low` and `P_medium` are the `inspection_low_data_reliability_percentile`
+(default 0.05) and `inspection_medium_data_reliability_percentile` (default 0.25)
+quantiles of the valid scores of all predicted parcels. With the defaults, about
+the best 75% of parcels count as high data reliability and about the weakest 5%
+receive `LOW_DATA_RELIABILITY`. Percentile mode only relaxes the boundaries: when
+coverage is good enough that the percentile exceeds the absolute threshold, the
+absolute threshold applies. When no valid score exists, the absolute thresholds
+apply.
+
+Percentile mode is relative to the prediction population. It ranks parcels
+against each other and does not certify that coverage is adequate in absolute
+terms; use `absolute` when a fixed minimum coverage is required.
+
+The applied values are saved on every row as
+`inspection_data_reliability_low_threshold` and
+`inspection_data_reliability_medium_threshold`, and in `predict_summary.json`
+under `inspection_data_reliability_thresholds`. Rules, reason codes, and report
+bands all read these saved values. Runs saved before these columns existed are
+reported with the absolute thresholds.
 
 ## Optional EDA outlier adjustment
 
@@ -76,7 +110,7 @@ flowchart TD
     Enabled -->|No / absent / invalid| Keep[Keep base priority]
     Raise --> Audit[Final inspection_need, adjusted flag and reasons]
     Keep --> Audit
-    Audit --> Queue[Preserve check type; NONE raised to Low-Medium enters evidence review]
+    Audit --> Queue[Preserve check type; NONE raised to Low-Medium or above enters evidence review]
     Queue --> Sort[Queue by final priority, stable input-order ties]
 ```
 
@@ -100,7 +134,8 @@ False, missing, invalid, or absent flags leave the original matrix priority
 unchanged. This option never changes predictions, confidence, or the numeric
 inspection score. Outlier escalation alone does not establish a declaration
 conflict: the existing check type is preserved, except a previously `NONE`
-row raised to Low–Medium enters `INSUFFICIENT_EO_EVIDENCE` review.
+row raised to Low–Medium or above enters `INSUFFICIENT_EO_EVIDENCE` review. This
+includes a matching declaration raised from Low–Medium or Medium.
 
 `inspection_rule` retains the original matrix rule. The output records
 `inspection_need_before_outlier`, `inspection_outlier_adjusted`, and reason
@@ -215,11 +250,18 @@ Higher values indicate more complex/irregular parcel geometry.
   participated in a comparable, valid policy decision.
 - `inspection_need_before_outlier`: base matrix or fallback priority.
 - `inspection_outlier_adjusted`: True only when the outlier stage increased priority.
-- `inspection_check_type`: `NONE` for Very Low/Low; `DECLARATION_CONFLICT` for
+- `inspection_check_type`: `NONE` for Very Low/Low, and for Low–Medium/Medium
+  when the declaration matches the prediction; `DECLARATION_CONFLICT` for
   Different labels with Medium–High/High/Very High; `INSUFFICIENT_EO_EVIDENCE`
-  for remaining base cases. After outlier adjustment, preserve this type except
-  NONE raised to Low–Medium becomes `INSUFFICIENT_EO_EVIDENCE`. The last name is retained for compatibility and includes
+  for remaining base cases (Different labels at Medium, missing declarations,
+  unavailable evidence). After outlier adjustment, preserve this type except
+  NONE raised to Low–Medium or above becomes `INSUFFICIENT_EO_EVIDENCE`. The last name is retained for compatibility and includes
   model/class uncertainty and missing evidence as well as EO quality issues.
+  A matching declaration with inconclusive evidence gives no reason to doubt the
+  declaration, so it keeps its Medium priority and reasons but is not queued. Set
+  `inspection_check_matching_declarations=True` to restore the earlier behavior,
+  which queued these rows as `INSUFFICIENT_EO_EVIDENCE`; with weak evidence for
+  many parcels that option queues most of the population.
 - `inspection_reasons`: pipe-separated diagnostic reasons, including
   MEDIUM/LOW_CLASS_RELIABILITY, unavailable reliability, and missing declarations.
 

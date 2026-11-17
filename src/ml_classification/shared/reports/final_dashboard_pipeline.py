@@ -394,7 +394,7 @@ def _pipeline_dashboard_data_links(data_dir, *, has_phenology, has_confidence):
         data_links.extend(
             [
                 {"label": "Borda/Correctness Group Summary", "path": data_dir / "diagnostic_group_summary.csv"},
-                {"label": "Need-to-Check by Predicted Class", "path": data_dir / "need_to_check_by_predicted_class.csv"},
+                {"label": "Model Errors Among Agreed Predictions by Class", "path": data_dir / "need_to_check_by_predicted_class.csv"},
                 {"label": "Confidence Component Matrix", "path": data_dir / "need_to_check_reason_matrix.csv"},
             ]
         )
@@ -406,7 +406,7 @@ def _pipeline_confidence_section(confidence_artifacts):
     confidence_images = []
     for key, title in (
         ("overview", "Borda Consensus and Prediction Correctness"),
-        ("class_rate", "Need-to-Check Rate by Predicted Class"),
+        ("class_rate", "Model Error Rate Among Agreed Predictions by Predicted Class"),
         ("reason_heatmap", "Confidence Components of Incorrect Consensus Predictions"),
     ):
         path = confidence_artifacts.images.get(key)
@@ -416,10 +416,14 @@ def _pipeline_confidence_section(confidence_artifacts):
         "title": "Prediction Confidence Diagnostics",
         "text": (
             "These diagnostics use only parcels with known original reference labels. The overview shows "
-            "whether Borda consensus aligns with correctness; the class chart identifies where incorrect "
-            "consensus predictions concentrate; and the component matrix shows how class reliability and "
-            "rank confidence combine inside the need-to-check cohort. Unknown fill rows are excluded from "
-            "all correctness rates."
+            "whether Borda consensus aligns with correctness. The model error rate chart (orange) takes, for each "
+            "predicted class, the parcels where the ensemble's consensus class matches the final prediction and "
+            "shows the share whose prediction differs from the declared crop; the label also gives the class's "
+            "out-of-fold precision. It measures model quality, not the inspection workload: the Predict report's "
+            "Inspection Workload by Predicted Crop chart counts every predicted parcel the inspection policy "
+            "queues, including parcels without a label and parcels the models disagree on. The component matrix "
+            "shows how class reliability and rank confidence combine inside the incorrect consensus cohort. "
+            "Unknown fill rows are excluded from all correctness rates."
         ),
         "images": confidence_images,
         "table": prepare_class_risk_display_table(

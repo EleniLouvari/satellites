@@ -90,6 +90,10 @@ def options(run_id: UUID, user: dict = Depends(current_user)):
     schema["defaults"]["report_title"] = f"EDA: {run['name']}"
     identifier = run["parcel_id_field"] if run["parcel_id_field"] in {c["name"] for c in columns} else None
     schema["defaults"]["id_column"] = identifier
+    # Parcel identifiers and shapes are never model features; pre-fill them as screening exclusions.
+    schema["defaults"]["feature_selection_exclude_columns"] = [
+        c["name"] for c in columns if c["geometry"] or c["name"] == identifier
+    ]
     return {
         "columns": columns,
         "schema": schema,

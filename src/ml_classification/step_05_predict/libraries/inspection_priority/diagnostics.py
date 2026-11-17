@@ -231,25 +231,47 @@ def _save_check_type_bar(table: pd.DataFrame, output_path: Path) -> Path | None:
     return _save_figure(fig, output_path)
 
 
+# Same colours as the check-type chart so the two inspection views read together.
+_WORKLOAD_SEGMENTS = (
+    ("declaration_conflicts", "Declaration conflict", "#D97706"),
+    ("insufficient_eo_evidence", "Insufficient evidence", "#2E6F95"),
+    ("no_check", "No check needed", "#D9E2EC"),
+)
+
+
 def _save_predicted_class_priority(table: pd.DataFrame, output_path: Path, limit: int = 20) -> Path | None:
-    """Save the operational needs-check rate for the highest-burden predicted crops."""
+    """Save the inspection workload of each predicted crop as stacked shares of all its parcels."""
     if table.empty:
         return None
-    plot = table.head(limit).sort_values("needs_check_rate_percent", ascending=True)
-    fig_height = max(7.0, 0.48 * len(plot) + 2.5)
+    plot = table.head(limit).sort_values("needs_check_rate_percent", ascending=True).copy()
+    # Every parcel predicted as the crop is counted once, so the three segments always add up to 100%.
+    plot["no_check"] = plot["parcels"] - plot["needs_check"]
+    parcels = plot["parcels"].clip(lower=1)
+    fig_height = max(7.0, 0.48 * len(plot) + 3.0)
     fig, ax = plt.subplots(figsize=(15, fig_height))
-    bars = ax.barh(
-        plot["predicted_class"].astype(str), plot["needs_check_rate_percent"] / 100.0, color="#2E6F95", edgecolor="#173F5F"
-    )
-    labels = [f"{int(row.needs_check):,}/{int(row.parcels):,}" for row in plot.itertuples()]
-    ax.bar_label(bars, labels=labels, padding=5, fontsize=9)
+    left = np.zeros(len(plot))
+    for column, label, color in _WORKLOAD_SEGMENTS:
+        share = (plot[column] / parcels).to_numpy(dtype=float)
+        ax.barh(plot["predicted_class"].astype(str), share, left=left, color=color, edgecolor="white", linewidth=0.6,
+                label=label)
+        left += share
+    # Annotate the queued count and rate just past the full bar.
+    for position, row in enumerate(plot.itertuples()):
+        ax.text(1.01, position, f"{int(row.needs_check):,}/{int(row.parcels):,} queued ({row.needs_check_rate_percent:.0f}%)",
+                va="center", fontsize=9)
     ax.xaxis.set_major_formatter(mtick.PercentFormatter(1.0))
-    ax.set_xlim(0.0, max(1.0, float((plot["needs_check_rate_percent"] / 100.0).max()) * 1.18))
-    ax.set_title("Operational inspection rate by predicted crop", loc="left", fontweight="bold")
-    ax.set_xlabel("Share of predicted-crop parcels requiring operational inspection")
+    ax.set_xlim(0.0, 1.22)
+    ax.set_xticks(np.linspace(0.0, 1.0, 6))
+    ax.set_title("Inspection workload by predicted crop", loc="left", fontweight="bold", pad=26)
+    ax.text(0.0, 1.015, "All predicted parcels of each crop, split by the field check the inspection policy assigns",
+            transform=ax.transAxes, fontsize=10, color="#52606D")
+    ax.set_xlabel("Share of all parcels predicted as the crop")
     ax.set_ylabel("Predicted crop")
+    # Anchor the legend just under the x-axis label; the offset shrinks as taller figures add more axis height.
+    ax.legend(loc="upper center", bbox_to_anchor=(0.42, -0.06 - 0.5 / fig_height), ncol=3, frameon=False)
     ax.grid(axis="x", color="#D9E2EC", linewidth=0.8)
     ax.grid(axis="y", visible=False)
+    ax.set_axisbelow(True)
     return _save_figure(fig, output_path)
 
 
