@@ -4,7 +4,7 @@ Parcel Studio has two extension points:
 
 - **Data sources** (`src/parcel_app/sources/<provider>/`): everything specific to one
   imagery provider, such as accounts, connection tests and remote job cleanup.
-  Today: `openeo`. Planned: HUB.
+  Today: `openeo` (user-owned accounts) and `hub` (operator service identity).
 - **Pipelines** (`src/parcel_app/pipelines/<pipeline>/`): one analysis the user can run.
   Today: `uploads`, `parcel_stats`, `eda`, `ml`.
 
@@ -68,13 +68,15 @@ Rules that keep the worker safe:
 1. **Library first.** Add or reuse the acquisition adapter in
    `src/data_preparation/sources/<provider>/`. `parcel_stats/core/` must stay independent
    of every provider.
-2. **Decide the shared provider contract.** Adding the second provider is the time to
-   decide this. Compare what `sources/openeo/` provides today: account routes
+2. **Follow the shared provider contract.** A saved `analysis_runs.source` and the
+   library request's `source` select `openeo` or `hub`; existing records default to
+   openEO. Browser processing options and offline preflight are source-specific.
+   Compare what `sources/openeo/` provides: account routes
    (`accounts.py`), a connection test job (`tasks.py`), per-run credentials
    (`credentials.py`) and remote job cleanup on deletion (`remote_cleanup.py`, called from
-   `pipelines/parcel_stats/deletion.py`). Also decide the database changes, for example a
-   `provider` column on accounts and on `analysis_runs`, and where the provider is
-   chosen in the wizard.
+   `pipelines/parcel_stats/deletion.py`). HUB exposes configured-only status and
+   uses service credentials from the operator environment, with no account rows
+   or remote-job cleanup. The wizard's Imagery source step selects the provider.
 3. Create `src/parcel_app/sources/<provider>/` with `__init__.py` (`JOBS`, `ROUTERS`) and
    add it to `PACKAGES`.
 4. Add a migration `src/parcel_app/migrations/00N_<provider>.sql`. Make it additive and

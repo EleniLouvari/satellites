@@ -9,10 +9,11 @@ export default function Progress({
   compact?: boolean;
 }) {
   if (!value) return null;
-  const metrics =
-    !compact && value.remote && value.local
-      ? [value.remote, value.local, ...(value.partitions ? [value.partitions] : [])]
-      : [value];
+  // openEO reports remote, local and partition counts; HUB reports batches and partitions.
+  const details = [value.remote, value.local, value.partitions].filter(
+    (metric): metric is ProgressState => metric != null,
+  );
+  const metrics = !compact && value.local ? details : [value];
   return (
     <div className={`completion ${compact ? "compact" : ""}`}>
       {metrics.map((metric) => (
@@ -37,11 +38,12 @@ export default function Progress({
           )}
         </div>
       ))}
-      {!compact && value.remote && (
+      {!compact && value.local && (
         <small>
-          Local batches count saved statistics and reports. Partition assembly
-          follows batch processing. These counts do not estimate remaining time;
-          results are ready after final publication.
+          {value.remote ? "Local batches" : "HUB batches"} count saved
+          statistics and reports. Partition assembly follows batch processing.
+          These counts do not estimate remaining time; results are ready after
+          final publication.
         </small>
       )}
     </div>

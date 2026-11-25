@@ -11,17 +11,23 @@ import { Button, Empty, Heading, Notice, Status } from "../../components/ui";
 import ParcelMap from "../../components/ParcelMap";
 import DeleteAction from "../../components/DeleteAction";
 import Progress from "../../components/Progress";
+import {
+  RunChildren,
+  runChildSummary,
+  TreeToggle,
+  type TreeActions,
+} from "./RunTree";
 export default function Dashboard({
   history = false,
   onNew,
   onOpen,
   onEda,
+  onMl,
 }: {
   history?: boolean;
   onNew: () => void;
   onOpen: (r: Run) => void;
-  onEda: (r: Run) => void;
-}) {
+} & TreeActions) {
   const [runs, setRuns] = useState<Run[]>([]),
     [accounts, setAccounts] = useState<Account[]>([]),
     [uploads, setUploads] = useState<Upload[]>([]),
@@ -29,7 +35,15 @@ export default function Dashboard({
     [error, setError] = useState(""),
     [search, setSearch] = useState(""),
     [status, setStatus] = useState(""),
-    [since, setSince] = useState("");
+    [since, setSince] = useState(""),
+    [expanded, setExpanded] = useState<Set<string>>(new Set());
+  function toggle(runId: string) {
+    setExpanded((ids) => {
+      const next = new Set(ids);
+      if (!next.delete(runId)) next.add(runId);
+      return next;
+    });
+  }
   useEffect(() => {
     let live = true;
     async function refresh() {
@@ -179,7 +193,7 @@ export default function Dashboard({
             <p>
               {loading
                 ? "Loading your workspace…"
-                : "Pick up where you left off."}
+                : "Pick up where you left off. Expand a run to jump straight to its EDA analyses and ML scenarios."}
             </p>
           </div>
           <span className="eyebrow">{runs.length} runs</span>
@@ -216,13 +230,24 @@ export default function Dashboard({
                 </tr>
               </thead>
               <tbody>
-                {(history ? filtered : filtered.slice(0, 6)).map((r) => (
-                  <tr key={r.run_id}>
+                {(history ? filtered : filtered.slice(0, 6)).map((r) => [
+                  <tr key={r.run_id} className="tree-row tree-level-0">
                     <td>
-                      <strong>{r.name}</strong>
-                      <small>
-                        {r.parcel_id_field} · Revision {r.revision}
-                      </small>
+                      <div className="tree-name">
+                        <TreeToggle
+                          open={expanded.has(r.run_id)}
+                          label={`EDA analyses of ${r.name}`}
+                          hidden={!r.eda_count}
+                          onToggle={() => toggle(r.run_id)}
+                        />
+                        <div>
+                          <strong>{r.name}</strong>
+                          <small>
+                            {r.parcel_id_field} · Revision {r.revision}
+                            {runChildSummary(r) && ` · ${runChildSummary(r)}`}
+                          </small>
+                        </div>
+                      </div>
                     </td>
                     <td>
                       <Status value={r.status} />
@@ -259,8 +284,15 @@ export default function Dashboard({
                         }
                       />
                     </td>
-                  </tr>
-                ))}
+                  </tr>,
+                  expanded.has(r.run_id) && !!r.eda_count && (
+                    <RunChildren
+                      key={`${r.run_id}-eda`}
+                      run={r}
+                      actions={{ onEda, onMl }}
+                    />
+                  ),
+                ])}
               </tbody>
             </table>
           </div>

@@ -18,6 +18,7 @@ from importlib import import_module
 
 PACKAGES = (
     "parcel_app.sources.openeo",
+    "parcel_app.sources.hub",
     "parcel_app.pipelines.uploads",
     "parcel_app.pipelines.parcel_stats",
     "parcel_app.pipelines.eda",

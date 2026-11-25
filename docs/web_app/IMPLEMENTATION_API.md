@@ -11,18 +11,21 @@ Lists return arrays. Runs/uploads include JSON-native metadata/config (not strin
 Foundation: `settings.py`, `app.py`, `manage.py`, `core/` (`db.py`, `security.py`, `storage.py`),
 `auth/routes.py`, `migrations/*.sql`.
 Jobs: `jobs/registry.py` (job kinds and routers), `jobs/queue.py`, `jobs/dispatch.py`, `jobs/worker.py`.
-Data sources: `sources/openeo/` (Copernicus accounts, connection test, remote job cleanup).
-Pipelines: `pipelines/uploads/`, `pipelines/parcel_stats/`, `pipelines/eda/`, `pipelines/ml/`, each with `routes.py` and `tasks.py`.
+Data sources: `sources/openeo/` (Copernicus accounts, connection test, remote job cleanup,
+`sentinel2_tiles.py` for Sentinel-2 inspection-map tiles and acquisition dates).
+Pipelines: `pipelines/uploads/`, `pipelines/parcel_stats/`, `pipelines/eda/`, `pipelines/ml/`, each with `routes.py` and `tasks.py`;
+`pipelines/ml/inspection.py` adds the best-scenario inspection routes.
 The module names below (`db.`, `security.`, ...) refer to these locations.
 
 `settings.get_settings()` returns cached Settings with `storage_root: Path`,
 `credential_key: str`, `cookie_secure: bool`, `allowed_origin: str`,
 `upload_limit_bytes: int` (250 MiB), `max_batch_workers: int` (4),
-`storage_limit_bytes: int` (100 GiB), `session_hours: int` (12).
+`storage_limit_bytes: int` (100 GiB), `session_hours: int` (12),
+`sentinelhub_instance_id: str` (empty disables Sentinel-2 inspection tiles).
 Environment: `PARCEL_STORAGE_ROOT`, `SATELLITES_CREDENTIAL_KEY`,
 `PARCEL_COOKIE_SECURE` default true, `PARCEL_ALLOWED_ORIGIN` default
 `https://localhost`, `PARCEL_UPLOAD_LIMIT_MB`, `PARCEL_MAX_BATCH_WORKERS`,
-`PARCEL_STORAGE_LIMIT_GB`. PostgreSQL uses existing `POSTGRES_*`, `DB_NAME`.
+`PARCEL_STORAGE_LIMIT_GB`, `PARCEL_SENTINELHUB_INSTANCE_ID` (optional). PostgreSQL uses existing `POSTGRES_*`, `DB_NAME`.
 
 `db.connection()` contextmanager yields psycopg2 connection with RealDictCursor
 factory, commits on successful exit, rolls back on error, always closes.
@@ -184,6 +187,36 @@ result of the EDA's run; EDA supplies the proposed features and its calculated c
 checksums, `steps_done` and the published file list. The worker verifies the checksums before
 the first step, saves `steps_done` after every step, and builds `ml-results.zip` after the last.
 Deleting a run removes its ML runs; an EDA analysis with ML runs cannot be deleted first.
+
+## Inspection contract
+
+Routes in `pipelines/ml/inspection.py` serve the best scenario of an owned ML run; its
+predictions must include `inspection_need`. Parcel identifiers are compared as text.
+
+- PUT `/ml/{ml_id}/best`: `{best}` marks or unmarks the scenario as the best of its EDA analysis.
+- GET `/ml/{ml_id}/inspection?offset=&limit=`: one page (`limit` 1..500, default 100) in
+  queue order (inspection need, then score). Returns `columns`, `id_column`, `total`, `offset`,
+  `checked`, `approved` and `rows` of `{values, level, review}`.
+- PUT `/ml/{ml_id}/inspection/review`: `{parcel_id, check_status, approved, comment}`;
+  `check_status` is `not_checked|satellite|field|satellite_and_field`, `comment` at most 2000
+  characters. Approving an unchecked parcel returns 422; a parcel outside the predictions 404.
+  Upserts one row of `ml_inspection_reviews` (`004_inspection.sql`).
+- GET `/ml/{ml_id}/inspection/geometry?parcel_id=`: the parcel footprint as a WGS84 GeoJSON
+  Feature without attributes, read from the run's parcel result.
+- GET `/ml/{ml_id}/inspection/sentinel2`: `{available, min_zoom, max_zoom}` plus the parcel
+  statistics run's `start_date`, `end_date` and `max_cloud_cover`
+  (`sentinel2_max_scene_cloud_cover`, else the pipeline default). `available` needs
+  `PARCEL_SENTINELHUB_INSTANCE_ID` and run dates.
+- GET `/ml/{ml_id}/inspection/sentinel2/dates?parcel_id=`: Sentinel-2 L2A acquisitions over the
+  parcel's bounds from the Sentinel Hub WFS (`DSS2`, up to 20 pages of 100), oldest first, as
+  `[{date, cloud_cover}]`; same-day granules merge with their lowest cloud cover.
+- GET `/ml/{ml_id}/inspection/sentinel2/{z}/{x}/{y}.png?date=`: one 256 px `TRUE_COLOR` WMS tile,
+  zoom 10..18, least cloudy first. Without `date` it uses the run's whole date range; a `date`
+  outside it returns 404. Cached privately for one day.
+
+Sentinel Hub is called only by the API, so the instance ID never reaches the browser. Failures
+return 502 with a message that never names the instance; a missing instance or run dates
+return 404.
 
 ## Deletion and progress contracts
 

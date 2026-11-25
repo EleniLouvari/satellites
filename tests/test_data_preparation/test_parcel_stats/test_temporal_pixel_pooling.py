@@ -563,9 +563,8 @@ def _reference_parcel_statistics(extractor, final, parcels, context):
     return expected
 
 
-@pytest.mark.parametrize("require", [False, True])
-def test_single_read_per_output_matches_per_period_parcel_statistics(tmp_path, monkeypatch, require):
-    """Reading each output once per parcel reproduces the per-period statistics, provenance and row order."""
+def _block_read_statistics(tmp_path, monkeypatch, require):
+    """Run streamed statistics on the gridded cube, recording each block read and the reference statistics."""
     parcels = _gridded_parcels()
     extractor = _extractor(
         tmp_path,
@@ -578,47 +577,83 @@ def test_single_read_per_output_matches_per_period_parcel_statistics(tmp_path, m
     )
     path = _gridded_cube(tmp_path)
     reads = []
-    original_read = extractor._read_parcel_pixels
-    monkeypatch.setattr(extractor, "_read_parcel_pixels", lambda *args: (reads.append(args[1]), original_read(*args))[1])
+    original_read = extractor._read_parcel_block
+    monkeypatch.setattr(extractor, "_read_parcel_block", lambda *args: (reads.append(args[1:]), original_read(*args))[1])
     result, _ = extractor._calculate_local_statistics(path, extractor.parcels, 1)
 
     with xr.open_dataset(path, decode_coords="all") as dataset:
         context = extractor._build_stream_statistics_context(dataset, extractor.parcels)
     with xr.open_dataset(extractor._final_checkpoint_path(path)) as final:
         expected = _reference_parcel_statistics(extractor, final, extractor.parcels, context)
+    return parcels, extractor, context, result, expected, reads
 
-    # One request per output array and parcel, independent of the number of reporting periods.
-    expect_equal(len(reads), 3 * len(context["variables"]) * len(parcels))
-    # Rows keep the input parcel order even though parcels are visited by checkpoint chunk.
+
+def _assert_matches_reference(parcels, extractor, context, result, expected):
+    """Group block reads must reproduce the per-parcel algorithm exactly, in input parcel order."""
     expect_equal(result.parcel_id.drop_duplicates().to_list(), parcels.parcel_id.to_list())
     statistic_columns = [column for column in result.columns if column.split("_")[0] in context["variables"]]
     expect_equal(len(statistic_columns), len(context["variables"]) * len(extractor.spatial_statistics))
     for row in result.itertuples(index=False):
         for column in statistic_columns:
-            np.testing.assert_allclose(
-                getattr(row, column), expected[(row.parcel_id, row.period_start, column)], rtol=1e-6, equal_nan=True
-            )
+            # Per-parcel arithmetic is unchanged, so values must be bit-identical, not merely close.
+            np.testing.assert_array_equal(getattr(row, column), expected[(row.parcel_id, row.period_start, column)])
         counts = expected[(row.parcel_id, "counts")]
+        expect_equal(row.observed_count, counts["observed"])
         expect_equal(row.temporal_filled_pixel_count, counts["temporal"])
         expect_equal(row.spatial_filled_pixel_count, counts["spatial"])
     whole_counts = expected[("centre", "counts")]
     expect_true(whole_counts["temporal"] > 0 and whole_counts["spatial"] > 0)
 
 
-def test_spatial_parcel_order_groups_parcels_by_checkpoint_chunk():
-    """Parcels are visited chunk row by chunk row, then by column inside each chunk row."""
+@pytest.mark.parametrize("require", [False, True])
+def test_group_block_reads_match_per_parcel_statistics(tmp_path, monkeypatch, require):
+    """All inside parcels share one chunk, so each output is read once for them and once for the outside parcel."""
+    parcels, extractor, context, result, expected, reads = _block_read_statistics(tmp_path, monkeypatch, require)
+    _assert_matches_reference(parcels, extractor, context, result, expected)
+    # Two groups (the shared chunk and the outside placeholder), three arrays, every output: independent of parcel count.
+    expect_equal(len(reads), 3 * len(context["variables"]) * 2)
+    # Every read covers all stored dates when the block fits the payload target.
+    expect_true(all(read[2] == slice(0, 6) for read in reads))
+
+
+@pytest.mark.parametrize("require", [False, True])
+def test_group_block_reads_cross_checkpoint_chunks(tmp_path, monkeypatch, require):
+    """Small checkpoint chunks give several groups whose union windows cross chunk boundaries."""
+    from data_preparation.parcel_stats.core import streamed_raster
+
+    monkeypatch.setattr(streamed_raster, "CHECKPOINT_CHUNK_PIXELS", 4)
+    parcels, extractor, context, result, expected, reads = _block_read_statistics(tmp_path, monkeypatch, require)
+    _assert_matches_reference(parcels, extractor, context, result, expected)
+    # Upper-left chunks: north_west and centre (0, 0); edge (1, 0); sliver (1, 1); south_east (2, 1); outside.
+    expect_equal(len(reads), 3 * len(context["variables"]) * 5)
+
+
+def test_oversized_groups_split_and_read_one_period_at_a_time(tmp_path, monkeypatch):
+    """Above the payload target, groups split into single parcels and each reporting period is read separately."""
+    from data_preparation.parcel_stats.core import streamed_raster
+
+    monkeypatch.setattr(streamed_raster, "PARCEL_BLOCK_BYTES", 1)
+    parcels, extractor, context, result, expected, reads = _block_read_statistics(tmp_path, monkeypatch, True)
+    _assert_matches_reference(parcels, extractor, context, result, expected)
+    # One read per parcel, reporting period, array and output.
+    expect_equal(len(reads), 3 * len(context["variables"]) * len(parcels) * len(context["result_periods"]))
+    expect_true(all(read[2] != slice(0, 6) for read in reads))
+
+
+def test_parcel_read_groups_key_by_upper_left_chunk_and_keep_outside_parcels_together():
+    """Parcels are grouped by the chunk of their window's upper-left pixel, in chunk-row-major order."""
     from rasterio.transform import from_origin
 
     transform = from_origin(0, 10_000, 10, 10)
-    # Upper-left pixels: (row 300, col 10), (row 5, col 300), (row 5, col 5), (row 200, col 100).
-    projected = gpd.GeoDataFrame(
-        geometry=[
-            box(100, 10_000 - 3_010, 120, 10_000 - 3_000),
-            box(3_000, 10_000 - 60, 3_020, 10_000 - 50),
-            box(50, 10_000 - 60, 70, 10_000 - 50),
-            box(1_000, 10_000 - 2_010, 1_020, 10_000 - 2_000),
-        ],
-        crs=3857,
-    )
-    order = OpenEOZonalStats._spatial_parcel_order(projected, transform)
-    expect_equal(order.tolist(), [2, 3, 1, 0])
+    # Upper-left pixels: (row 300, col 10), (row 5, col 300), (row 5, col 5), (row 200, col 100), outside, (row 6, col 6).
+    geometries = [
+        box(100, 10_000 - 3_010, 120, 10_000 - 3_000),
+        box(3_000, 10_000 - 60, 3_020, 10_000 - 50),
+        box(50, 10_000 - 60, 70, 10_000 - 50),
+        box(1_000, 10_000 - 2_010, 1_020, 10_000 - 2_000),
+        box(-500, 20_000, -400, 20_100),
+        box(60, 10_000 - 70, 80, 10_000 - 60),
+    ]
+    extractor = OpenEOZonalStats.__new__(OpenEOZonalStats)
+    groups = extractor._parcel_read_groups(geometries, transform, (1_000, 1_000), [np.arange(3)])
+    expect_equal(groups, [[4], [2, 3, 5], [1], [0]])

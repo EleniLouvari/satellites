@@ -24,12 +24,13 @@ from data_preparation.parcel_stats.core.configuration import ZonalStatsConfigura
 from data_preparation.parcel_stats.core.parcel_batches import ParcelBatchPlanner
 from data_preparation.parcel_stats.core.parcel_statistics import ParcelStatisticsCalculator
 from data_preparation.parcel_stats.core.raster_cleaning import RasterCleaner
+from data_preparation.parcel_stats.core.results import ParcelStatsResults
 from data_preparation.parcel_stats.core.streamed_raster import LOCAL_RASTER_LOCK
 from data_preparation.parcel_stats.core.worker_logging import forward_worker_logger, spawn_pool_logging
 
 
 class ParcelStatsBase(
-    BatchResultCache, ZonalStatsConfiguration, ParcelBatchPlanner, RasterCleaner, ParcelStatisticsCalculator
+    BatchResultCache, ZonalStatsConfiguration, ParcelBatchPlanner, RasterCleaner, ParcelStatisticsCalculator, ParcelStatsResults
 ):
     """Calculate temporal Sentinel-1 and Sentinel-2 parcel features.
 

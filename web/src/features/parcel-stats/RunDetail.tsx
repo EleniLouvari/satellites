@@ -13,6 +13,7 @@ import { Button, Empty, Heading, Notice, Status } from "../../components/ui";
 import DeleteAction from "../../components/DeleteAction";
 import RenameAction from "../../components/RenameAction";
 import StopAction from "./StopAction";
+import { normalizeSource, sourceLabel } from "./sourceControls";
 import Progress from "../../components/Progress";
 type Bundle = { status: string; artifact_id?: string; error?: string };
 export default function RunDetail({
@@ -339,9 +340,15 @@ export default function RunDetail({
               <strong>{date(run.updated_at)}</strong>
             </div>
             <div className="kv">
-              <span>Accounts</span>
-              <strong>{run.account_ids.length} selected</strong>
+              <span>Imagery source</span>
+              <strong>{sourceLabel(run.source)}</strong>
             </div>
+            {normalizeSource(run.source) === "openeo" && (
+              <div className="kv">
+                <span>Accounts</span>
+                <strong>{run.account_ids.length} selected</strong>
+              </div>
+            )}
             <div className="kv">
               <span>Revision</span>
               <strong>{run.revision}</strong>

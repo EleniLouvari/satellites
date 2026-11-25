@@ -720,6 +720,21 @@ logged but accepted.
 
 ## Operational guidance
 
+- Completed-job transfers use a 30-second connection timeout and a 120-second read-idle
+  timeout, scoped to the asset request. An interrupted stream, timeout or transient HTTP
+  failure gets at most three attempts, with 30/60-second delays. Each attempt restarts
+  the asset from byte zero using the same completed remote job; satellite processing is
+  not resubmitted. Authentication errors, missing assets and local disk errors fail immediately.
+  Progress records received bytes every 30 seconds while data arrives. Empty transfers and
+  unencoded responses shorter than their declared length are rejected. Only a successful
+  transfer replaces `.partial.nc` with `.nc`; a final failed attempt leaves the partial for
+  diagnosis. These limits do not impose a maximum total duration on an actively progressing
+  transfer, and do not change backend job-polling or metadata-request timeouts.
+- For a slow local disk, start with `batch_workers=1`. With `scheduling="batches"` and
+  `remove_nc_after_completion=True`, downloaded batches enter local processing without waiting
+  for every cube in the partition. `scheduling="partitions"` finishes a partition's downloads
+  before starting its local processing. See [scheduling and resume](SCHEDULING.md); preserve
+  account ownership, partition inputs and processing settings when resuming an existing run.
 - Start with a small parcel subset and short date range to verify authentication,
   CRS choice, output variables, and backend behavior.
 - Keep `openeo_parallel_jobs` within the CDSE account quota. Two is the intended

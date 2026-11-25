@@ -16,93 +16,182 @@ LOCAL_RASTER_LOCK = RLock()
 # This targets one temporal strip payload, not total RAM including working copies and masks.
 TEMPORAL_BLOCK_BYTES = 64 * 1024**2
 TEMPORAL_CACHE_BYTES = 64 * 1024**2
-# Spatial edge of checkpoint chunks; parcel reads are ordered by these chunks.
+# Spatial edge of checkpoint chunks; parcels are grouped for block reads by these chunks.
 CHECKPOINT_CHUNK_PIXELS = 256
-# Per-variable netCDF chunk cache while parcel statistics read the final checkpoint.
-PARCEL_READ_CACHE_BYTES = 512 * 1024**2
+# Payload target for one parcel-group read of an output and its two provenance masks. It bounds the
+# read block only; parcel pixel copies, reducer temporaries and backend caches are additional memory.
+PARCEL_BLOCK_BYTES = 64 * 1024**2
+# Separate budget for independent boolean window masks, including overlapping parcel memberships.
+PARCEL_MASK_BYTES = 16 * 1024**2
+# Bytes per raster cell across the three arrays read together: float32 values plus two uint8 masks.
+PARCEL_BLOCK_CELL_BYTES = 6
 
 
 class StreamedRasterProcessing:
     """Keep raster payloads on disk and materialize only bounded working slices."""
 
-    @staticmethod
-    @contextmanager
-    def _parcel_read_chunk_cache(period_count, variable_count):
-        """Size the netCDF chunk cache so spatially adjacent parcels reuse checkpoint chunks.
+    def _parcel_read_groups(self, geometries, transform, raster_shape, period_groups):
+        """Group parcel positions so each group's outputs can be read as one bounded block.
 
-        netCDF-C applies the default cache to files opened afterwards, so this context must wrap
-        opening the final checkpoint. The previous default is restored on exit.
+        Parcels are keyed by the checkpoint chunk that holds their window's upper-left pixel, so a
+        group's union window spans little more than the chunks its parcels touch anyway. Parcels
+        outside the raster share one 1x1 group. A group whose union window would exceed the payload
+        target even for its longest reporting period is split into single parcels. Independent masks
+        have a separate summed-window budget; an oversized individual parcel is processed alone.
         """
-        # Keep acquisition-only dependencies out of the shared source-neutral import path.
-        from netCDF4 import get_chunk_cache, set_chunk_cache
-
-        chunk_bytes = CHECKPOINT_CHUNK_PIXELS**2 * np.dtype("float32").itemsize
-        # One chunk per period and output, doubled for parcels that cross a chunk boundary.
-        footprint = 2 * period_count * variable_count * chunk_bytes
-        previous = get_chunk_cache()
-        # A prime hash size avoids collisions; zero preemption keeps fully read chunks for the next parcel.
-        set_chunk_cache(size=min(PARCEL_READ_CACHE_BYTES, max(1024**2, footprint)), nelems=10007, preemption=0)
-        try:
-            yield
-        finally:
-            set_chunk_cache(*previous)
+        height, width = raster_shape
+        windows, by_chunk = [], {}
+        for position, geometry in enumerate(geometries):
+            bounds = self._parcel_window_bounds(height, width, geometry, transform)
+            # Outside parcels read the same 1x1 placeholder window that _parcel_pixel_window returns.
+            windows.append(bounds or (0, 1, 0, 1))
+            key = (-1, -1) if bounds is None else (bounds[0] // CHECKPOINT_CHUNK_PIXELS, bounds[2] // CHECKPOINT_CHUNK_PIXELS)
+            by_chunk.setdefault(key, []).append(position)
+        longest_period = max([len(indices) for indices in period_groups] + [1])
+        groups = []
+        # Chunk-row-major order keeps consecutive groups on neighbouring checkpoint chunks.
+        for key in sorted(by_chunk):
+            positions = by_chunk[key]
+            cells = self._union_window_cells([windows[position] for position in positions])
+            if len(positions) > 1 and longest_period * cells * PARCEL_BLOCK_CELL_BYTES > PARCEL_BLOCK_BYTES:
+                groups.extend([position] for position in positions)
+                continue
+            # Overlaps share raster bytes but still allocate one independent mask per parcel.
+            current, mask_bytes = [], 0
+            for position in positions:
+                r0, r1, c0, c1 = windows[position]
+                required = (r1 - r0) * (c1 - c0)
+                if current and mask_bytes + required > PARCEL_MASK_BYTES:
+                    groups.append(current)
+                    current, mask_bytes = [], 0
+                current.append(position)
+                mask_bytes += required
+            groups.append(current)
+        return groups
 
     @staticmethod
-    def _read_parcel_pixels(checkpoint, name, variable_index, rows, columns, mask):
-        """Read one output's parcel pixels for every stored period in a single request.
+    def _union_window_cells(windows):
+        """Return the cell count of the bounding window covering every ``(r0, r1, c0, c1)`` window."""
+        rows = max(window[1] for window in windows) - min(window[0] for window in windows)
+        columns = max(window[3] for window in windows) - min(window[2] for window in windows)
+        return rows * columns
 
-        Returns an array of shape ``(period, parcel_pixel)``. One request per output replaces one
-        request per output and reporting period, which dominated the cost of large batches.
+    @staticmethod
+    def _block_time_reads(intervals, time_count, cells):
+        """Return ``(time slice, period positions)`` reads for one group block.
+
+        All stored times are read at once when the block fits the payload target; otherwise each
+        reporting period is read separately, because pooled statistics need a period's times together.
         """
-        window = np.asarray(checkpoint[name].isel(variable=variable_index, y=rows, x=columns).values)
-        return window[:, mask]
+        if time_count * cells * PARCEL_BLOCK_CELL_BYTES <= PARCEL_BLOCK_BYTES:
+            return [(slice(0, time_count), list(range(len(intervals))))]
+        return [(interval, [position]) for position, interval in enumerate(intervals)]
 
-    def _stream_parcel_statistics(self, checkpoint, geometry, transform, periods, groups, variables):
-        """Read a single parcel and output band at a time across all periods, including provenance."""
-        # Rasterize the parcel once; every output and period reuses the same window and mask.
-        rows_slice, columns_slice, mask, _ = self._parcel_pixel_window(
-            checkpoint.sizes["y"], checkpoint.sizes["x"], geometry, transform
-        )
-        pixel_count = int(mask.sum())
-        # Coverage counts value slots across all stored times and outputs, not just unique spatial cells.
-        expected_count = pixel_count * checkpoint.sizes["period"] * len(variables)
-        observed_count = temporal_count = spatial_count = 0
-        # Configured periods are contiguous on the sorted acquisition axis, so basic slices select each group.
-        intervals = [slice(int(indices[0]), int(indices[-1]) + 1) if len(indices) else slice(0, 0) for indices in groups]
-        rows = [{"period_start": period} for period in periods]
+    @staticmethod
+    def _read_parcel_block(checkpoint, name, variable_index, times, rows, columns):
+        """Read one output's ``(time, y, x)`` block for a parcel group in a single request."""
+        return np.asarray(checkpoint[name].isel(period=times, variable=variable_index, y=rows, x=columns).values)
+
+    def _stream_group_statistics(self, checkpoint, geometries, transform, periods, groups, variables):
+        """Read each output once per parcel group and reduce every parcel's pixels from memory.
+
+        Returns one ``(rows, metrics)`` pair per geometry, in the given order. Per-parcel arithmetic is
+        identical to reading each parcel's window separately; only the number of disk requests changes.
+        """
+        time_count = checkpoint.sizes["period"]
+        # Rasterize each parcel once within its own window; overlapping parcels keep independent masks.
+        windows = [
+            self._parcel_pixel_window(checkpoint.sizes["y"], checkpoint.sizes["x"], geometry, transform)
+            for geometry in geometries
+        ]
+        block_rows, block_columns, local_windows = self._group_block_window(windows)
+        intervals = self._period_intervals(groups)
+        cells = (block_rows.stop - block_rows.start) * (block_columns.stop - block_columns.start)
+        parcel_rows = [[{"period_start": period} for period in periods] for _ in geometries]
+        counts = [{"observed": 0, "temporal": 0, "spatial": 0} for _ in geometries]
         for variable_index, variable in enumerate(variables):
-            window = (variable_index, rows_slice, columns_slice, mask)
-            all_pixels = self._read_parcel_pixels(checkpoint, "cleaned", *window)
-            all_observed = self._read_parcel_pixels(checkpoint, "observed_mask", *window).astype(bool)
-            all_temporal = self._read_parcel_pixels(checkpoint, "temporal_filled_mask", *window).astype(bool)
-            for row, interval in zip(rows, intervals):
-                pixels = all_pixels[interval].copy()
-                observed = all_observed[interval]
-                temporal = all_temporal[interval]
-                observed_count += int(observed.sum())
-                temporal_count += int(temporal.sum())
-                # Finite values with neither observation nor temporal provenance are attributed to spatial filling.
-                spatial_count += int((~observed & ~temporal & np.isfinite(pixels)).sum())
-                if self.require_parcel_observation:
-                    # A date with no observed parcel pixel would be described only by filled values
-                    # borrowed from other dates or neighbouring pixels, so it is excluded from the pool.
-                    pixels[~observed.any(axis=1)] = np.nan
-                # Pool pixels across acquisitions in the reporting interval before computing parcel statistics.
-                stats = self._reduce_local_pixels(pixels.reshape(1, -1))
-                for statistic, values in stats.items():
-                    row[f"{variable}_{statistic}"] = float(values[0])
-            del all_pixels, all_observed, all_temporal
-        metrics = {
+            for times, positions in self._block_time_reads(intervals, time_count, cells):
+                blocks = [
+                    self._read_parcel_block(checkpoint, name, variable_index, times, block_rows, block_columns)
+                    for name in ("cleaned", "observed_mask", "temporal_filled_mask")
+                ]
+                periods_read = [(position, intervals[position]) for position in positions]
+                for parcel, local_window in enumerate(local_windows):
+                    self._reduce_parcel_block(
+                        blocks, local_window, times, periods_read, variable, parcel_rows[parcel], counts[parcel]
+                    )
+                del blocks
+        # Coverage counts value slots across all stored times and outputs, not just unique spatial cells.
+        return [
+            (rows, self._parcel_fill_metrics(int(window[2].sum()), time_count * len(variables), parcel_counts))
+            for rows, window, parcel_counts in zip(parcel_rows, windows, counts)
+        ]
+
+    @staticmethod
+    def _period_intervals(groups):
+        """Return each reporting period's stored-time slice; empty periods give an empty slice."""
+        # Configured periods are contiguous on the sorted acquisition axis, so basic slices select each group.
+        return [slice(int(indices[0]), int(indices[-1]) + 1) if len(indices) else slice(0, 0) for indices in groups]
+
+    @staticmethod
+    def _group_block_window(windows):
+        """Return the group's union row/column slices and each parcel's window relative to that block."""
+        block_rows = slice(min(window[0].start for window in windows), max(window[0].stop for window in windows))
+        block_columns = slice(min(window[1].start for window in windows), max(window[1].stop for window in windows))
+        local_windows = [
+            (
+                slice(rows.start - block_rows.start, rows.stop - block_rows.start),
+                slice(columns.start - block_columns.start, columns.stop - block_columns.start),
+                mask,
+            )
+            for rows, columns, mask, _ in windows
+        ]
+        return block_rows, block_columns, local_windows
+
+    def _reduce_parcel_block(self, blocks, local_window, times, periods_read, variable, rows, counts):
+        """Reduce one parcel's pixels from a group block for every reporting period covered by the read."""
+        window_rows, window_columns, mask = local_window
+        # The same (time, parcel_pixel) arrays a separate read of this parcel's window would give.
+        pixels, observed, temporal = (block[:, window_rows, window_columns][:, mask] for block in blocks)
+        observed, temporal = observed.astype(bool), temporal.astype(bool)
+        for position, interval in periods_read:
+            # Period intervals are absolute stored-time slices; shift them into the block's time slice.
+            relative = slice(interval.start - times.start, interval.stop - times.start)
+            self._reduce_parcel_period(
+                rows[position], variable, (pixels[relative], observed[relative], temporal[relative]), counts
+            )
+
+    def _reduce_parcel_period(self, row, variable, arrays, counts):
+        """Add one output's statistics for one reporting period to a parcel row and update provenance counts."""
+        pixels, observed, temporal = arrays
+        pixels = pixels.copy()
+        counts["observed"] += int(observed.sum())
+        counts["temporal"] += int(temporal.sum())
+        # Finite values with neither observation nor temporal provenance are attributed to spatial filling.
+        counts["spatial"] += int((~observed & ~temporal & np.isfinite(pixels)).sum())
+        if self.require_parcel_observation:
+            # A date with no observed parcel pixel would be described only by filled values
+            # borrowed from other dates or neighbouring pixels, so it is excluded from the pool.
+            pixels[~observed.any(axis=1)] = np.nan
+        # Pool pixels across acquisitions in the reporting interval before computing parcel statistics.
+        stats = self._reduce_local_pixels(pixels.reshape(1, -1))
+        for statistic, values in stats.items():
+            row[f"{variable}_{statistic}"] = float(values[0])
+
+    @staticmethod
+    def _parcel_fill_metrics(pixel_count, slots_per_pixel, counts):
+        """Return a parcel's static coverage and fill-provenance metrics."""
+        expected_count = pixel_count * slots_per_pixel
+        return {
             "intersected_pixel_count": pixel_count,
             "expected_pixel_count": expected_count,
-            "observed_count": observed_count,
-            "temporal_filled_pixel_count": temporal_count,
-            "spatial_filled_pixel_count": spatial_count,
-            "temporal_filled_ratio": temporal_count / expected_count if expected_count else np.nan,
-            "spatial_filled_ratio": spatial_count / expected_count if expected_count else np.nan,
-            "data_reliability_score": observed_count / expected_count if expected_count else np.nan,
+            "observed_count": counts["observed"],
+            "temporal_filled_pixel_count": counts["temporal"],
+            "spatial_filled_pixel_count": counts["spatial"],
+            "temporal_filled_ratio": counts["temporal"] / expected_count if expected_count else np.nan,
+            "spatial_filled_ratio": counts["spatial"] / expected_count if expected_count else np.nan,
+            "data_reliability_score": counts["observed"] / expected_count if expected_count else np.nan,
         }
-        return rows, metrics
 
     @contextmanager
     def _new_streamed_checkpoint(self, path, periods, variables, spatial_shape):

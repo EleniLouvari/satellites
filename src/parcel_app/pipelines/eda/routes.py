@@ -103,12 +103,13 @@ def options(run_id: UUID, user: dict = Depends(current_user)):
 
 @router.get("/runs/{run_id}/eda")
 def list_eda(run_id: UUID, user: dict = Depends(current_user)):
-    """Return this user's EDA history attached to the source run."""
+    """Return this user's EDA history attached to the source run, each with its ``ml_count``."""
     owned_run(run_id, user["app_user_id"])
     return [
         public_eda(row)
         for row in db.all_rows(
-            "SELECT * FROM eda_runs WHERE run_id=%s AND app_user_id=%s ORDER BY created_at DESC",
+            "SELECT *, (SELECT COUNT(*) FROM ml_runs m WHERE m.eda_id=eda_runs.eda_id AND m.app_user_id=eda_runs.app_user_id) AS ml_count"
+            " FROM eda_runs WHERE run_id=%s AND app_user_id=%s ORDER BY created_at DESC",
             (str(run_id), user["app_user_id"]),
         )
     ]

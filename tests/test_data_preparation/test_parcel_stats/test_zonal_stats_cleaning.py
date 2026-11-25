@@ -311,6 +311,13 @@ def test_time_series_reshape_rejects_parcel_attribute_collisions() -> None:
 
     with warnings.catch_warnings():
         warnings.simplefilter("error", DeprecationWarning)
+        # pandas 2.x builds pd.Timedelta with NumPy's generic timedelta unit, which
+        # NumPy >= 2.5 deprecates; this comes from pandas internals, not project code.
+        warnings.filterwarnings(
+            "ignore",
+            message=r"The 'generic' unit for NumPy timedelta is deprecated",
+            category=DeprecationWarning,
+        )
         with pytest.raises(ValueError, match="Parcel attributes collide with generated zonal-statistics columns"):
             extractor._reshape_time_series_for_ml(data)
 

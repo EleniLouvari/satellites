@@ -43,3 +43,5 @@ web/.npm-cache/
 # Generated from docs/ by npm run guide.
 web/public/guide/
 web/public/help/
+AGENTS*
+**/superpowers/

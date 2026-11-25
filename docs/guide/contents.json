@@ -12,7 +12,7 @@
       ],
       [
         "Acquire and summarize observations",
-        "openEO retrieves imagery. Local processing turns cleaned pixels into one row per parcel."
+        "openEO or the HUB catalog provides imagery. Local processing turns cleaned pixels into one row per parcel."
       ],
       [
         "Understand and classify",
@@ -106,10 +106,42 @@
     ]
   },
   {
+    "id": "hub",
+    "title": "HUB catalog acquisition",
+    "description": "Alternative to openEO: read analysis-ready Sentinel imagery directly from the HUB catalog.",
+    "input": "Parcel geometries, dates, Sentinel bands and indices; HUB access configured by the server operator.",
+    "output": "Locally built raster cubes per batch, an item manifest and acquisition coverage, ready for local processing.",
+    "steps": [
+      [
+        "Choose the HUB source",
+        "Select HUB Sentinel ARD in the Imagery source step. The server's service identity reads ARD_S2 and/or ARD_S1; no Copernicus accounts are used."
+      ],
+      [
+        "Resolve the catalog inventory",
+        "Discover the items for each batch, apply the cloud-cover and orbit filters, and record the partition's item manifest."
+      ],
+      [
+        "Build local cubes",
+        "Read cloud-optimized windows around the parcels, apply the validity masks, mosaic each acquisition and align it to a common 10 m grid."
+      ],
+      [
+        "Process batches as they arrive",
+        "Each completed cube starts local statistics while later batches are acquired. Progress counts HUB batches; there are no remote jobs."
+      ]
+    ],
+    "articles": [
+      [
+        "hub-ard",
+        "HUB pixel rules, outputs and resume",
+        "docs/data_preparation/hub/README.md"
+      ]
+    ]
+  },
+  {
     "id": "statistics",
     "title": "Parcel statistics",
-    "description": "Turn downloaded raster cubes into quality-aware parcel features.",
-    "input": "Downloaded cubes, parcel geometries and local processing settings.",
+    "description": "Turn acquired raster cubes into quality-aware parcel features.",
+    "input": "Downloaded openEO cubes or locally built HUB cubes, parcel geometries and local processing settings.",
     "output": "Dated and reduced GeoParquet tables, cleaning reports and completion records.",
     "steps": [
       [

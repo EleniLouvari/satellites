@@ -10,6 +10,7 @@ RUN python -m pip install --no-cache-dir --no-deps . \
     && python -m pip install --no-cache-dir --only-binary=:all: xgboost lightgbm imbalanced-learn shap \
     && python -m pip check \
     && python -c "from eda import EDAConfig, EDAPipeline; from parcel_app.pipelines.eda.tasks import run_eda_files; from parcel_app.pipelines.ml.tasks import run_ml_steps; import xgboost, lightgbm, imblearn" \
+    && python -c "from data_preparation.parcel_stats.hub import HubZonalStats; import pystac_client, netCDF4" \
     && mkdir -p /data/parcel-studio /tmp/matplotlib \
     && chown -R satellites:satellites /data/parcel-studio /tmp/matplotlib
 USER satellites:satellites

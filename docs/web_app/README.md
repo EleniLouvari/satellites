@@ -7,6 +7,30 @@ events and downloads. The CLI and its batch launcher remain usable independently
 
 ## Windows / Docker Desktop
 
+### Defaults for a first parcel-statistics test
+
+New extraction configurations start with a conservative profile for a slow local disk:
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| Local workers | 1 | Avoid concurrent raster reads and writes. |
+| Remote jobs per account | 1 | Reduce simultaneous download pressure; multiple accounts can still download together. |
+| Maximum fitted tile width/height | 5,000 m, including buffer | Keep individual raster cubes smaller. |
+| Temporal fill block rows | Automatic (blank) | Size chunk-aligned temporal blocks automatically. |
+| Scheduling | Shared batches | Process downloaded batches without waiting for an entire partition. |
+| Remove NetCDFs after completion | Enabled | Release rasters after durable statistics and reports are saved. |
+| Completed-partition reuse | Automatic in the runner | Reuse compatible completed partition results. |
+
+This is a starting profile, not a measured optimum for every dataset. Parcels exceeding the
+maximum fitted extent need a larger tile; preflight reports that condition. Sensor selections,
+acquisition pooling and statistical/cleaning choices retain their existing defaults. Saved runs,
+resumed analyses and runs opened for editing retain their saved settings. To use these defaults,
+start a new extraction after rebuilding and restarting the app; this does not submit a run.
+In particular, resuming an older run that used partition scheduling keeps that scheduling mode
+and its saved worker/tile settings; it does not adopt this new-run profile.
+
+### Docker setup
+
 Use Linux containers. The existing `scripts/.env_docker` holds database connection
 settings and the **existing** Fernet key:
 
@@ -94,6 +118,113 @@ original app_user_id and are available when that user signs in.
 
 ## Using the application
 
+### HUB Sentinel ARD
+
+Choose **HUB Sentinel ARD** in the extraction wizard's Imagery source step to
+read `ARD_S2` and/or `ARD_S1`. HUB uses the server's service identity, so there
+is no Copernicus account selection or remote-job scheduling control. A status
+message indicates whether the operator has configured access. Existing runs
+default to openEO; edits, duplicates and resumes retain their saved source.
+
+Operators: add `CATALOG_URL`, `KEYCLOAK_URL`, `CATALOG_CLIENT_ID` and
+`CATALOG_CLIENT_SECRET` to `${PARCEL_ENV_FILE:-./scripts/.env_docker}` before
+starting the API and workers. The repository-root notebook `.env` is not the
+container environment file. Both API and worker receive these settings; the
+API exposes only configured/not-configured status, and workers authenticate.
+Use a Keycloak realm URL reachable from the containers, rather than copying a
+cluster-internal URL from an item's `auth:schemes` metadata. Write both URLs as
+plain `https://...` values: HUB counts as not configured, and saving or starting
+a HUB run is rejected with the setting's name, when a URL lacks an http(s) scheme
+or contains spaces, quotes or pasted link brackets such as `<https://...>`.
+Recreate the API and worker containers after editing the file. Secrets and endpoint
+overrides are never browser-editable or stored in run configurations.
+
+Rebuild the application images and apply the additive `006_hub_source.sql`
+migration with the existing `run_web_app.bat` commands before starting this
+version. The migration preserves existing runs as `openeo`. HUB deletion performs
+local cleanup without requesting Copernicus remote-job cleanup.
+
+HUB defaults to EPSG:2100. `hub_read_workers` defaults to 8, capped by the operator's
+`PARCEL_MAX_HUB_READ_WORKERS` (default 8); this caps total asset-read concurrency
+within each extraction worker. `hub_block_size` defaults to 512 pixels. Local statistics workers keep the
+conservative default of 1. The source prunes irrelevant footprints, bounds
+in-flight reads, and splits wide parcel groups into smaller spatial batches.
+Each completed cube starts local processing as a worker becomes available,
+while subsequent cubes are acquired. `batch_workers` caps local processing
+processes; `hub_read_workers` independently caps imagery reads. The pending
+local work is bounded to `batch_workers` jobs plus one acquired cube waiting
+for a slot. With NetCDF cleanup enabled, workers remove each batch's rasters
+after its statistics and report are saved. Worker logs use `.worker-<pid>.log`
+filenames, even with one worker, and their messages reach the live run events.
+With filling disabled it reads only the parcel context needed for masking;
+unlimited interpolation can require a wider context when filling is enabled.
+
+The [HUB library guide](../data_preparation/hub/README.md) describes pixel rules,
+gamma0 provenance, inventory-aware resume and output files. HUB's gamma0 features
+remain a different source family from openEO's sigma0 features.
+
+#### HUB imagery in the inspection map
+
+For a HUB analysis, **Map** in the best completed ML scenario's inspection table
+uses the run's recorded HUB acquisitions. The pop-up has two panels: the imagery
+controls, timeline, index information and statistics chart on the left, and only the
+map on the right (stacked on narrow screens). Choose **Imagery layer** to view
+Sentinel-2 true colour, a configured optical index, Sentinel-1 VV/VH false colour,
+or a configured radar index. The acquisition selector, timeline and Older/Newer
+buttons follow the selected sensor. The **Opacity** slider fades the preview over
+the background map (0% transparent, 100% opaque); the setting is kept when you
+change date or layer. Index legends use fixed scales across parcels
+and dates; values outside the displayed range use its end colours.
+
+When an index layer is selected, the map also gives a short description of what the
+index shows and its formula. Below it are the parcel's saved **mean**, **median**,
+**SD** and **range** of that index, for the statistics period that contains the
+selected acquisition, meaning the latest period starting on or before the acquisition's
+date. Only the statistics the analysis calculated are listed (range needs min and max),
+and "—" marks a period without valid pixels. These values come from the analysis's
+cleaned and filled pixels, so they can differ from the preview. Planet basemap layers
+are not analysis inputs and have no statistics.
+
+Under this information, a chart shows the parcel's saved **mean** (line) ± 1 **SD**
+(band) of the selected index for every statistics period of the run (for example each
+month with `temporal_period` `1M`). The chart changes with the imagery layer only, not
+with the selected acquisition. Periods without a mean break the line. Hovering shows a
+period's values, and **Show values** lists them as a table.
+
+Previews show observed ARD imagery, without the analysis's local outlier removal,
+gap filling or temporal aggregation. True colour retains clouds so inspectors can
+see the reason for gaps; index layers apply the source cloud/shadow validity mask.
+Radar false colour uses red = VV dB (−20 to 0), green = VH dB (−28 to −8), and
+blue = 10 log10(VV/VH) (0 to 15). It is a radar interpretation aid.
+
+Every HUB analysis also offers two Planet monthly basemap layers from the `PL_BSM`
+collection: **Planet true colour** (`quad_bandmath` bands 6, 4, 2 as red, green, blue)
+and **Planet NDVI** (band 9, as delivered). The basemaps serve as reference imagery
+only: they are not statistics inputs and do not appear in the run's item manifests.
+The timeline therefore lists every basemap month overlapping the analysis dates. A
+month includes the basemap dated on its first day, even when the analysis starts later.
+Quads of one month are mosaicked. Band 10 (alpha) hides pixels outside the mosaic data.
+True colour converts reflectance × 10,000 to reflectance and uses the Sentinel-2 range
+(0 to 0.3). NDVI uses the Sentinel-2 NDVI scale. Basemaps are shown at their native
+pixel size of about 4.8 m.
+
+Each preview covers the parcel bounds plus 500 m, using the HUB source's 10 m
+sampling. A nearest-neighbour Web Mercator display warp preserves placement on
+the map; display oversampling adds no source detail. Parcels exceeding the preview
+extent limit (512 source pixels per axis, including buffer) receive a readable
+error. Background maps remain available if an image has no coverage or valid pixels.
+
+The API reads small COG windows with server credentials and keeps recent band
+windows in a bounded memory cache. Images are cached privately by the browser;
+no preview cache is written to disk. API restarts clear the server cache. Preview
+loading needs configured HUB access and the run's partition item manifests, even
+when extraction NetCDFs were removed. Missing or replaced source items are never
+silently substituted with new acquisitions. Planet basemaps are an exception: the
+catalog is searched whenever the API process lists a parcel's acquisitions for the first time.
+No database migration is needed.
+
+### Existing openEO workflow
+
 1. Register or log in. Registration is immediate; there is no approval step.
 2. Add one or more Copernicus accounts. Passwords are encrypted at write time;
    the browser cannot retrieve stored passwords. Connection testing is explicit
@@ -156,8 +287,9 @@ cannot be deleted. Account passwords can be replaced without changing identity.
 
 **Pipeline guide** in the sidebar opens a dedicated reading page at
 `/guide/index.html`. **Help** opens the relevant stage in a new tab, preserving
-the current form or run view. The contents follow acquisition → local statistics →
-optional feature enrichment → EDA → ML → inspection. Each stage explains its
+the current form or run view. The contents follow acquisition (openEO or the HUB
+catalog) → local statistics → optional feature enrichment → EDA → ML → inspection.
+The HUB status message in the Imagery source step links to the HUB acquisition stage. Each stage explains its
 inputs, processing order and outputs, followed by a reading list and relevant
 workflow diagrams. Articles have an in-page contents list and Previous/Next links.
 
@@ -194,6 +326,10 @@ and partition assembly separately. Local batches count planned cubes with both
 committed statistics and report Parquets, even when completed NetCDFs have been
 removed. Partial files, cleaning reports alone and duplicate signatures do not
 increase the count. Partition assembly can remain at zero while batches finish.
+HUB runs have no remote jobs; they show HUB batches and partition assembly. The
+HUB batch total comes from each partition's `hub_item_manifest.parquet`, so it
+appears once the catalog is resolved, and a batch counts when its statistics and
+report Parquets for the partition's current processing signature are committed.
 Remote jobs at 100% does not mean the
 download, local processing or final publication has finished. A run is marked
 complete only after verified publication. These percentages count work units,
@@ -230,6 +366,20 @@ the currently configured storage root and the original recorded accounts.
 Apply the additive migration before updating the API/worker: it adds
 `analysis_runs.deletion_manifest` and `eda_runs.progress`. Existing scientific
 results are not changed. No existing run is deleted automatically by deployment.
+
+## Navigating runs, EDA analyses and scenarios
+
+The run lists on Overview and My runs form a tree. A run with EDA analyses shows a
+count under its name (for example `2 EDA · 5 scenarios`) and a **▸** toggle that lists
+its EDA analyses; an analysis with scenarios has its own toggle that lists them. Select
+an analysis or scenario name, or its **Open** button, to go straight to it; an analysis's
+**ML** button opens its list of scenarios. The run list (`GET /api/runs`) returns
+`eda_count` and `ml_count`, and the EDA list returns each analysis's `ml_count`.
+
+The top bar shows where you are, for example
+`Workspace / My runs / <run> / EDA: <analysis> / ML scenarios / <scenario>`. Every earlier
+part is a link back to that level. **Back to EDA analysis** on the ML page returns to the
+analysis the scenarios belong to.
 
 ## Exploratory data analysis (EDA)
 
@@ -313,9 +463,9 @@ analysis can have any number of scenarios, so different models or search grids c
 
 Under **Inspection priority ? Thresholds**, **Data reliability** and **Geometry**
 have separate controls, mode explanations and worked examples. For data reliability,
-**absolute** uses the entered cutoffs; **percentile** uses the smaller of each cutoff
+**absolute** (default) uses the entered cutoffs; **percentile** uses the smaller of each cutoff
 and the reliability score at its chosen percentile in the current prediction run.
-For geometry, **absolute** uses complexity cutoffs alone; **percentile** requires both
+For geometry, **absolute** (default) uses complexity cutoffs alone; **percentile** requires both
 the complexity cutoff and its percentile rank cutoff. Percentile-only inputs are
 disabled in absolute mode. The score-band thresholds remain below these subsections
 and only set `inspection_need_base`.
@@ -358,7 +508,53 @@ training occupies that queue; it cannot be stopped from the browser. The worker 
 the `ml` extra (`xgboost`, `lightgbm`, `imbalanced-learn`, `shap`); models whose library is
 missing are skipped. `n_jobs` is limited by `PARCEL_MAX_BATCH_WORKERS`.
 
-Run `python -m parcel_app.manage migrate` once to create `ml_runs` (`003_ml.sql`).
+### Parcel inspection of the best scenario
+
+Once you have compared the scenarios, select **Mark as best scenario** on a finished one.
+An EDA analysis has at most one best scenario: marking another moves the mark, and
+**Unmark as best** removes it. The best scenario gains a sixth step, **Inspection**; select
+**Inspect parcels** (or **Open parcel list** on that step) to open it.
+
+The inspection list shows every parcel with all its prediction columns (except `predicted_class`,
+a copy of the configured prediction column such as `crop_prediction`), ordered like the
+inspection queue: inspection need first (very high to very low), then inspection score, highest
+first. Row colours run from red (needs inspection) to green (does not); grey marks an unknown
+need. **Map**, next to the parcel ID, opens a pop-up with the parcel's footprint drawn over a
+Sentinel-2 background when it is configured, otherwise Esri satellite (`GET /api/ml/{id}/inspection/geometry?parcel_id=`, read from the parcel
+result and returned in WGS84). The background can be switched to Esri satellite or OpenStreetMap.
+**Sentinel-2** is true colour from the Copernicus Data Space Sentinel Hub and needs a Sentinel Hub
+configuration instance ID: each request uses a random one of the user's Copernicus accounts that has
+one (set when adding or editing the account; stored in `eo_users.sen_instance_id`, write-only), which
+spreads processing units across accounts, else `PARCEL_SENTINELHUB_INSTANCE_ID`. Every instance needs
+a `TRUE_COLOR` layer. The pop-up lists the parcel's Sentinel-2 acquisition dates, oldest
+first, within the parcel statistics run's `start_date` to `end_date` (both days included) and
+`sentinel2_max_scene_cloud_cover`; granules of the same day count as one date with their lowest
+cloud cover (`GET /api/ml/{id}/inspection/sentinel2/dates?parcel_id=`); whether Sentinel-2 is
+available, the run's dates and cloud limit and the zoom range come from
+`GET /api/ml/{id}/inspection/sentinel2`. It opens on the oldest date; **← Older**, **Newer →**, the
+date list and a timeline change it. The timeline spans the run's dates with month labels and a
+tick per acquisition date (hover shows its cloud cover); dragging or clicking snaps to the nearest
+date and the arrow keys step one date at a time. Images show from zoom 10. The API fetches
+the tiles (`GET /api/ml/{id}/inspection/sentinel2/{z}/{x}/{y}.png?date=`), so the instance ID never
+reaches the browser; each tile uses Sentinel Hub processing units from the CDSE account's quota. Each row has three editable columns:
+
+- **Checked**: how the parcel was checked: *Not checked* (default), *Satellite image*,
+  *Field visit*, or *Satellite image and field visit*.
+- **Approved**: tick when the investigation shows the parcel is as the farmer declared
+  (default off). Only checked parcels can be approved; setting a parcel back to
+  *Not checked* clears it.
+- **Comments**: free text up to 2,000 characters, saved when you leave the box.
+
+Changes are saved immediately per parcel, in `ml_inspection_reviews`. Reviews are keyed by
+parcel ID, so they survive a re-run of the scenario and remain when it is unmarked; they are
+deleted with the scenario. The list is paged 100 parcels at a time and requires the scenario to
+have inspection priority columns (`inspection_need`), which Predict writes by default.
+
+`GET /api/ml/{id}/inspection?offset=&limit=` returns one page; `PUT /api/ml/{id}/best` takes
+`{best}`; `PUT /api/ml/{id}/inspection/review` takes `{parcel_id, check_status, approved, comment}`.
+
+Run `python -m parcel_app.manage migrate` once to create `ml_runs` (`003_ml.sql`) and the
+best-scenario flag and inspection reviews (`004_inspection.sql`).
 
 ## Stored history
 
@@ -462,6 +658,7 @@ Set Compose substitutions in the shell or a separate Compose `--env-file`:
 | `PARCEL_WORKER_CPUS` | `4` |
 | `PARCEL_WORKER_MEMORY` | `16g` |
 | `PARCEL_STORAGE_LIMIT_GB` | `100` |
+| `PARCEL_SENTINELHUB_INSTANCE_ID` | empty (only account instance IDs give a Sentinel-2 background on the inspection map); fallback CDSE Sentinel Hub configuration instance with a `TRUE_COLOR` layer |
 
 The nginx upload ceiling is also 250 MiB; update `web/nginx.conf` if increasing
 the API ceiling. CPU/memory controls are per service. Storage limits gate new

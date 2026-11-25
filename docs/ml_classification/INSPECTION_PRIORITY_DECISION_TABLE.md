@@ -70,8 +70,8 @@ rank is used:
 
 | Mode | Medium complexity when | High complexity when |
 |---|---|---|
-| `percentile` (default) | `geometry_risk >= 0.50` and complexity `>= 0.60` | `geometry_risk >= 0.75` and complexity `>= 0.90` |
-| `absolute` | complexity `>= 0.60` | complexity `>= 0.90` |
+| `percentile` | `geometry_risk >= 0.50` and complexity `>= 0.60` | `geometry_risk >= 0.75` and complexity `>= 0.90` |
+| `absolute` (default) | complexity `>= 0.60` | complexity `>= 0.90` |
 
 The percentile thresholds are `inspection_medium_geometry_risk_threshold` and
 `inspection_high_geometry_risk_threshold`; the complexity thresholds are
@@ -97,8 +97,8 @@ the two data-reliability thresholds are applied:
 
 | Mode | Applied LOW threshold | Applied MEDIUM threshold |
 |---|---|---|
-| `percentile` (default) | `min(inspection_low_data_reliability_threshold, P_low)` | `min(inspection_medium_data_reliability_threshold, P_medium)` |
-| `absolute` | `inspection_low_data_reliability_threshold` (0.60) | `inspection_medium_data_reliability_threshold` (0.80) |
+| `percentile` | `min(inspection_low_data_reliability_threshold, P_low)` | `min(inspection_medium_data_reliability_threshold, P_medium)` |
+| `absolute` (default) | `inspection_low_data_reliability_threshold` (0.60) | `inspection_medium_data_reliability_threshold` (0.80) |
 
 `P_low` and `P_medium` are the `inspection_low_data_reliability_percentile`
 (default 0.05) and `inspection_medium_data_reliability_percentile` (default 0.25)
@@ -334,11 +334,11 @@ and can be re-applied with `recalculate_prediction_quality()`.
 | `inspection_geometry_complexity_column` | `"geom_shape_complexity_score"` | Column with the shape complexity score. |
 | `inspection_include_outlier` | `False` | Raise `is_outlier=True` parcels one band. |
 | `inspection_check_matching_declarations` | `False` | Also queue Low–Medium and Medium parcels whose declaration matches. |
-| `inspection_data_reliability_threshold_mode` | `"percentile"` | `percentile` relaxes the data limits to the run's percentiles; `absolute` applies them as written. |
+| `inspection_data_reliability_threshold_mode` | `"absolute"` | `absolute` applies the data limits as written; `percentile` relaxes them to the run's percentiles. |
 | `inspection_medium_data_reliability_threshold` | `0.80` | Data reliability must be strictly above the applied value to count as high (rules). |
 | `inspection_low_data_reliability_threshold` | `0.60` | Below the applied value the reason is `LOW_DATA_RELIABILITY` (reasons only). |
 | `inspection_medium_data_reliability_percentile`, `inspection_low_data_reliability_percentile` | `0.25`, `0.05` | Percentiles used in percentile mode. |
-| `inspection_geometry_threshold_mode` | `"percentile"` | `percentile` needs both rank and complexity; `absolute` uses complexity only. |
+| `inspection_geometry_threshold_mode` | `"absolute"` | `absolute` uses complexity only; `percentile` needs both rank and complexity. |
 | `inspection_medium_geometry_risk_threshold`, `inspection_high_geometry_risk_threshold` | `0.50`, `0.75` | Percentile-rank limits for medium and high geometry complexity (percentile mode). |
 | `inspection_medium_geometry_complexity_threshold`, `inspection_high_geometry_complexity_threshold` | `0.60`, `0.90` | Complexity-score limits; 0 disables this condition. High affects reasons only. |
 | `inspection_model_weight`, `inspection_data_weight`, `inspection_geometry_weight` | `0.60`, `0.25`, `0.15` | Weights of the three risks in `inspection_score`; they order the queue within a band and must sum to 1. |

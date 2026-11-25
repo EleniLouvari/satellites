@@ -12,6 +12,7 @@ while ownership prevents duplicate parcel results in overlapping tile rasters.
 from __future__ import annotations
 
 import hashlib
+import logging
 import math
 import time
 from collections.abc import Sequence
@@ -24,6 +25,7 @@ import openeo
 import pandas as pd
 from openeo.extra.job_management import MultiBackendJobManager, create_job_db, get_job_db, split_area
 
+from data_preparation.sources.openeo.downloads import download_job_netcdf
 from data_preparation.sources.openeo.job_options import memory_bytes, validate_job_options
 from shared.io import write_data
 
@@ -32,7 +34,7 @@ from .openeo import OpenEOZonalStats
 
 
 def compute_tile_buffer_metres(
-    parcels: gpd.GeoDataFrame, working_epsg: int, safety_factor: float = 2.5, round_up_to_metres: int = 50
+    parcels: gpd.GeoDataFrame, working_epsg: int, safety_factor: float = 1, round_up_to_metres: int = 50
 ) -> int:
     """Calculate a conservative tile buffer from the largest parcel radius.
 
@@ -229,13 +231,11 @@ class _NetCDFTileJobManager(MultiBackendJobManager):
     """Download each completed single-asset job to its deterministic cache path."""
 
     def on_job_done(self, job, row) -> None:
+        """Recover interrupted asset transfers without creating another remote job."""
         target = Path(row["target_path"])
-        target.parent.mkdir(parents=True, exist_ok=True)
         temporary = target.with_suffix(".partial.nc")
-        if temporary.exists():
-            temporary.unlink()
-        job.get_results().download_file(target=temporary)
-        temporary.replace(target)
+        logger = getattr(self, "source_logger", logging.getLogger("parcel_stats_pipeline.source.downloads"))
+        download_job_netcdf(job, temporary, target, logger)
 
 
 class OpenEOJobManagerZonalStats(TileJobRetryMixin, OpenEOZonalStats):
@@ -811,6 +811,7 @@ class OpenEOJobManagerZonalStats(TileJobRetryMixin, OpenEOZonalStats):
         manager = _NetCDFTileJobManager(
             poll_sleep=self.job_poll_seconds, root_dir=cube_dir / "job_manager", download_results=False
         )
+        manager.source_logger = self.source_logger
         manager.add_backend("cdse", connection=connection, parallel_jobs=self.openeo_parallel_jobs)
         self._restore_finished_tile_downloads(manager, connection, job_db, plan_lookup)
         self._run_tile_jobs_with_retries(manager, job_db, start_job)

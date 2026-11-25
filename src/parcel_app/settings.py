@@ -18,6 +18,8 @@ class Settings:
     max_batch_workers: int = 4
     storage_limit_bytes: int = 100 * 1024**3
     session_hours: int = 24
+    sentinelhub_instance_id: str = ""
+    max_hub_read_workers: int = 8
 
 
 @lru_cache
@@ -30,5 +32,7 @@ def get_settings() -> Settings:
         allowed_origin=os.getenv("PARCEL_ALLOWED_ORIGIN", "https://localhost").rstrip("/"),
         upload_limit_bytes=max(1, int(os.getenv("PARCEL_UPLOAD_LIMIT_MB", "250"))) * 1024**2,
         max_batch_workers=max(1, int(os.getenv("PARCEL_MAX_BATCH_WORKERS", "4"))),
+        max_hub_read_workers=max(1, int(os.getenv("PARCEL_MAX_HUB_READ_WORKERS", "8"))),
         storage_limit_bytes=max(1, int(os.getenv("PARCEL_STORAGE_LIMIT_GB", "100"))) * 1024**3,
+        sentinelhub_instance_id=os.getenv("PARCEL_SENTINELHUB_INSTANCE_ID", "").strip(),
     )

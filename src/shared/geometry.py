@@ -59,7 +59,7 @@ def geometry_to_point(geometry_value):
         return geometry_value
 
     if geometry_value.geom_type.lower() == "linestring":
-        centroid = geometry_value.interpolate(0.5, True)
+        centroid = geometry_value.interpolate(0.5, normalized=True)
 
     elif geometry_value.geom_type.lower() == "multilinestring":
         sel_line = None
@@ -69,7 +69,7 @@ def geometry_to_point(geometry_value):
                 max_len = line.length
                 sel_line = line
 
-        centroid = sel_line.interpolate(0.5, True)
+        centroid = sel_line.interpolate(0.5, normalized=True)
     else:
         centroid = geometry_value.centroid
 

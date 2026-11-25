@@ -12,7 +12,10 @@ from parcel_app.core.security import cipher, current_user
 router = APIRouter(prefix="/accounts", tags=["accounts"])
 # Columns safe to return to the browser. Queries interpolate only this constant (hence nosec B608);
 # every request value is a bound parameter.
-SAFE_COLUMNS = "eo_user_id,username,label,test_status,tested_at"
+# The Sentinel Hub instance ID is write-only too: it lets anyone spend the account's processing units.
+SAFE_COLUMNS = "eo_user_id,username,label,test_status,tested_at,COALESCE(sen_instance_id,'')<>'' AS has_sen_instance"
+# Sentinel Hub configuration instance IDs are UUIDs; they are placed in the Sentinel Hub URL path.
+INSTANCE_PATTERN = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 
 
 class AccountInput(BaseModel):
@@ -21,6 +24,7 @@ class AccountInput(BaseModel):
     username: str = Field(min_length=1, max_length=320)
     password: str = Field(min_length=1, max_length=4096)
     label: str = Field(default="", max_length=120)
+    sen_instance_id: str | None = Field(default=None, pattern=INSTANCE_PATTERN)
 
 
 class AccountPatch(BaseModel):
@@ -28,6 +32,7 @@ class AccountPatch(BaseModel):
 
     label: str | None = Field(default=None, max_length=120)
     password: str | None = Field(default=None, min_length=1, max_length=4096)
+    sen_instance_id: str | None = Field(default=None, pattern=INSTANCE_PATTERN)
 
 
 def owned(account_id: int, user: dict, *, conn=None) -> dict:
@@ -59,8 +64,9 @@ def create_account(body: AccountInput, user: dict = Depends(current_user)):
     encrypted = cipher().encrypt(body.password.encode()).decode()
     try:
         return db.one(
-            f"INSERT INTO eo_users(app_user_id,username,password,label) VALUES (%s,%s,%s,%s) RETURNING {SAFE_COLUMNS}",  # nosec B608
-            (user["app_user_id"], body.username, encrypted, body.label),
+            f"""INSERT INTO eo_users(app_user_id,username,password,label,sen_instance_id)
+            VALUES (%s,%s,%s,%s,%s) RETURNING {SAFE_COLUMNS}""",  # nosec B608
+            (user["app_user_id"], body.username, encrypted, body.label, body.sen_instance_id),
         )
     except UniqueViolation:
         raise HTTPException(409, "Error: Account already exists") from None
@@ -68,15 +74,16 @@ def create_account(body: AccountInput, user: dict = Depends(current_user)):
 
 @router.patch("/{account_id}")
 def update_account(account_id: int, body: AccountPatch, user: dict = Depends(current_user)):
-    """Replace a password or label without exposing stored credentials."""
+    """Replace a password, label or Sentinel Hub instance without exposing stored credentials."""
     owned(account_id, user)
     password = cipher().encrypt(body.password.encode()).decode() if body.password is not None else None
     return db.one(
         f"""UPDATE eo_users SET label=COALESCE(%s,label),password=COALESCE(%s,password),
+        sen_instance_id=COALESCE(%s,sen_instance_id),
         test_status=CASE WHEN %s IS NOT NULL THEN 'untested' ELSE test_status END,
         tested_at=CASE WHEN %s IS NOT NULL THEN NULL ELSE tested_at END
         WHERE eo_user_id=%s AND app_user_id=%s RETURNING {SAFE_COLUMNS}""",  # nosec B608
-        (body.label, password, password, password, account_id, user["app_user_id"]),
+        (body.label, password, body.sen_instance_id, password, password, account_id, user["app_user_id"]),
     )
 
 

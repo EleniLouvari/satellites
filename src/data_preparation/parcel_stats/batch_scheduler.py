@@ -112,6 +112,7 @@ def _run_batch(task, username, connection):
         root_dir=task.cube_dir / "job_manager",
         download_results=False,
     )
+    manager.source_logger = extractor.source_logger
     manager.add_backend("cdse", connection=connection, parallel_jobs=1)
     extractor._restore_finished_tile_downloads(manager, connection, database, {plan["batch_number"]: plan})
     if Path(plan["target_path"]).exists():

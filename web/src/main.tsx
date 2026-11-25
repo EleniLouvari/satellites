@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { api, setCsrf, type Run, type User } from "./api";
 import { Brand, Notice } from "./components/ui";
@@ -10,6 +10,11 @@ import RunDetail from "./features/parcel-stats/RunDetail";
 import EdaPage from "./features/eda/EdaPage";
 import MlPage, { type MlSource } from "./features/ml/MlPage";
 import Help from "./features/help/Help";
+import type { EdaSummary } from "./features/parcel-stats/RunTree";
+const EDA_PAGE = "Exploratory data analysis";
+const ML_PAGE = "ML classification";
+type Crumb = { label: string; onClick?: () => void };
+type Focus = { id: string; name: string };
 import "./styles/style.css";
 function App() {
   const [user, setUser] = useState<User>(),
@@ -19,9 +24,15 @@ function App() {
     [draft, setDraft] = useState<Run>(),
     [error, setError] = useState(""),
     [expired, setExpired] = useState(false);
+  // edaRun is the parcel run behind both the EDA and the ML page.
   const [edaRun, setEdaRun] = useState<Run>();
-  const [edaReturn, setEdaReturn] = useState("My runs");
+  const [origin, setOrigin] = useState("My runs");
   const [mlSource, setMlSource] = useState<MlSource>();
+  // Item to open directly on the EDA / ML page, the item each page reports on screen,
+  // and a counter that remounts the page when the same page is opened again.
+  const [openId, setOpenId] = useState<string>();
+  const [focus, setFocus] = useState<Focus>();
+  const [visit, setVisit] = useState(0);
   useEffect(() => {
     api<User>("/auth/me")
       .then((u) => {
@@ -42,18 +53,58 @@ function App() {
   function navigate(p: string) {
     setPage(p);
     setError("");
+    setFocus(undefined);
     if (p === "New analysis") setDraft(undefined);
     window.scrollTo(0, 0);
   }
-  function openEda(r: Run) {
+  function rememberOrigin() {
+    if (page === "Overview" || page === "My runs") setOrigin(page);
+  }
+  function openEda(r: Run, edaId?: string) {
+    rememberOrigin();
     setEdaRun(r);
-    setEdaReturn(page);
-    navigate("Exploratory data analysis");
+    setOpenId(edaId);
+    setVisit((n) => n + 1);
+    navigate(EDA_PAGE);
+  }
+  function openMl(r: Run, eda: Pick<EdaSummary, "eda_id" | "name">, mlId?: string) {
+    rememberOrigin();
+    setEdaRun(r);
+    setMlSource({ edaId: eda.eda_id, title: eda.name, runName: r.name });
+    setOpenId(mlId);
+    setVisit((n) => n + 1);
+    navigate(ML_PAGE);
   }
   function open(r: Run) {
+    rememberOrigin();
     setRun(r);
+    setFocus(undefined);
     setPage("Run detail");
   }
+  const crumbs: Crumb[] = [];
+  const home: Crumb = { label: origin, onClick: () => navigate(origin) };
+  if (page === "Run detail" && run) crumbs.push(home, { label: run.name });
+  else if ((page === EDA_PAGE || page === ML_PAGE) && edaRun) {
+    const source = edaRun;
+    crumbs.push(home, { label: source.name, onClick: () => open(source) });
+    if (page === EDA_PAGE) {
+      crumbs.push({
+        label: "EDA analyses",
+        onClick: focus ? () => openEda(source) : undefined,
+      });
+      if (focus) crumbs.push({ label: focus.name });
+    } else if (mlSource) {
+      const eda = { eda_id: mlSource.edaId, name: mlSource.title };
+      crumbs.push(
+        { label: `EDA: ${eda.name}`, onClick: () => openEda(source, eda.eda_id) },
+        {
+          label: "ML scenarios",
+          onClick: focus ? () => openMl(source, eda) : undefined,
+        },
+      );
+      if (focus) crumbs.push({ label: focus.name });
+    }
+  } else crumbs.push({ label: page });
   function edit(r: Run) {
     setDraft(r);
     setPage("New analysis");
@@ -144,9 +195,23 @@ function App() {
       </aside>
       <main className="workspace">
         <header className="topbar">
-          <span>
-            Workspace <i>/</i> <strong>{page}</strong>
-          </span>
+          <nav className="crumbs" aria-label="You are here">
+            Workspace
+            {crumbs.map((crumb, index) => (
+              <Fragment key={index}>
+                <i aria-hidden="true">/</i>
+                {index === crumbs.length - 1 ? (
+                  <strong aria-current="page">{crumb.label}</strong>
+                ) : crumb.onClick ? (
+                  <button type="button" onClick={crumb.onClick}>
+                    {crumb.label}
+                  </button>
+                ) : (
+                  <span>{crumb.label}</span>
+                )}
+              </Fragment>
+            ))}
+          </nav>
           <span className="topbar-actions">
             <Help
               initial={
@@ -169,6 +234,7 @@ function App() {
               onNew={() => navigate("New analysis")}
               onOpen={open}
               onEda={openEda}
+              onMl={openMl}
             />
           )}
           {page === "My runs" && (
@@ -177,6 +243,7 @@ function App() {
               onNew={() => navigate("New analysis")}
               onOpen={open}
               onEda={openEda}
+              onMl={openMl}
             />
           )}
           {page === "Copernicus accounts" && <Accounts />}
@@ -187,22 +254,25 @@ function App() {
               onOpen={open}
             />
           )}
-          {page === "Exploratory data analysis" && edaRun && (
+          {page === EDA_PAGE && edaRun && (
             <EdaPage
-              key={edaRun.run_id}
+              key={`${edaRun.run_id}-${visit}`}
               run={edaRun}
-              onBack={() => navigate(edaReturn)}
-              onMl={(source) => {
-                setMlSource(source);
-                navigate("ML classification");
-              }}
+              initialOpenId={openId}
+              onBack={() => navigate(origin)}
+              onFocus={setFocus}
+              onMl={(source) =>
+                openMl(edaRun, { eda_id: source.edaId, name: source.title })
+              }
             />
           )}
-          {page === "ML classification" && mlSource && (
+          {page === ML_PAGE && edaRun && mlSource && (
             <MlPage
-              key={mlSource.edaId}
+              key={`${mlSource.edaId}-${visit}`}
               source={mlSource}
-              onBack={() => navigate("My runs")}
+              initialOpenId={openId}
+              onBack={() => openEda(edaRun, mlSource.edaId)}
+              onFocus={setFocus}
             />
           )}
           {page === "Run detail" && run && (

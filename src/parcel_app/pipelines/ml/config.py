@@ -52,8 +52,8 @@ CHOICES = {
     "selection_type": ["soft_voting", "single_model"],
     "lstm_temporal_frequency": [None, "monthly"],
     "lstm_class_balancing_method": ["balanced_class_weight", "none"],
-    "inspection_data_reliability_threshold_mode": ["percentile", "absolute"],
-    "inspection_geometry_threshold_mode": ["percentile", "absolute"],
+    "inspection_data_reliability_threshold_mode": ["absolute", "percentile"],
+    "inspection_geometry_threshold_mode": ["absolute", "percentile"],
 }
 def _when(rule, *names):
     """Give several dependent fields the same parent rule."""
@@ -275,9 +275,9 @@ GROUPS = (
             "parcels within a priority band of the queue.",
             "inspection_data_weight": "Weight w_data of the data risk in the inspection score.",
             "inspection_geometry_weight": "Weight w_geometry of the geometry risk. The three weights must sum to 1.",
-            "inspection_data_reliability_threshold_mode": "percentile (default) lowers each data reliability "
-            "threshold to the matching percentile of the predicted parcels when that percentile is lower, so normal "
-            "cloud gaps do not mark most parcels as weak evidence. absolute applies the two thresholds as written.",
+            "inspection_data_reliability_threshold_mode": "absolute (default) applies the two thresholds as written. "
+            "percentile lowers each data reliability threshold to the matching percentile of the predicted parcels "
+            "when that percentile is lower, so normal cloud gaps do not mark most parcels as weak evidence.",
             "inspection_low_data_reliability_threshold": "Reason codes only: data reliability below this value is "
             "reported as LOW_DATA_RELIABILITY. In percentile mode this is the upper limit of the applied value.",
             "inspection_medium_data_reliability_threshold": "Rule table and reason codes: data reliability must be "
@@ -288,9 +288,9 @@ GROUPS = (
             "allowed below the low threshold. 0.05 reports about the weakest 5% as LOW_DATA_RELIABILITY.",
             "inspection_medium_data_reliability_percentile": "Percentile mode only: share of predicted parcels (0-1) "
             "allowed at or below the medium threshold. 0.25 treats about the best 75% as high data reliability.",
-            "inspection_geometry_threshold_mode": "percentile (default): a parcel's geometry counts as medium or high "
-            "complexity only when both its percentile and its complexity score pass the thresholds, so a run of "
-            "simple parcels is not penalised for ranking alone. absolute: only the complexity score thresholds apply.",
+            "inspection_geometry_threshold_mode": "absolute (default): only the complexity score thresholds apply. "
+            "percentile: a parcel's geometry counts as medium or high complexity only when both its percentile and "
+            "its complexity score pass the thresholds, so a run of simple parcels is not penalised for ranking alone.",
             "inspection_medium_geometry_risk_threshold": "Percentile mode only: geometry risk (0-1 percentile) from "
             "which a parcel can be medium complexity. Medium or high complexity drops a parcel one band in the rules "
             "and adds the reason MEDIUM_GEOMETRY_COMPLEXITY.",
@@ -505,9 +505,9 @@ SUBGROUPS = {
             (
                 ("Data reliability is the share of observed rather than filled pixel values (0-1); higher is better. "
                 "The rule table treats reliability as high only when it is strictly above the applied medium cutoff."),
-                ("Absolute: use the low and medium score cutoffs exactly as entered, for the same standard across "
+                ("Absolute (default): use the low and medium score cutoffs exactly as entered, for the same standard across "
                 "runs. For example, a medium cutoff of 0.80 requires more than 80% observed values for high reliability."),
-                ("Percentile (default): adapt each cutoff to the valid reliability scores of all predicted parcels "
+                ("Percentile: adapt each cutoff to the valid reliability scores of all predicted parcels "
                 "in this run. Use the smaller of the entered cutoff and the score at the chosen percentile. "
                 "A percentile of 0.25 means the 25th percentile (the lower quarter), not a reliability score of 0.25. "
                 "This can lower a cutoff in a cloudy season, but never raises it above the entered value."),
@@ -534,9 +534,9 @@ SUBGROUPS = {
                 ("Geometry complexity measures shape irregularity or elongation; higher means more complex. "
                 "Geometry risk is its percentile rank among all predicted parcels in this run (0-1). "
                 "A rank of 0.75 is around the 75th percentile; it is not a complexity score of 0.75."),
-                ("Absolute: compare only the complexity score with the medium and high complexity cutoffs. "
+                ("Absolute (default): compare only the complexity score with the medium and high complexity cutoffs. "
                 "Percentile rank cutoffs are ignored, so the same shape receives the same level across runs."),
-                ("Percentile (default): require BOTH the complexity cutoff and the percentile rank cutoff for "
+                ("Percentile: require BOTH the complexity cutoff and the percentile rank cutoff for "
                 "each level. This keeps simple shapes from being marked complex just because they rank highly "
                 "in a run of simple parcels. Unlike data reliability, this mode does not lower a score cutoff."),
                 ("Example: with medium rank 0.50 and medium complexity 0.60, a parcel with complexity 0.65 and "

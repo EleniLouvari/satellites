@@ -120,16 +120,12 @@ class ParcelStatisticsReducerMixin:
         Parcels outside the raster receive a 1x1 window with an all-false mask, so callers can read
         a valid (empty) selection without special cases.
         """
-        raw_window = from_bounds(*geometry.bounds, transform=transform)
-        column_start = max(0, math.floor(raw_window.col_off))
-        row_start = max(0, math.floor(raw_window.row_off))
-        column_stop = min(raster_width, math.ceil(raw_window.col_off + raw_window.width))
-        row_stop = min(raster_height, math.ceil(raw_window.row_off + raw_window.height))
-
-        if column_start >= column_stop or row_start >= row_stop:
+        bounds = self._parcel_window_bounds(raster_height, raster_width, geometry, transform)
+        if bounds is None:
             empty_window = Window(col_off=0, row_off=0, width=1, height=1)
             return slice(0, 1), slice(0, 1), np.zeros((1, 1), dtype=bool), window_transform(empty_window, transform)
 
+        row_start, row_stop, column_start, column_stop = bounds
         window = Window(col_off=column_start, row_off=row_start, width=column_stop - column_start, height=row_stop - row_start)
         parcel_transform = window_transform(window, transform)
         parcel_mask = geometry_mask(
@@ -140,3 +136,19 @@ class ParcelStatisticsReducerMixin:
             all_touched=True,
         )
         return slice(row_start, row_stop), slice(column_start, column_stop), parcel_mask, parcel_transform
+
+    @staticmethod
+    def _parcel_window_bounds(raster_height: int, raster_width: int, geometry, transform) -> tuple[int, int, int, int] | None:
+        """Return the clipped ``(row_start, row_stop, column_start, column_stop)`` pixel window of a geometry.
+
+        Returns ``None`` when the geometry's bounding box does not overlap the raster. Only the bounds are
+        used, so grouping parcels by window does not require rasterizing them.
+        """
+        raw_window = from_bounds(*geometry.bounds, transform=transform)
+        column_start = max(0, math.floor(raw_window.col_off))
+        row_start = max(0, math.floor(raw_window.row_off))
+        column_stop = min(raster_width, math.ceil(raw_window.col_off + raw_window.width))
+        row_stop = min(raster_height, math.ceil(raw_window.row_off + raw_window.height))
+        if column_start >= column_stop or row_start >= row_stop:
+            return None
+        return row_start, row_stop, column_start, column_stop

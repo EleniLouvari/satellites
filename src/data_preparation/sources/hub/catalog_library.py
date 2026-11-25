@@ -6,7 +6,6 @@ It handles token management, pagination, and support for both GET and POST metho
 """
 
 import json
-import logging
 import os
 import secrets
 import time
@@ -19,7 +18,10 @@ from urllib.parse import parse_qs, urljoin, urlparse
 import geopandas as gpd
 import requests
 import urllib3
+from pystac import STACError
 from pystac_client import Client
+from pystac_client.exceptions import APIError
+from shapely.errors import ShapelyError
 from shapely.geometry import shape
 from urllib3.exceptions import InsecureRequestWarning
 
@@ -40,7 +42,7 @@ _KEY_SAT_ORBIT_STATE = "sat:orbit_state"
 _KEY_VIEW_AZIMUTH = "view:azimuth"
 _KEY_VIEW_INCIDENCE_ANGLE = "view:incidence_angle"
 APPLICATION_JSON = "application/json"
-EPSG_4326 = "EPSG:4326"
+EPSG_4326 = "EPSG:4326"  # WGS 84 geographic coordinate system
 
 warnings.filterwarnings("ignore", category=UserWarning, message=".*CPLE_NotSupported.*")
 urllib3.disable_warnings(InsecureRequestWarning)
@@ -153,7 +155,7 @@ def _request_with_retries(
 
         return resp
 
-    raise RuntimeError("Error: Unexpected retry loop exit in _request_with_retries")
+    raise RuntimeError("Unexpected retry loop exit in _request_with_retries")
 
 
 # -----------------------------------------------------------------------
@@ -175,7 +177,7 @@ def _require_secret(client_id: str) -> str:
     """
     secret = USERS.get(client_id)
     if not secret:
-        raise ValueError(f"Error: Missing client secret for '{client_id}'. Ensure env var is set (e.g., ADMIN, AGRICULTURE, etc.).")
+        raise ValueError(f"Missing client secret for '{client_id}'. Ensure env var is set (e.g., ADMIN, AGRICULTURE, etc.).")
     return secret
 
 
@@ -203,7 +205,7 @@ def fetch_keycloak_token(
     """
     keycloack_url = os.getenv("KEYCLOAK_URL")
     if not keycloack_url:
-        raise ValueError("Error: KEYCLOAK_URL environment variable not set")
+        raise ValueError("KEYCLOAK_URL environment variable not set")
     url = f"{keycloack_url.rstrip('/')}/protocol/openid-connect/token"
 
     data = {
@@ -217,9 +219,9 @@ def fetch_keycloak_token(
         token_data = response.json()
         access_token = token_data.get("access_token")
         if not isinstance(access_token, str) or not access_token:
-            raise ValueError("Error: No access_token in Keycloak response")
+            raise ValueError("No access_token in Keycloak response")
         return access_token
-    raise ValueError(f"Error: Token request failed: {response.status_code} {response.text}")
+    raise ValueError(f"Token request failed: {response.status_code} {response.text}")
 
 
 def get_token(client_id: str, timeout: float = CATALOG_REQUEST_TIMEOUT_SECONDS) -> str:
@@ -239,7 +241,7 @@ def get_token(client_id: str, timeout: float = CATALOG_REQUEST_TIMEOUT_SECONDS) 
 
     """
     if client_id not in USERS:
-        raise ValueError(f"Error: Not valid client_id: {client_id}; must be one of {list(USERS.keys())}")
+        raise ValueError(f"Not valid client_id: {client_id}; must be one of {list(USERS.keys())}")
     client_secret = _require_secret(client_id)
     return fetch_keycloak_token(client_id, client_secret, timeout=timeout)
 
@@ -265,8 +267,7 @@ def get_auth_session(client_id: str, verbose=True) -> requests.Session:
             session = requests.Session()
             session.headers.update({"Authorization": f"Bearer {token}"})
             return session
-        except Exception as e:
-            logging.getLogger(__name__).debug("Error: get_auth_session failed; using its fallback.", exc_info=True)
+        except (requests.RequestException, ValueError) as e:
             last_exception = e
             msg = (
                 f"Failed to acquire OAuth2 token for client_id={client_id!r} "
@@ -278,7 +279,7 @@ def get_auth_session(client_id: str, verbose=True) -> requests.Session:
                 time.sleep(RETRY_BASE_SLEEP_SECONDS * attempt)
 
     raise RuntimeError(
-        f"Error: Failed to acquire OAuth2 token for client_id={client_id!r} after {MAX_CATALOG_CONNECTION_RETRIES} attempts"
+        f"Failed to acquire OAuth2 token for client_id={client_id!r} after {MAX_CATALOG_CONNECTION_RETRIES} attempts"
     ) from last_exception
 
 
@@ -398,7 +399,7 @@ def item_id_exists_incatalog(
         resp = make_request("GET", url, client_id=client_id, timeout=timeout, verify=verify_ssl)
     except requests.exceptions.RequestException as exc:
         raise RuntimeError(
-            f"Error: Catalog connectivity error while checking item existence: collection={collection_id}, item={item_id}: {exc}"
+            f"Catalog connectivity error while checking item existence: collection={collection_id}, item={item_id}: {exc}"
         ) from exc
 
     if resp.status_code == 200:
@@ -406,7 +407,7 @@ def item_id_exists_incatalog(
     if resp.status_code == 404:
         return False
     # Anything else is unexpected → debug it
-    raise RuntimeError(f"Error: Unexpected response checking item existence: {resp.status_code} - {resp.text[:500]}")
+    raise RuntimeError(f"Unexpected response checking item existence: {resp.status_code} - {resp.text[:500]}")
 
 
 # -----------------------------------------------------------------------
@@ -435,7 +436,7 @@ def create_stac_client_catalog(client_id: str | None = None, catalog_url: str | 
     if not catalog_url:
         catalog_url = os.getenv("CATALOG_URL")
     if not catalog_url:
-        raise ValueError("Error: CATALOG_URL is not configured")
+        raise ValueError("CATALOG_URL is not configured")
     catalog_url = catalog_url.rstrip("/")
     if verbose:
         print(f"Connecting to catalog: {catalog_url}")
@@ -448,8 +449,7 @@ def create_stac_client_catalog(client_id: str | None = None, catalog_url: str | 
             session = get_auth_session(client_id, verbose=verbose)
             headers: dict[str, str] = {k: str(v) for k, v in session.headers.items()}
             return Client.open(catalog_url, headers=headers)
-        except Exception as e:
-            logging.getLogger(__name__).debug("Error: create_stac_client_catalog failed; using its fallback.", exc_info=True)
+        except (requests.RequestException, APIError, STACError, RuntimeError, ValueError) as e:
             last_exception = e
             if verbose:
                 print(f"Failed to connect to catalog (attempt {attempt}/{MAX_CATALOG_CONNECTION_RETRIES}): {e}")
@@ -582,15 +582,15 @@ class CatalogSearchUtils:
 
         """
         if session is None:
-            raise RuntimeError("Error: Authenticated session is None.")
+            raise RuntimeError("Authenticated session is None.")
 
         method_u = method.upper()
         if method_u not in {"GET", "POST"}:
-            raise ValueError(f"Error: Unsupported HTTP method: {method}")
+            raise ValueError(f"Unsupported HTTP method: {method}")
         if max_attempts is None:
             max_attempts = MAX_CATALOG_REQUEST_RETRIES
         if max_attempts < 1:
-            raise ValueError("Error: max_attempts must be at least 1")
+            raise ValueError("max_attempts must be at least 1")
 
         def _request_once_with_401_refresh() -> requests.Response:
             nonlocal session
@@ -689,7 +689,7 @@ class CatalogSearchUtils:
 
         """
         if not isinstance(value, (list, tuple)) or len(value) != 4:
-            raise ValueError(f"Error: GET bbox must be a 4-length list/tuple; got: {value!r}")
+            raise ValueError(f"GET bbox must be a 4-length list/tuple; got: {value!r}")
         return ",".join(str(float(x)) for x in value)
 
     def _encode_intersects_param(self, value: Any) -> str:
@@ -715,7 +715,7 @@ class CatalogSearchUtils:
             return value
         if isinstance(value, dict):
             return json.dumps(value, separators=(",", ":"))
-        raise ValueError(f"Error: GET intersects must be a dict GeoJSON geometry or JSON string; got: {type(value)}")
+        raise ValueError(f"GET intersects must be a dict GeoJSON geometry or JSON string; got: {type(value)}")
 
     def _encode_get_search_params(self, body: dict[str, Any]) -> dict[str, str]:
         """Encode a search body dictionary into GET query parameters.
@@ -887,7 +887,10 @@ class CatalogSearchUtils:
         unsupported_props = extracted_props - self._GET_SEARCH_ALLOWED
         if unsupported_props:
             raise ValueError(
-                f"Error: GET /search does not support CQL2 filter properties: {sorted(unsupported_props)}. Supported properties for GET are: {sorted(self._GET_SEARCH_ALLOWED)}. Use method='POST' if you need complex filters with properties like 'parentidentifier', 'identifier', 'title', etc."
+                f"GET /search does not support CQL2 filter properties: {sorted(unsupported_props)}. "
+                f"Supported properties for GET are: {sorted(self._GET_SEARCH_ALLOWED)}. "
+                f"Use method='POST' if you need complex filters with properties like "
+                f"'parentidentifier', 'identifier', 'title', etc."
             )
 
     def _has_filter_expression(self, body: dict[str, Any]) -> bool:
@@ -1172,7 +1175,7 @@ class CatalogSearchUtils:
             return self._make_request(session, "POST", url, json=body, timeout=timeout, max_attempts=page_retry_attempts)
         # For GET: extract pagination params from the next URL
         if base_params is None:
-            raise RuntimeError("Error: base_params not initialized for GET pagination.")
+            raise RuntimeError("base_params not initialized for GET pagination.")
         paging = self._extract_paging_params_from_href(url)
         params = dict(base_params)
         params.update(paging)
@@ -1195,7 +1198,7 @@ class CatalogSearchUtils:
         """
         method_u = method.upper()
         if method_u not in {"POST", "GET"}:
-            raise ValueError(f"Error: method must be 'POST' or 'GET'; got: {method!r}")
+            raise ValueError(f"method must be 'POST' or 'GET'; got: {method!r}")
 
         if method_u == "POST":
             return "POST"
@@ -1203,7 +1206,8 @@ class CatalogSearchUtils:
         forbidden = {"filter", "filter-lang", "op", "args"} & set(body.keys())
         if forbidden:
             raise ValueError(
-                f"Error: GET /search is restricted to simple query parameters and does not support CQL2 filters (found keys: {sorted(forbidden)}). Use method='POST'."
+                "GET /search is restricted to simple query parameters and does not support CQL2 filters "
+                f"(found keys: {sorted(forbidden)}). Use method='POST'."
             )
         return "GET"
 
@@ -1255,7 +1259,7 @@ class CatalogSearchUtils:
         if page_retry_attempts is None:
             page_retry_attempts = MAX_CATALOG_REQUEST_RETRIES
         if page_retry_attempts < 1:
-            raise ValueError("Error: page_retry_attempts must be at least 1")
+            raise ValueError("page_retry_attempts must be at least 1")
 
         session = self._get_authenticated_session()
         base_url = self.base_url.rstrip("/")
@@ -1502,10 +1506,7 @@ class CatalogSearchUtils:
                 try:
                     count = self.get_collection_item_count(col_id)
                     collection_counts[col_id] = count
-                except Exception as e:
-                    logging.getLogger(__name__).debug(
-                        "Error: get_all_collection_item_counts failed; using its fallback.", exc_info=True
-                    )
+                except (requests.RequestException, RuntimeError, ValueError) as e:
                     # Handle errors gracefully
                     print(f"Warning: Failed to get item count for collection {col_id}: {e}")
                     collection_counts[col_id] = 0
@@ -1627,8 +1628,7 @@ class CatalogSearchUtils:
             return None
         try:
             return shape(geom_dict)
-        except Exception as e:
-            logging.getLogger(__name__).debug("Error: _parse_feature_geometry failed; using its fallback.", exc_info=True)
+        except (ShapelyError, AttributeError, KeyError, TypeError, ValueError) as e:
             if self.verbose:
                 print(f"Warning: Failed to parse geometry: {e}")
             return None

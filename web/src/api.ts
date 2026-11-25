@@ -14,6 +14,7 @@ export type Account = {
   label: string;
   test_status: string;
   tested_at?: string;
+  has_sen_instance: boolean;
 };
 export type Layer = {
   name: string | null;
@@ -42,6 +43,8 @@ export type Run = {
   parcel_id_field: string;
   partition_field: string | null;
   processing: Record<string, unknown>;
+  /** Imagery provider; records created before HUB support are openEO. */
+  source?: "openeo" | "hub";
   account_ids: number[];
   status: string;
   revision: number;
@@ -56,8 +59,13 @@ export type Run = {
   duration_seconds?: number | null;
   progress?: ProgressState;
   error?: string;
+  /** EDA analyses and ML scenarios made from this run (list endpoint only). */
+  eda_count?: number;
+  ml_count?: number;
 };
 export type Schema = {
+  /** Imagery source this processing schema describes (parcel statistics only). */
+  source?: string;
   defaults: Record<string, unknown>;
   groups?: {
     id: string;

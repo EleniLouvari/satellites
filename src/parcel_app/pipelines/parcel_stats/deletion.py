@@ -129,7 +129,7 @@ def prepare_run(run_id, user_id, conn):
         try:
             summary = run.get("summary") or {}
             expected = summary if run["status"] == "complete" and names else {}
-            jobs = collect_jobs(
+            jobs = [] if run.get("source", "openeo") == "hub" else collect_jobs(
                 output,
                 names,
                 expected_batches=expected.get("batch_count", 0),

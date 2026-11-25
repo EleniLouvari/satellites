@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import geopandas as gpd
 import pandas as pd
 import pytest
+import requests
 from openeo.extra.job_management import create_job_db, get_job_db
 from shapely.geometry import box
 
@@ -174,8 +175,8 @@ def test_batch_runner_restores_or_retries_without_losing_ownership(tmp_path, mon
     created, retrieved, limits = [], [], []
 
     def job(job_id):
-        return SimpleNamespace(job_id=job_id, get_results=lambda: SimpleNamespace(
-            download_file=lambda target: Path(target).write_bytes(b"offline-cube"),
+        return SimpleNamespace(job_id=job_id, connection=connection, get_results=lambda: SimpleNamespace(
+            get_asset=lambda: SimpleNamespace(href="https://example.test/cube.nc"),
         ))
 
     def create_job(**kwargs):
@@ -199,7 +200,11 @@ def test_batch_runner_restores_or_retries_without_losing_ownership(tmp_path, mon
             job_db.persist(pending)
             self.on_job_done(remote, pending.iloc[0])
 
-    connection = SimpleNamespace(job=get_job)
+    response = requests.Response()
+    response.status_code = 200
+    response._content = b"offline-cube"
+    response._content_consumed = True
+    connection = SimpleNamespace(job=get_job, get=lambda *_args, **_kwargs: response, session=requests.Session())
     monkeypatch.setattr(scheduler, "_NetCDFTileJobManager", Manager)
     monkeypatch.setattr(extractor, "_build_tile_cube", lambda *a: SimpleNamespace(create_job=create_job))
     scheduler._run_batch(task, "owner", connection)

@@ -66,7 +66,10 @@ Overview leads with **New analysis**, a short recent-runs list, and useful count
 active runs, completed runs, and available Copernicus accounts. Empty states guide
 new users rather than showing invented metrics. My runs offers name/status/date
 filters and a table with run name, parcel count, period, stage, created date, and
-an Open action. Failed and interrupted runs show a clear next action.
+an Open action. Failed and interrupted runs show a clear next action. Both run
+lists expand into a tree of each run's EDA analyses and their ML scenarios, so any
+analysis or scenario opens in one click; the top bar shows a clickable path back
+through those levels.
 
 ### New run: 1. Parcels
 

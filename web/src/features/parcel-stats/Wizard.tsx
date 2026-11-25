@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   api,
   bytes,
@@ -10,6 +10,17 @@ import {
 import { Button, Heading, Notice, Status } from "../../components/ui";
 import ParcelMap from "../../components/ParcelMap";
 import ConfigForm from "../../components/ConfigForm";
+import SourceStep from "./SourceStep";
+import {
+  accountsForSource,
+  normalizeSource,
+  processingForSource,
+  schedulingForSource,
+  schemaMatches,
+  sourceLabel,
+  sourceReady,
+  type Source,
+} from "./sourceControls";
 export default function Wizard({
   initial,
   onOpen,
@@ -26,6 +37,8 @@ export default function Wizard({
     [idField, setIdField] = useState(initial?.parcel_id_field ?? ""),
     [partition, setPartition] = useState(initial?.partition_field ?? ""),
     [selected, setSelected] = useState<number[]>(initial?.account_ids ?? []),
+    [source, setSource] = useState<Source>(normalizeSource(initial?.source)),
+    [hubConfigured, setHubConfigured] = useState<boolean>(),
     [name, setName] = useState(initial?.name ?? ""),
     [scheduling, setScheduling] = useState(initial?.scheduling ?? "batches"),
     [processing, setProcessing] = useState<Record<string, unknown>>(
@@ -41,26 +54,47 @@ export default function Wizard({
     layer =
       layers.find((l) => l.name === layerName) ??
       (layers.length === 1 ? layers[0] : undefined);
+  // Settings are adapted only after the user switches source, never for a loaded draft.
+  const adaptOnLoad = useRef(false);
   useEffect(() => {
     let live = true;
-    Promise.all([
-      api<Upload[]>("/uploads"),
-      api<Account[]>("/accounts"),
-      api<Schema>("/config"),
-    ])
-      .then(([u, a, s]) => {
+    Promise.all([api<Upload[]>("/uploads"), api<Account[]>("/accounts")])
+      .then(([u, a]) => {
         if (live) {
           setUploads(u);
           setAccounts(a);
-          setSchema(s);
-          if (!initial) setProcessing(s.defaults);
         }
       })
-      .catch((e) => setError(e.message));
+      .catch((e) => live && setError(e.message));
+    api<{ configured: boolean }>("/sources/hub/status")
+      .then((status) => live && setHubConfigured(status.configured))
+      .catch(() => live && setHubConfigured(false));
     return () => {
       live = false;
     };
   }, []);
+  useEffect(() => {
+    let live = true;
+    api<Schema>(`/config?source=${source}`)
+      .then((s) => {
+        if (!live) return;
+        setSchema(s);
+        if (adaptOnLoad.current) setProcessing((current) => processingForSource(current, s));
+        else if (!initial) setProcessing(s.defaults);
+        adaptOnLoad.current = false;
+      })
+      .catch((e) => live && setError(e.message));
+    return () => {
+      live = false;
+    };
+  }, [source]);
+  function chooseSource(next: Source) {
+    if (next === source) return;
+    adaptOnLoad.current = true;
+    // Drop the previous source's schema so nothing can be saved against it while the new one loads.
+    setSchema(undefined);
+    changed(() => setSource(next));
+  }
   useEffect(() => {
     if (!uploadId) return;
     let live = true;
@@ -142,8 +176,9 @@ export default function Wizard({
       parcel_id_field: idField,
       partition_field: partition || null,
       processing,
-      scheduling,
-      account_ids: selected,
+      source,
+      scheduling: schedulingForSource(source, scheduling),
+      account_ids: accountsForSource(source, selected),
     };
     const saved = await api<Run>(
       draft ? `/runs/${draft.run_id}` : "/runs",
@@ -154,13 +189,10 @@ export default function Wizard({
     setDirty(false);
     return saved;
   }
+  const imageryReady = sourceReady(source, selected, hubConfigured === true);
+  const schemaReady = schemaMatches(schema, source);
   const canSave =
-    configValid &&
-    !!name.trim() &&
-    !!uploadId &&
-    !!idField &&
-    selected.length > 0 &&
-    !!layer;
+    schemaReady && configValid && !!name.trim() && !!uploadId && !!idField && imageryReady && !!layer;
   return (
     <>
       <Heading
@@ -180,7 +212,7 @@ export default function Wizard({
       </Heading>
       <Notice message={error} />
       <div className="steps" aria-label="Run setup steps">
-        {["Parcels", "Accounts", "Configuration", "Review"].map((s, i) => (
+        {["Parcels", "Imagery source", "Configuration", "Review"].map((s, i) => (
           <button
             key={s}
             aria-current={step === i ? "step" : undefined}
@@ -323,44 +355,14 @@ export default function Wizard({
             </>
           )}
           {step === 1 && (
-            <>
-              <span className="eyebrow">02 · Connect to the imagery</span>
-              <h2>Choose Copernicus accounts</h2>
-              <p className="muted">
-                Selection order is preserved when your analysis is submitted.
-              </p>
-              {!accounts.length && (
-                <p className="note">
-                  Add an account from Copernicus accounts, then return to this
-                  draft.
-                </p>
-              )}
-              {accounts.map((a) => (
-                <label className="account" key={a.eo_user_id}>
-                  <input
-                    type="checkbox"
-                    checked={selected.includes(a.eo_user_id)}
-                    onChange={(e) =>
-                      changed(() =>
-                        setSelected(
-                          e.target.checked
-                            ? [...selected, a.eo_user_id]
-                            : selected.filter((id) => id !== a.eo_user_id),
-                        ),
-                      )
-                    }
-                  />
-                  <span className="grow">
-                    {a.label || a.username}
-                    <small>{a.username}</small>
-                  </span>
-                  <Status value={a.test_status} />
-                  {selected.includes(a.eo_user_id) && (
-                    <small>#{selected.indexOf(a.eo_user_id) + 1}</small>
-                  )}
-                </label>
-              ))}
-            </>
+            <SourceStep
+              source={source}
+              onSource={chooseSource}
+              accounts={accounts}
+              selected={selected}
+              onSelected={(ids) => changed(() => setSelected(ids))}
+              hubConfigured={hubConfigured}
+            />
           )}
           {step === 2 && (
             <>
@@ -376,21 +378,23 @@ export default function Wizard({
                   onChange={(e) => changed(() => setName(e.target.value))}
                 />
               </label>
-              <label className="sectiongap">
-                Scheduling
-                <select
-                  value={scheduling}
-                  onChange={(e) => changed(() => setScheduling(e.target.value))}
-                >
-                  <option value="batches">
-                    Distribute tile batches across accounts
-                  </option>
-                  <option value="partitions">
-                    Assign whole partitions to accounts
-                  </option>
-                </select>
-              </label>
-              {schema ? (
+              {source === "openeo" && (
+                <label className="sectiongap">
+                  Scheduling
+                  <select
+                    value={scheduling}
+                    onChange={(e) => changed(() => setScheduling(e.target.value))}
+                  >
+                    <option value="batches">
+                      Distribute tile batches across accounts
+                    </option>
+                    <option value="partitions">
+                      Assign whole partitions to accounts
+                    </option>
+                  </select>
+                </label>
+              )}
+              {schema && schemaReady ? (
                 <ConfigForm
                   onValidityChange={setConfigValid}
                   schema={schema}
@@ -423,17 +427,23 @@ export default function Wizard({
                 <strong>{partition || "None"}</strong>
               </div>
               <div className="kv">
-                <span>Accounts</span>
-                <strong>
-                  {selected
-                    .map(
-                      (id) =>
-                        accounts.find((a) => a.eo_user_id === id)?.label ||
-                        accounts.find((a) => a.eo_user_id === id)?.username,
-                    )
-                    .join(", ") || "None selected"}
-                </strong>
+                <span>Imagery source</span>
+                <strong>{sourceLabel(source)}</strong>
               </div>
+              {source === "openeo" && (
+                <div className="kv">
+                  <span>Accounts</span>
+                  <strong>
+                    {selected
+                      .map(
+                        (id) =>
+                          accounts.find((a) => a.eo_user_id === id)?.label ||
+                          accounts.find((a) => a.eo_user_id === id)?.username,
+                      )
+                      .join(", ") || "None selected"}
+                  </strong>
+                </div>
+              )}
               {draft && (
                 <>
                   <Status value={dirty ? "unsaved_changes" : draft.status} />
@@ -510,8 +520,8 @@ export default function Wizard({
                   step === 0
                     ? !layer || !idField
                     : step === 1
-                      ? !selected.length
-                      : !name.trim() || !configValid
+                      ? !imageryReady
+                      : !name.trim() || !configValid || !schemaReady
                 }
                 onClick={() => setStep(step + 1)}
               >
@@ -542,9 +552,15 @@ export default function Wizard({
           )}
           <hr />
           <div className="kv">
-            <span>Accounts</span>
-            <strong>{selected.length} selected</strong>
+            <span>Imagery</span>
+            <strong>{sourceLabel(source)}</strong>
           </div>
+          {source === "openeo" && (
+            <div className="kv">
+              <span>Accounts</span>
+              <strong>{selected.length} selected</strong>
+            </div>
+          )}
           <div className="kv">
             <span>Output</span>
             <strong>GeoParquet</strong>

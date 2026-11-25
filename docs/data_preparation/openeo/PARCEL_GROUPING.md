@@ -1,21 +1,26 @@
 # Grouping parcels with spatial buffers or tiles
 
 Parcels can be grouped by proximity using `spatial_clustering_using_buffer`, or
-by their position in a regular grid. Both approaches keep the original parcel
+by their position in a regular grid using `spatial_clustering_using_grid` or
+`split_geodataframe_by_grid`. Both approaches keep the original parcel
 geometries whole. They differ in what determines membership and how the raster
 extent for each openEO job is chosen.
 
 The Neuro `1_parcel_stats_openEO_fill.ipynb` currently uses buffer clusters as
-partitions, followed by fitted tile extents. The examples below show that approach
-and an alternative using grid partitions followed by regular tiles.
+partitions, followed by fitted tile extents. The Neuro `1_parcel_pre-check.ipynb`
+replaces those labels with grid-cell labels from `spatial_clustering_using_grid`
+before the same partitioning step. The examples below show the buffer approach
+and an alternative using grid partitions followed by regular tiles. Grid labels
+can also be combined with fitted extents.
 
 ## Partitions and remote jobs
 
 There are two spatial grouping levels in the multi-user workflow:
 
 1. **Partitions:** `spatial_parts`, a list of GeoDataFrames passed to
-   `run_parallel_extractions`. Create these from cluster labels or with
-   `split_geodataframe_by_grid`. Each partition has its own output directory.
+   `run_parallel_extractions`. Create these by grouping buffer or grid cluster
+   labels, or directly with `split_geodataframe_by_grid`. Each partition has its
+   own output directory.
 2. **Remote batches:** the job manager plans one or more raster extents within
    each partition. `fit_tiles_to_parcels=True` fits extents to parcel bounds;
    `False` uses regular core tiles.
@@ -168,6 +173,50 @@ spatial_parts = split_geodataframe_by_grid(
 )
 # Alternatively: split_geodataframe_by_grid(parcels, rows=2, cols=3)
 ```
+
+#### Grid cells as cluster labels
+
+`shared.spatial_statistics.spatial_clustering_using_grid` applies the same
+centroid rule but returns a labelled copy of the input instead of a list, like
+`spatial_clustering_using_buffer`. Use it when the workflow expects a cluster
+column, for example to save the labels with the parcels or to reuse the
+`groupby` partitioning code shown for buffer clusters.
+
+- It requires explicit `rows` and `cols`; it does not accept `partition_count`.
+- The label column contains integers `0..n-1`, one per **non-empty** cell,
+  numbered row by row starting at the south-west cell. Empty cells leave no gaps,
+  so the labels match the order of the parts returned by
+  `split_geodataframe_by_grid` with the same grid.
+- An existing column named `field_cluster` is overwritten. The original index
+  and geometries are kept.
+- It raises an error for null or empty geometries and for non-integer or
+  non-positive `rows`/`cols`. When all centroids share one x or y coordinate,
+  every parcel is placed in the first cell along that axis.
+- Like the buffer function, it displays a per-cluster summary and plots
+  centroids unless `plot_results=False`.
+
+```python
+from shared.spatial_statistics import spatial_clustering_using_grid
+
+CLUSTER_FIELD = "cluster"
+gdf_grouped = spatial_clustering_using_grid(
+    parcels,
+    field_id=parcel_id_column,
+    rows=10,
+    cols=10,
+    field_cluster=CLUSTER_FIELD,
+    plot_results=False,
+)
+spatial_parts = [
+    part.copy()
+    for _, part in gdf_grouped.groupby(CLUSTER_FIELD, sort=True, observed=True)
+]
+```
+
+Because the labels are integers, `groupby(sort=True)` keeps the numeric cell
+order. A 10 × 10 grid can produce up to 100 partitions; with shared batch
+scheduling this is allowed, but each partition gets its own output directory
+and its own tile plan.
 
 ### Regular remote tiles
 
@@ -334,6 +383,25 @@ The third cell is empty, so four requested cells produce three partitions. In
 this particular layout, those memberships happen to match the 500 m clusters;
 the grouping rules are still different.
 
+The same four-column grid as labels:
+
+```python
+from shared.spatial_statistics import spatial_clustering_using_grid
+
+demo_grid_labels = spatial_clustering_using_grid(
+    demo_parcels, field_id="parcel_id", rows=1, cols=4, plot_results=False
+)
+print(demo_grid_labels.groupby("cluster")["parcel_id"].agg(list).to_dict())
+```
+
+Expected membership, in addition to the function's own summary:
+
+```text
+{0: ['A', 'B', 'C'], 1: ['D', 'E'], 2: ['F']}
+```
+
+The empty third cell receives no label, so F is labelled `2`.
+
 ### Example 4: Turn the clusters into fitted remote jobs
 
 Use the three clusters from Example 2 as partitions. For these 200 m squares,
@@ -449,7 +517,9 @@ counts alone cannot detect one omitted parcel plus one duplicate.
 Keep saved cluster labels, partition membership/order, account ownership and
 planning settings stable when resuming. Cluster labels are based on area ranking,
 and `groupby(sort=True)` orders their strings rather than their numeric suffixes;
-recomputing clusters can change both labels and partition numbering. Fitted and
+recomputing clusters can change both labels and partition numbering. Grid labels
+depend on the total bounds of the input, so adding or removing parcels near the
+edge of the study area can move cell boundaries and change memberships. Fitted and
 regular tiles use different cache signatures. Use a new run/output directory
 when deliberately changing the grouping strategy instead of reusing old
 partition outputs as though their membership were unchanged.
@@ -460,7 +530,8 @@ steps.
 
 ## Implementation references
 
-- [Buffer clustering](../../../src/shared/spatial_statistics/clustering.py): `spatial_clustering_using_buffer`.
+- [Buffer and grid clustering](../../../src/shared/spatial_statistics/clustering.py):
+  `spatial_clustering_using_buffer` and `spatial_clustering_using_grid`.
 - [Outer grid partitioning](../../../src/data_preparation/parcel_stats/multiuser.py):
   `split_geodataframe_by_grid`.
 - [Remote tile planning](../../../src/data_preparation/parcel_stats/job_manager.py):

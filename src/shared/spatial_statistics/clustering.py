@@ -1,7 +1,8 @@
-"""Buffer-based geometric clustering in the input coordinate system."""
+"""Buffer- and grid-based geometric clustering in the input coordinate system."""
 
 import geopandas as gpd
 import matplotlib.pyplot as plt
+import numpy as np
 from IPython.display import display
 
 import shared.geometry as geom_l
@@ -100,6 +101,86 @@ def spatial_clustering_using_buffer(gdf, field_id, min_cluster_distance_in_m, si
         gdf_centroids["geometry"] = gdf_centroids["geometry"].centroid
         gdf_centroids.plot(column=field_cluster, cmap="tab20c", legend=show_legend, ax=ax, markersize=5)
         ax.set_title("Spatial Clustering Results (Centroids)")
+        plt.show()
+
+    return gdf
+
+
+def _grid_axis_index(values, origin, cell_size, count):
+    """Return clamped grid indices along one axis; a zero-width extent maps to index 0."""
+    if count == 1 or cell_size <= 0:
+        return np.zeros(len(values), dtype=int)
+    return np.clip(np.floor((values - origin) / cell_size).astype(int), 0, count - 1)
+
+
+def spatial_clustering_using_grid(gdf, field_id, rows, cols, field_cluster="cluster", plot_results=True, figsize=(15, 15)):
+    """Assign each feature to a regular grid cell over the data extent.
+
+    The grid spans ``gdf.total_bounds`` with ``rows`` x ``cols`` equal cells. Each
+    feature belongs to exactly one cell, chosen by its centroid, so features that
+    cross cell boundaries are not duplicated. This matches the assignment used by
+    ``data_preparation.parcel_stats.multiuser.split_geodataframe_by_grid``.
+
+    Parameters
+    ----------
+    gdf : geopandas.GeoDataFrame
+        The input GeoDataFrame containing spatial data. Use a projected CRS so
+        centroids and cell sizes are meaningful.
+    field_id : str
+        The column name with unique identifiers.
+    rows, cols : int
+        The number of grid rows (south to north) and columns (west to east).
+    field_cluster : str, optional
+        The column name for cluster assignments. Defaults to 'cluster'. An
+        existing column with this name is overwritten.
+    plot_results : bool, optional
+        Whether to plot the clustering results. Defaults to True.
+    figsize : tuple, optional
+        The figure size as (width, height). Defaults to (15, 15).
+
+    Returns
+    -------
+    geopandas.GeoDataFrame
+        A copy of the input with integer cluster labels ``0..n-1``. Only non-empty
+        cells receive a label, numbered row by row from the south-west cell.
+
+    """
+    if "geometry" not in gdf.columns:
+        raise ValueError("Error: geometry column is not included in the dataframe")
+    if field_id not in gdf.columns:
+        raise ValueError(f"Error: {field_id} column is not included in the dataframe")
+    if gdf.empty:
+        raise ValueError("Error: gdf must contain at least one feature.")
+    for name, value in (("rows", rows), ("cols", cols)):
+        if isinstance(value, bool) or not isinstance(value, (int, np.integer)) or value < 1:
+            raise ValueError(f"Error: {name} must be a positive integer.")
+    if (gdf.geometry.isna() | gdf.geometry.is_empty).any():
+        raise ValueError("Error: All geometries must be non-empty before grid clustering.")
+
+    gdf = gdf.copy()
+    minx, miny, maxx, maxy = gdf.total_bounds
+    cell_width = (maxx - minx) / cols
+    cell_height = (maxy - miny) / rows
+    print(f"Spatial grid: {rows}x{cols} cells of {cell_width:.0f} x {cell_height:.0f} data units")
+
+    centroids = gdf.geometry.centroid
+    col_idx = _grid_axis_index(centroids.x.to_numpy(), minx, cell_width, cols)
+    row_idx = _grid_axis_index(centroids.y.to_numpy(), miny, cell_height, rows)
+    # Renumber occupied cells consecutively in row-major order so empty cells leave no gaps.
+    _cells, labels = np.unique(row_idx * cols + col_idx, return_inverse=True)
+    gdf[field_cluster] = labels.astype(int)
+
+    gdf_cluster_group = gdf.groupby(field_cluster, as_index=False).agg({field_id: list})
+    gdf_cluster_group["total"] = gdf_cluster_group[field_id].apply(len)
+    display(gdf_cluster_group)
+
+    if plot_results:
+        _fig, ax = plt.subplots(nrows=1, ncols=1, figsize=figsize)
+        show_legend = len(gdf_cluster_group) <= 10
+        gdf_centroids = gdf.copy()
+        gdf_centroids["geometry"] = centroids
+        gdf_centroids.plot(column=field_cluster, cmap="tab20c", categorical=True, legend=show_legend, ax=ax, markersize=5)
+        ax.set_title("Grid Clustering Results (Centroids)")
         plt.show()
 
     return gdf

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -13,8 +14,8 @@ import geopandas as gpd
 import pandas as pd
 
 from . import multiuser
-from .job_manager import OpenEOJobManagerZonalStats
-from .run_config import PreparedRun, engine_workspace, file_sha256, prepare_run
+from .core.base import ParcelStatsBase
+from .run_config import PreparedRun, engine_workspace, file_sha256, partition_extractor, prepare_run
 
 
 def _write_json(path: Path, value: dict) -> None:
@@ -92,7 +93,16 @@ def _extraction_config(prepared: PreparedRun) -> dict:
     )
 
 
-def _completed_partitions(prepared: PreparedRun, options: dict) -> dict[int, gpd.GeoDataFrame]:
+def _source_accounts(source, accounts):
+    """Require Copernicus credentials only for runs that use openEO."""
+    if source == "hub":
+        if accounts is not None and accounts != []:
+            raise ValueError("Error: HUB uses server credentials; Copernicus accounts must be empty.")
+        return []
+    return _accounts(accounts)
+
+
+def _completed_partitions(prepared: PreparedRun, options: dict, hub_snapshots=None) -> dict[int, gpd.GeoDataFrame]:
     """Require signed, complete partitions and exact expected parcel coverage."""
     output = Path(options["output_dir"])
     completed = {}
@@ -104,10 +114,14 @@ def _completed_partitions(prepared: PreparedRun, options: dict) -> dict[int, gpd
         marker = directory / "satellite_partition_completion.json"
         if not marker.is_file():
             raise ValueError(f"Error: Missing completion manifest for partition {index}.")
-        extractor = OpenEOJobManagerZonalStats(
-            parcels=parcels, **dict(options, output_dir=directory, run_identifier=f"{options['run_identifier']}_part{index}")
-        )
+        extractor = partition_extractor(prepared.config.get("source", "openeo"), parcels, options, index)
         try:
+            if prepared.config.get("source") == "hub":
+                digest = (hub_snapshots or {}).get(index)
+                if not digest:
+                    raise ValueError("Error: HUB publication requires the acquired inventory snapshot.")
+                # run() already refreshed this inventory; publication verifies that same snapshot.
+                extractor._hub_manifest_digest = digest
             result = extractor._load_completed_partition()
         except (ValueError, OSError, KeyError):
             raise ValueError(f"Error: Unreadable completed partition {index}.") from None
@@ -117,9 +131,9 @@ def _completed_partitions(prepared: PreparedRun, options: dict) -> dict[int, gpd
     return completed
 
 
-def _publish(prepared: PreparedRun, options: dict) -> dict:
+def _publish(prepared: PreparedRun, options: dict, hub_snapshots=None) -> dict:
     """Merge only verified partitions and atomically publish the final GeoParquet."""
-    completed = _completed_partitions(prepared, options)
+    completed = _completed_partitions(prepared, options, hub_snapshots)
     output = Path(options["output_dir"])
     # The existing merger retains all attributes; validation above prevents its
     # historical duplicate-dropping behavior from hiding missing parcel results.
@@ -142,6 +156,7 @@ def _publish(prepared: PreparedRun, options: dict) -> dict:
     temporary.replace(report_path)
     manifest = {
         "status": "complete",
+        "source": prepared.config.get("source", "openeo"),
         "parcel_count": len(merged),
         "partition_count": len(completed),
         "artifacts": {"time_statistics": str(destination), "cleaning_report": str(report_path)},
@@ -151,8 +166,55 @@ def _publish(prepared: PreparedRun, options: dict) -> dict:
     return manifest
 
 
+def _run_partitions(prepared, accounts, options):
+    """Dispatch acquisition while keeping locking, state and publication shared."""
+    if prepared.config.get("source") == "hub":
+        snapshots = {}
+        for index, parcels in enumerate(prepared.parts, 1):
+            extractor = partition_extractor("hub", parcels, options, index)
+            extractor.run()
+            snapshots[index] = extractor._hub_manifest_digest
+        return snapshots
+    else:
+        multiuser.run_parallel_extractions(prepared.parts, accounts, options, scheduling=prepared.config["scheduling"])
+
+
+def _failure_reason(exc: BaseException) -> str:
+    """Describe an exception with its causes, e.g. the endpoint error behind a retry wrapper.
+
+    Causes hidden with ``raise ... from None`` stay hidden.
+    """
+    parts, current = [], exc
+    while current is not None and len(parts) < 4:
+        parts.append(f"{type(current).__name__}: {current}")
+        current = current.__cause__ or (None if current.__suppress_context__ else current.__context__)
+    return " <- caused by ".join(parts)
+
+
+def _log_failure(output: Path, exc: BaseException) -> None:
+    """Record why a run failed in the run-level orchestration log and caller logging hooks.
+
+    The record uses the pipeline namespace, so Parcel Studio redacts it and
+    publishes it as a run event; the file is exported with its diagnostics.
+    """
+    logger = logging.getLogger(f"{ParcelStatsBase.LOGGER_NAMESPACE}.run")
+    try:
+        handler = logging.FileHandler(output / ParcelStatsBase.LOG_FILE_NAME, encoding="utf-8")
+    except OSError:
+        # An unwritable log must not replace the original error; logging hooks still receive it.
+        logger.error("Error: Run failed: %s", _failure_reason(exc))
+        return
+    handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s"))
+    logger.addHandler(handler)
+    try:
+        logger.error("Error: Run failed: %s", _failure_reason(exc))
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
+
+
 def _execute(prepared: PreparedRun, accounts: list[tuple[str, str]], state: dict, *, retry_exhausted_memory=False) -> dict:
-    """Persist status around execution without putting exception payloads or secrets on disk."""
+    """Persist status around execution; the failure reason is logged, never stored in ``run.json``."""
     output = Path(prepared.config["output_dir"])
     state.update(status="running", updated_at=datetime.now(UTC).isoformat())
     _write_json(output / "run.json", state)
@@ -160,13 +222,15 @@ def _execute(prepared: PreparedRun, accounts: list[tuple[str, str]], state: dict
         _write_json(output / "artifacts.json", {"status": "running"})
     try:
         options = _extraction_config(prepared)
-        if retry_exhausted_memory:
+        if retry_exhausted_memory and prepared.config.get("source", "openeo") == "openeo":
             options["retry_exhausted_memory"] = True
         with engine_workspace(output):
-            multiuser.run_parallel_extractions(prepared.parts, accounts, options, scheduling=prepared.config["scheduling"])
-            manifest = _publish(prepared, options)
+            snapshots = _run_partitions(prepared, accounts, options)
+            manifest = _publish(prepared, options, snapshots)
     except BaseException as exc:
         state.update(status="interrupted" if isinstance(exc, KeyboardInterrupt) else "failed", error_type=type(exc).__name__)
+        if isinstance(exc, Exception):
+            _log_failure(output, exc)
         raise
     else:
         state.update(status="complete")
@@ -178,7 +242,8 @@ def _execute(prepared: PreparedRun, accounts: list[tuple[str, str]], state: dict
 
 
 def run_parcel_stats(
-    config: dict, *, accounts: list[tuple[str, str]], base_dir: str | Path | None = None, app_user_id: int | None = None
+    config: dict, *, accounts: list[tuple[str, str]] | None = None, base_dir: str | Path | None = None,
+    app_user_id: int | None = None,
 ) -> dict:
     """Execute a new dictionary-configured run and return its completed artifact manifest.
 
@@ -186,7 +251,7 @@ def run_parcel_stats(
     not an authentication boundary. The optional app user ID records ownership
     for later resume checks. Existing nonempty output directories are rejected.
     """
-    accounts = _accounts(accounts)
+    accounts = _source_accounts(config.get("source", "openeo"), accounts)
     prepared = prepare_run(config, base_dir=base_dir)
     output = Path(prepared.config["output_dir"])
     with run_lock(output):
@@ -195,6 +260,7 @@ def run_parcel_stats(
         _write_json(output / "config.json", prepared.config)
         state = {
             "schema_version": 1,
+            "source": prepared.config.get("source", "openeo"),
             "input_sha256": prepared.input_sha256,
             "config_sha256": file_sha256(output / "config.json"),
             "accounts": [name for name, _ in accounts],
@@ -205,7 +271,7 @@ def run_parcel_stats(
 
 
 def resume_parcel_stats(
-    run_dir: str | Path, *, accounts: list[tuple[str, str]], app_user_id: int | None = None,
+    run_dir: str | Path, *, accounts: list[tuple[str, str]] | None = None, app_user_id: int | None = None,
     retry_exhausted_memory: bool = False,
 ) -> dict:
     """Resume a saved run with unchanged input/configuration and the same account identities."""
@@ -214,16 +280,16 @@ def resume_parcel_stats(
     output = Path(run_dir).resolve()
     if not (output / "run.json").is_file() or not (output / "config.json").is_file():
         raise ValueError("Error: run_dir must contain run.json and config.json from a CLI run.")
-    accounts = _accounts(accounts)
     with run_lock(output):
         state = json.loads((output / "run.json").read_text(encoding="utf-8"))
         if state.get("app_user_id") != app_user_id:
             raise ValueError("Error: The application user does not own this run.")
-        if state.get("accounts") != [name for name, _ in accounts]:
-            raise ValueError("Error: Resume requires the same account usernames and order; passwords may change.")
         if state.get("config_sha256") != file_sha256(output / "config.json"):
             raise ValueError("Error: Saved configuration changed; create a new run.")
         config = json.loads((output / "config.json").read_text(encoding="utf-8"))
+        accounts = _source_accounts(config.get("source", "openeo"), accounts)
+        if state.get("accounts") != [name for name, _ in accounts]:
+            raise ValueError("Error: Resume requires the same account usernames and order; passwords may change.")
         if Path(config["output_dir"]).resolve() != output:
             raise ValueError("Error: Run directories cannot be relocated; persisted remote jobs contain absolute paths.")
         prepared = prepare_run(config)

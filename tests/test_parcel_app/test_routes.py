@@ -22,6 +22,8 @@ def clients(monkeypatch, tmp_path):
     monkeypatch.setenv("PARCEL_COOKIE_SECURE", "false")
     monkeypatch.setenv("PARCEL_ALLOWED_ORIGIN", "http://testserver")
     monkeypatch.setenv("SATELLITES_CREDENTIAL_KEY", Fernet.generate_key().decode())
+    # A developer's .env may configure Sentinel Hub; tests must not reach it or depend on it.
+    monkeypatch.delenv("PARCEL_SENTINELHUB_INSTANCE_ID", raising=False)
     get_settings.cache_clear()
     cipher.cache_clear()
     result = []
@@ -138,7 +140,10 @@ def test_form_covers_runner_options_and_nullable_values():
     assert fields["working_epsg"]["type"] == "number"
     assert fields["working_epsg"]["nullable"]
     options = {**schema["defaults"], "start_date": "2024-01-01", "end_date": "2024-02-01"}
-    assert "working_epsg" not in check_processing(options)
+    # The default working CRS is EPSG:2100 (Greek Grid); a blank value selects the CRS automatically.
+    assert schema["defaults"]["working_epsg"] == 2100
+    assert check_processing(options)["working_epsg"] == 2100
+    assert "working_epsg" not in check_processing({**options, "working_epsg": None})
 
 
 def test_grouped_configuration_dependencies_and_defaults():
@@ -390,7 +395,7 @@ def test_openeo_parallel_jobs_form_and_server_limit():
     schema = configuration(user={})
     field = next(field for field in schema["fields"] if field["name"] == "openeo_parallel_jobs")
     assert field["choices"] == [1, 2]
-    assert field["default"] == 2
+    assert field["default"] == 1
     options = {"start_date": "2024-01-01", "end_date": "2024-01-31"}
     for slots in (1, 2):
         assert check_processing({**options, "openeo_parallel_jobs": slots})["openeo_parallel_jobs"] == slots

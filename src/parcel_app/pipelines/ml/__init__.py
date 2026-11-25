@@ -18,4 +18,4 @@ JOBS = (
         ),
     ),
 )
-ROUTERS = ("parcel_app.pipelines.ml.routes",)
+ROUTERS = ("parcel_app.pipelines.ml.routes", "parcel_app.pipelines.ml.inspection", "parcel_app.pipelines.ml.inspection_hub")

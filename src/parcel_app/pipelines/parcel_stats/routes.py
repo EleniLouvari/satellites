@@ -32,12 +32,13 @@ class RunDraft(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     name: str = Field(min_length=1, max_length=120)
+    source: Literal["openeo", "hub"] = "openeo"
     upload_id: UUID
     layer: str | None = Field(default=None, max_length=200)
     parcel_id_field: str = Field(min_length=1, max_length=200)
     partition_field: str | None = Field(default=None, max_length=200)
     processing: dict
-    account_ids: list[int] = Field(min_length=1, max_length=50)
+    account_ids: list[int] = Field(default_factory=list, max_length=50)
     scheduling: Literal["batches", "partitions"] = "batches"
 
 
@@ -77,6 +78,7 @@ def public_run(row: dict, *, scan: bool = True) -> dict:
     ``scan=False`` skips reading saved checkpoints for stopped runs, which list views poll often.
     """
     result = {k: v for k, v in row.items() if k not in {"output_dir", "app_user_id", "deletion_manifest"}}
+    result["source"] = row.get("source", "openeo")
     result["config"] = portable_config(result.get("config", {}))
     result["summary"] = dict(result.get("summary", {}))
     if "config" in result["summary"]:
@@ -117,6 +119,32 @@ def selected_accounts(ids, user_id, *, conn=None):
     return [mapping[i] for i in ids]
 
 
+def draft_accounts(draft, user_id, conn):
+    """Separate operator HUB access from user-owned Copernicus accounts."""
+    if draft.source == "hub":
+        from parcel_app.sources.hub.credentials import configuration_error
+
+        if error := configuration_error():
+            raise HTTPException(422, error)
+        if draft.account_ids:
+            raise HTTPException(422, "Error: HUB requires configured server access and empty account selection.")
+        draft.scheduling = "batches"
+    else:
+        if not draft.account_ids:
+            raise HTTPException(422, "Error: Select at least one Copernicus account.")
+        selected_accounts(draft.account_ids, user_id, conn=conn)
+
+
+def submitted_work(run, conn):
+    """Detect immutable submitted HUB work even though it has no account snapshots."""
+    if run.get("source", "openeo") == "hub":
+        return db.one(
+            "SELECT 1 FROM web_jobs WHERE target_id=%s AND kind IN ('run','resume') LIMIT 1",
+            (str(run["run_id"]),), conn=conn,
+        )
+    return db.one("SELECT 1 FROM run_accounts WHERE run_id=%s LIMIT 1", (str(run["run_id"]),), conn=conn)
+
+
 def validate_draft(draft: RunDraft, user_id, *, conn=None):
     """Check file metadata and resource selection before scheduling preflight."""
     upload = owned_upload(draft.upload_id, user_id, conn=conn, lock=True)
@@ -130,9 +158,9 @@ def validate_draft(draft: RunDraft, user_id, *, conn=None):
         draft.partition_field and draft.partition_field not in selected["columns"]
     ):
         raise HTTPException(422, "Error: Choose existing parcel and partition fields.")
-    selected_accounts(draft.account_ids, user_id, conn=conn)
+    draft_accounts(draft, user_id, conn)
     try:
-        draft.processing = check_processing(draft.processing)
+        draft.processing = check_processing(draft.processing, draft.source)
     except (ValueError, TypeError):
         raise HTTPException(422, "Error: Invalid processing settings or server worker limit exceeded.") from None
     if not draft.name.strip():
@@ -145,8 +173,8 @@ def insert_draft(draft, user_id, *, conn):
     run_id = str(uuid4())
     output = run_directory(user_id, run_id) / "output"
     return db.one(
-        "INSERT INTO analysis_runs(run_id,app_user_id,name,upload_id,layer,parcel_id_field,partition_field,processing,account_ids,output_dir,scheduling) "
-        "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",
+        "INSERT INTO analysis_runs(run_id,app_user_id,name,upload_id,layer,parcel_id_field,partition_field,processing,account_ids,output_dir,scheduling,source) "
+        "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",
         (
             run_id,
             user_id,
@@ -159,6 +187,7 @@ def insert_draft(draft, user_id, *, conn):
             Json(draft.account_ids),
             str(output),
             draft.scheduling,
+            draft.source,
         ),
         conn=conn,
     )
@@ -176,14 +205,14 @@ def edit_run(run_id: UUID, draft: RunDraft, user: dict = Depends(current_user)):
     """Invalidate preflight whenever editable draft inputs change."""
     with db.connection() as conn:
         run = owned_run(run_id, user["app_user_id"], conn=conn, lock=True)
-        submitted = db.one("SELECT 1 FROM run_accounts WHERE run_id=%s LIMIT 1", (str(run_id),), conn=conn)
+        submitted = submitted_work(run, conn)
         if run["status"] not in {"draft", "ready", "failed"} or submitted:
             raise HTTPException(409, "Error: Submitted or validating analyses cannot be edited; duplicate instead.")
         validate_draft(draft, user["app_user_id"], conn=conn)
         row = db.one(
             "UPDATE analysis_runs SET name=%s,upload_id=%s,layer=%s,parcel_id_field=%s,partition_field=%s,"
             "processing=%s,account_ids=%s,revision=revision+1,validated_revision=NULL,status='draft',"
-            "summary='{}',config='{}',error=NULL,scheduling=%s,updated_at=now() WHERE run_id=%s RETURNING *",
+            "summary='{}',config='{}',error=NULL,scheduling=%s,source=%s,updated_at=now() WHERE run_id=%s RETURNING *",
             (
                 draft.name.strip(),
                 str(draft.upload_id),
@@ -193,6 +222,7 @@ def edit_run(run_id: UUID, draft: RunDraft, user: dict = Depends(current_user)):
                 Json(draft.processing),
                 Json(draft.account_ids),
                 draft.scheduling,
+                draft.source,
                 str(run_id),
             ),
             conn=conn,
@@ -217,12 +247,19 @@ def rename_run(run_id: UUID, body: RunName, user: dict = Depends(current_user)):
 
 @router.get("/runs")
 def list_runs(user: dict = Depends(current_user)):
-    """Return the most recent one hundred analyses belonging to this user."""
+    """Return the most recent one hundred analyses belonging to this user.
+
+    Each run carries ``eda_count`` and ``ml_count`` so the run list can show what lies beneath it
+    before the user expands it.
+    """
     # Only running analyses change between polls; stopped ones show counts on their own page.
     return [
         public_run(row, scan=row["status"] == "running")
         for row in db.all_rows(
-            f"SELECT *, {RUN_TIMING} FROM analysis_runs WHERE app_user_id=%s ORDER BY created_at DESC LIMIT 100",  # nosec B608
+            f"SELECT *, {RUN_TIMING},"  # nosec B608
+            " (SELECT COUNT(*) FROM eda_runs e WHERE e.run_id=analysis_runs.run_id AND e.app_user_id=analysis_runs.app_user_id) AS eda_count,"
+            " (SELECT COUNT(*) FROM ml_runs m WHERE m.run_id=analysis_runs.run_id AND m.app_user_id=analysis_runs.app_user_id) AS ml_count"
+            " FROM analysis_runs WHERE app_user_id=%s ORDER BY created_at DESC LIMIT 100",
             (user["app_user_id"],),
         )
     ]
@@ -241,9 +278,7 @@ def validate_run(run_id: UUID, user: dict = Depends(current_user)):
         run = owned_run(run_id, user["app_user_id"], conn=conn, lock=True)
         if run["status"] == "validating":
             return public_run(run)
-        if run["status"] not in {"draft", "ready", "failed"} or db.one(
-            "SELECT 1 FROM run_accounts WHERE run_id=%s LIMIT 1", (str(run_id),), conn=conn
-        ):
+        if run["status"] not in {"draft", "ready", "failed"} or submitted_work(run, conn):
             raise HTTPException(409, "Error: Only unsubmitted drafts can be validated.")
         enqueue("validate", run_id, user["app_user_id"], {"revision": run["revision"]}, conn=conn)
         row = db.one(
@@ -284,8 +319,10 @@ def submit_run(run_id: UUID, body: Submission, user: dict = Depends(current_user
             raise HTTPException(409, "Error: Validate this draft before submitting it.")
         if not storage_available(64 * 1024**2):
             raise HTTPException(507, "Error: Server storage limit reached.")
-        accounts = selected_accounts(run["account_ids"], user["app_user_id"], conn=conn)
-        reserve_accounts(run, accounts, conn=conn)
+        accounts = []
+        if run.get("source", "openeo") == "openeo":
+            accounts = selected_accounts(run["account_ids"], user["app_user_id"], conn=conn)
+            reserve_accounts(run, accounts, conn=conn)
         for position, account in enumerate(accounts):
             db.execute(
                 "INSERT INTO run_accounts(run_id,eo_user_id,position,username) VALUES(%s,%s,%s,%s)",
@@ -310,10 +347,12 @@ def resume_run(run_id: UUID, user: dict = Depends(current_user), options: Resume
         accounts = db.all_rows(
             "SELECT eo_user_id,username FROM run_accounts WHERE run_id=%s ORDER BY position", (str(run_id),), conn=conn
         )
-        if run["status"] not in {"failed", "interrupted"} or not accounts:
+        hub = run.get("source", "openeo") == "hub"
+        if run["status"] not in {"failed", "interrupted"} or (not accounts and not hub) or (hub and not submitted_work(run, conn)):
             raise HTTPException(409, "Error: This analysis has no submitted work to resume.")
-        selected_accounts([a["eo_user_id"] for a in accounts], user["app_user_id"], conn=conn)
-        reserve_accounts(run, accounts, conn=conn)
+        if not hub:
+            selected_accounts([a["eo_user_id"] for a in accounts], user["app_user_id"], conn=conn)
+            reserve_accounts(run, accounts, conn=conn)
         payload = {"retry_exhausted_memory": True} if options and options.retry_exhausted_memory else {}
         enqueue("resume", run_id, user["app_user_id"], payload=payload, conn=conn)
         return public_run(
@@ -387,7 +426,7 @@ def duplicate_run(run_id: UUID, user: dict = Depends(current_user)):
         run = owned_run(run_id, user["app_user_id"], conn=conn)
         if run["status"] == "deleting":
             raise HTTPException(409, "Error: This analysis is being deleted.")
-        draft = RunDraft(**{k: run[k] for k in RunDraft.model_fields})
+        draft = RunDraft(**{k: run[k] for k in RunDraft.model_fields if k in run})
         draft.name = draft.name[:110] + " (copy)"
         return public_run(insert_draft(draft, user["app_user_id"], conn=conn))
 

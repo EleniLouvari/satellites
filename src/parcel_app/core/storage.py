@@ -59,11 +59,19 @@ def storage_available(reserve: int = 0) -> bool:
     root = get_settings().storage_root
     root.mkdir(parents=True, exist_ok=True)
     sizes = {}
-    for path in root.rglob("*"):
-        if path.is_file() and not path.is_symlink():
-            stat = path.stat()
-            # A run's input is usually a hard link to its upload; count shared data once.
-            sizes[(stat.st_dev, stat.st_ino) if stat.st_ino else path] = stat.st_size
+    # scandir takes file types from the directory listing, so each file costs one lstat.
+    # Path.rglob with is_file/is_symlink/stat costs several, which on a Docker Desktop
+    # bind mount (9p) made this scan outlast the proxy's upload timeout.
+    pending = [os.fspath(root)]
+    while pending:
+        with os.scandir(pending.pop()) as entries:
+            for entry in entries:
+                if entry.is_dir(follow_symlinks=False):
+                    pending.append(entry.path)
+                elif entry.is_file(follow_symlinks=False):
+                    stat = entry.stat(follow_symlinks=False)
+                    # A run's input is usually a hard link to its upload; count shared data once.
+                    sizes[(stat.st_dev, stat.st_ino) if stat.st_ino else entry.path] = stat.st_size
     used = sum(sizes.values())
     return used + reserve <= get_settings().storage_limit_bytes and shutil.disk_usage(root).free > reserve + 64 * 1024**2
 

@@ -106,6 +106,13 @@ def test_database_identity_registration_isolation_and_revocation(monkeypatch):
     encrypted = db.one("SELECT password FROM eo_users WHERE eo_user_id=%s", (account_id,))["password"]
     assert encrypted != "EO secret"
     assert security.cipher().decrypt(encrypted.encode()) == b"EO secret"
+    assert account.json()["has_sen_instance"] is False
+    instance = {"sen_instance_id": "00000000-0000-4000-8000-000000000000"}
+    patched = first.patch(f"/api/accounts/{account_id}", headers=headers, json=instance)
+    assert patched.status_code == 200 and patched.json()["has_sen_instance"] is True
+    assert "sen_instance_id" not in patched.json()
+    bad = first.patch(f"/api/accounts/{account_id}", headers=headers, json={"sen_instance_id": "x/../y"})
+    assert bad.status_code == 422
     assert first.patch(f"/api/accounts/{account_id}", headers=origin, json={"label": "forbidden"}).status_code == 403
     other = second.post(
         "/api/auth/register", headers=origin, json={"username": f"test_{uuid4().hex}", "password": "other long password"}

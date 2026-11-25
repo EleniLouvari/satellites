@@ -4,6 +4,7 @@ Use the source-neutral public package for new workflows:
 
 ```python
 from data_preparation.parcel_stats import (
+    HubZonalStats,
     OpenEOZonalStats,
     OpenEOJobManagerZonalStats,
     reduce_annual_median_features,
@@ -12,6 +13,7 @@ from data_preparation.parcel_stats import (
 
 | Name | Responsibility |
 | --- | --- |
+| `HubZonalStats` | Read HUB Sentinel-1/2 ARD windows and calculate local parcel statistics. |
 | `OpenEOZonalStats` | Acquire Sentinel-1/2 cubes through openEO and calculate parcel statistics. |
 | `OpenEOJobManagerZonalStats` | The optional tile/job-manager variant of the openEO workflow. |
 | `ParcelBatchPlanner`, `RasterCleaner`, `ParcelStatisticsCalculator` | Shared geometry batching, raster cleaning and parcel aggregation components in `parcel_stats/core/`. |
@@ -19,8 +21,9 @@ from data_preparation.parcel_stats import (
 `openEO` identifies the processing service; `Sentinel-1` and `Sentinel-2`
 identify the imagery. Constructor options such as `sentinel2_bands` and
 `sentinel1_orbit_direction` retain their sensor-specific names. Sentinel-2 red
-is `B04`. HUB catalog utilities remain under `sources/hub/`, but this checkout
-does not export `PlanetBasemapZonalStats` or include a Planet delivery adapter.
+is `B04`. [HUB Sentinel ARD](hub/README.md) acquisition lives under `sources/hub/`;
+its parcel-statistics adapter is `parcel_stats/hub.py`. This checkout does not
+export `PlanetBasemapZonalStats` or include a Planet delivery adapter.
 
 Shared optical processing exposes `optical_bands`, `optical_indices` and
 `_calculate_local_optical_index`. Each adapter defines `OPTICAL_BAND_ROLES`,
@@ -67,6 +70,14 @@ radar inputs are selected.
 - `satellite_source.log`: source acquisition activity.
 - `satellite_raster_filling.log`: cleaning and filling.
 - `satellite_parcel_statistics.log`: parcel aggregation and checkpoints.
+
+When a dictionary-configured run (`run_parcel_stats` or `resume_parcel_stats`)
+fails, the runner appends the exception type, message and causes, for example
+the endpoint error behind a token-retry wrapper, to a run-level
+`satellite_zonal_stats.log` in the output directory. `run.json` records only
+`error_type`. The record uses the `parcel_stats_pipeline` namespace, so Parcel
+Studio redacts it, shows it as a run event, and includes the file in failure
+diagnostics.
 
 Workers add `.worker-<process-id>` to their individual file names. With
 `batch_workers > 1`, worker records are also forwarded to the parent process and

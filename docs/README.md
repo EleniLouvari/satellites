@@ -13,6 +13,7 @@ authoritative source locations.
 - [Extending Parcel Studio with data providers and pipelines](web_app/EXTENDING.md)
 - [Repository structure and migration](repository_structure.md)
 - [Parcel statistics public API](data_preparation/README.md)
+- [HUB Sentinel ARD parcel statistics](data_preparation/hub/README.md)
 - [openEO pipeline](data_preparation/openeo/README.md)
 - [Parcel statistics CLI and dictionary runner](data_preparation/openeo/CLI.md)
 - [Parcel statistics Docker image](data_preparation/openeo/DOCKER.md)

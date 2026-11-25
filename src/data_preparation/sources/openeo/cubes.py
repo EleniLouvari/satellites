@@ -14,6 +14,8 @@ from datetime import timedelta
 import openeo
 from shapely.geometry import mapping
 
+from .downloads import download_job_netcdf
+
 
 class OpenEOCubePipeline:
     """Build and download temporal Sentinel raster cubes through openEO."""
@@ -129,9 +131,7 @@ class OpenEOCubePipeline:
     def _run_openeo_batch_job(self, job, temporary_path, netcdf_path, batch_number):
         """Run and download one already-created openEO batch job."""
         job.start_and_wait(print=lambda _message: None)
-        job.get_results().download_file(target=temporary_path)
-        # Atomic rename makes the final path a reliable completion marker after notebook restarts.
-        temporary_path.replace(netcdf_path)
+        download_job_netcdf(job, temporary_path, netcdf_path, self.source_logger)
         return batch_number, netcdf_path
 
     def _run_openeo_job_wave(self, remote_jobs):

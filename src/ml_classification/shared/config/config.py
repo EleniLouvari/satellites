@@ -154,9 +154,9 @@ class ClassificationPipelineConfig:
     inspection_model_weight: float = 0.60
     inspection_data_weight: float = 0.25
     inspection_geometry_weight: float = 0.15
-    # "percentile" relaxes the two data-reliability thresholds to the percentiles below when the predicted
-    # parcels score lower than the absolute values; "absolute" applies the thresholds exactly as written.
-    inspection_data_reliability_threshold_mode: str = "percentile"
+    # "absolute" (default) applies the two data-reliability thresholds exactly as written; "percentile" relaxes
+    # them to the percentiles below when the predicted parcels score lower than the absolute values.
+    inspection_data_reliability_threshold_mode: str = "absolute"
     inspection_low_data_reliability_threshold: float = 0.60
     inspection_medium_data_reliability_threshold: float = 0.80
     inspection_low_data_reliability_percentile: float = 0.05
@@ -165,11 +165,11 @@ class ClassificationPipelineConfig:
     inspection_check_matching_declarations: bool = False
     inspection_medium_geometry_risk_threshold: float = 0.50
     inspection_high_geometry_risk_threshold: float = 0.75
-    # "percentile" counts a parcel's geometry as medium (or high) complexity only when it is above both the
-    # percentile threshold above AND the absolute complexity threshold below, so a run of simple parcels is not
-    # penalised just for being ranked. "absolute" uses only the complexity thresholds. Score scale: compact
-    # parcels about 0.1-0.3, 2:1 strips about 0.35-0.5, 3:1 about 0.5-0.7, 5:1 about 0.75-0.95.
-    inspection_geometry_threshold_mode: str = "percentile"
+    # "absolute" (default) uses only the complexity thresholds below. "percentile" counts a parcel's geometry as
+    # medium (or high) complexity only when it is above both the percentile threshold above AND the absolute
+    # complexity threshold below, so a run of simple parcels is not penalised just for being ranked. Score scale:
+    # compact parcels about 0.1-0.3, 2:1 strips about 0.35-0.5, 3:1 about 0.5-0.7, 5:1 about 0.75-0.95.
+    inspection_geometry_threshold_mode: str = "absolute"
     inspection_medium_geometry_complexity_threshold: float = 0.60
     inspection_high_geometry_complexity_threshold: float = 0.90
     inspection_medium_score_threshold: float = 25.0

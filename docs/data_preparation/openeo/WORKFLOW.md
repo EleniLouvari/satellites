@@ -40,7 +40,8 @@ All paths below are relative to `src/data_preparation/`:
 
 | Module | Responsibility and principal methods |
 | --- | --- |
-| [parcel_stats/openeo.py](../../../src/data_preparation/parcel_stats/openeo.py) | `run`, `run_from_batches`: acquire, aggregate, reshape, persist. |
+| [parcel_stats/openeo.py](../../../src/data_preparation/parcel_stats/openeo.py) | `run`: acquire cubes and invoke shared result assembly. |
+| [parcel_stats/core/results.py](../../../src/data_preparation/parcel_stats/core/results.py) | Inherited `run_from_batches`: aggregate, reshape, persist, and record partition completion. |
 | [parcel_stats/core/base.py](../../../src/data_preparation/parcel_stats/core/base.py) | Constructor, loggers, `_run_batch_statistics`, process workers. |
 | [parcel_stats/core/configuration.py](../../../src/data_preparation/parcel_stats/core/configuration.py) | Validation, required/output variables, intervals, raw-cache signature. |
 | [parcel_stats/core/parcel_batches.py](../../../src/data_preparation/parcel_stats/core/parcel_batches.py) | `_prepare_parcels`, `_iter_spatial_batches`. |
@@ -439,11 +440,13 @@ all observed valid pixels without outlier exclusion or imputation.
 
 The engine reads one physical band/time layer at a time, fills temporal strips
 containing all dates, then processes complete spatial layers. Parcel reduction
-reads one parcel window and output variable across all periods in a single
-request, rasterizing each parcel once. Parcels are visited by checkpoint chunk,
-with a netCDF chunk cache of up to 512 MiB per checkpoint variable, so neighbours
-reuse chunks; output rows keep the input parcel order. Exact medians/percentiles
-still need that sample pool in memory. Within a process,
+groups nearby parcel windows by checkpoint chunk and reads one shared output block
+with provenance masks at a time. Parcels retain independent masks and use the same
+reducers on RAM arrays; output rows keep the input parcel order. Read payloads target
+64 MiB and retained masks have a separate 16 MiB budget. Oversized individual parcels
+are processed alone, and exact medians/percentiles still need their pooled samples in
+memory. See the [memory and block-read details](../NETCDF_PROCESSING.md#5-why-does-processing-take-time-or-use-several-large-files).
+Within a process,
 `LOCAL_RASTER_LOCK` serializes raster access; extra batch processes have separate
 memory requirements. The streamed design reduces RAM use by writing intermediate
 NetCDF data to disk.

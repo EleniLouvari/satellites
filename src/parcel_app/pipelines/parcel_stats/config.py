@@ -2,6 +2,7 @@
 
 import inspect
 import json
+from typing import Literal
 
 from fastapi import APIRouter, Depends
 
@@ -110,38 +111,43 @@ def enabled_field(name, values):
     return True
 
 
-def check_processing(value: dict) -> dict:
+def check_processing(value: dict, source: str = "openeo") -> dict:
     """Apply the runner's request contract and operator concurrency ceiling."""
     from data_preparation.parcel_stats.run_config import _processing, _processing_parameters
 
-    if set(value).difference(_processing_parameters()):
+    if set(value).difference(_processing_parameters(source)):
         raise ValueError("Error: Processing configuration contains unsupported fields.")
     # Inactive inputs are excluded from the saved effective configuration. In
     # particular, the engine validates IDW/Kriging distances even when filling is off.
     value = {name: item for name, item in value.items() if enabled_field(name, value)}
     if value.get("working_epsg") is None:
         value.pop("working_epsg", None)
-    options = _processing(value)
+    options = _processing(value, source)
     workers = options.get("batch_workers", 1)
     if type(workers) is not int or not 1 <= workers <= get_settings().max_batch_workers:
         raise ValueError("Error: Local worker count exceeds the server limit.")
+    reads = options.get("hub_read_workers", 8)
+    if source == "hub" and (type(reads) is not int or not 1 <= reads <= get_settings().max_hub_read_workers):
+        raise ValueError("Error: HUB read worker count exceeds the server limit.")
     if len(json.dumps(options, allow_nan=False)) > 32000:
         raise ValueError("Error: Processing configuration is too large.")
     return options
 
 
 @router.get("/config")
-def configuration(user: dict = Depends(current_user)):
+def configuration(user: dict = Depends(current_user), source: Literal["openeo", "hub"] = "openeo"):
     """Return constructor-derived defaults and descriptive form metadata."""
     from data_preparation.parcel_stats.core.base import ParcelStatsBase
     from data_preparation.parcel_stats.run_config import _processing_parameters
 
     overrides = {
-        "working_epsg": None,
+        "hub_read_workers": min(8, get_settings().max_hub_read_workers),
+        "working_epsg": 2100,
         "sentinel2_bands": ["B04", "B08"],
         "sentinel2_indices": ["NDVI"],
         "spatial_statistics": ["mean", "median"],
-        "batch_workers": 2,
+        "batch_workers": 1,
+        "openeo_parallel_jobs": 1,
         "fit_tiles_to_parcels": True,
         "remove_nc_after_completion": True,
         "temporal_fill_mode": "bidirectional",
@@ -149,13 +155,13 @@ def configuration(user: dict = Depends(current_user)):
         "require_parcel_observation": True,
         "temporal_reducer": "none",
         "spatial_fill_window_sizes": [3, 5, 7],
-        "temporal_fill_window_sizes": [3],
-        "temporal_fill_block_rows": 2048,
+        "temporal_fill_window_sizes": [3, 5],
+        "temporal_fill_block_rows": None,
         "openeo_job_options": {"executor-memory": "4G", "max-executors": 20},
         "openeo_max_executor_memory": "12G",
         "openeo_memory_reference_area_km2": 1000,
         "openeo_auto_memory_retry": True,
-        "tile_size_metres": 20000,
+        "tile_size_metres": 5000,
     }
     choices = {
         "openeo_parallel_jobs": [1, 2],
@@ -165,7 +171,17 @@ def configuration(user: dict = Depends(current_user)):
         "sentinel1_orbit_direction": ["BOTH", "ASCENDING", "DESCENDING"],
     }
     descriptions = {
-        "openeo_parallel_jobs": "Parallel remote jobs per Copernicus account. Maximum 2; default 2.",
+        "batch_workers": (
+            "Local raster workers. HUB processes completed cubes while later batches are acquired. "
+            "Default 1 reduces simultaneous disk access and memory use."
+            if source == "hub"
+            else "Local raster workers. Default 1 reduces simultaneous disk access and memory use."
+        ),
+        "openeo_parallel_jobs": "Parallel remote jobs per Copernicus account. Default 1 limits download pressure; maximum 2.",
+        "tile_size_metres": (
+            "Maximum tile width and height, including the buffer when fitting tiles to parcels. "
+            "Default 5000 m keeps individual cubes smaller. Larger parcels may require a larger tile."
+        ),
         "openeo_job_options": (
             'Remote resources as a JSON object, e.g. {"executor-memory":"2G","max-executors":20}. '
             "Blank uses a 2G executor heap; omitted options use backend defaults."
@@ -212,7 +228,7 @@ def configuration(user: dict = Depends(current_user)):
     }.items():
         choices[name] = list(getattr(ParcelStatsBase, constant))
     defaults, fields = {}, []
-    for name, parameter in _processing_parameters().items():
+    for name, parameter in _processing_parameters(source).items():
         value = parameter.default
         if value is inspect.Parameter.empty:
             value = None
@@ -248,7 +264,9 @@ def configuration(user: dict = Depends(current_user)):
                 "default": value,
                 "label": name.replace("_", " ").capitalize(),
                 "choices": choices.get(name),
-                "nullable": value is None or name in {"temporal_fill_block_rows", "openeo_memory_reference_area_km2"},
+                # working_epsg defaults to 2100 (Greek Grid); blank still selects the CRS automatically.
+                "nullable": value is None
+                or name in {"working_epsg", "temporal_fill_block_rows", "openeo_memory_reference_area_km2"},
                 "group": next((group for group, names in GROUP_FIELDS.items() if name in names), "execution"),
                 "enabled_when": field_dependencies(name),
                 "description": descriptions.get(name, _fallback_description(name, value)),
@@ -258,11 +276,13 @@ def configuration(user: dict = Depends(current_user)):
     ordering = [name for names in GROUP_FIELDS.values() for name in names]
     fields.sort(key=lambda field: ordering.index(field["name"]) if field["name"] in ordering else len(ordering))
     return {
+        "source": source,
         "groups": GROUPS,
         "defaults": defaults,
         "fields": fields,
         "limits": {
             "max_batch_workers": get_settings().max_batch_workers,
+            "max_hub_read_workers": get_settings().max_hub_read_workers,
             "upload_limit_bytes": get_settings().upload_limit_bytes,
         },
     }

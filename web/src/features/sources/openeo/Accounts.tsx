@@ -7,6 +7,7 @@ export default function Accounts() {
     [username, setUsername] = useState(""),
     [label, setLabel] = useState(""),
     [password, setPassword] = useState(""),
+    [instance, setInstance] = useState(""),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
   async function refresh() {
@@ -38,6 +39,7 @@ export default function Accounts() {
     setUsername(account?.username ?? "");
     setLabel(account?.label ?? "");
     setPassword("");
+    setInstance("");
   }
   return (
     <>
@@ -60,17 +62,29 @@ export default function Accounts() {
                 editing ? `/accounts/${editing.eo_user_id}` : "/accounts",
                 editing ? "PATCH" : "POST",
                 editing
-                  ? { label, ...(password ? { password } : {}) }
-                  : { username, label, password },
+                  ? {
+                      label,
+                      ...(password ? { password } : {}),
+                      ...(instance ? { sen_instance_id: instance } : {}),
+                    }
+                  : {
+                      username,
+                      label,
+                      password,
+                      ...(instance ? { sen_instance_id: instance } : {}),
+                    },
               );
               setEditing(undefined);
               setPassword("");
+              setInstance("");
             });
           }}
         >
           <h2>{editing ? "Edit account" : "Add a Copernicus account"}</h2>
           <p className="muted">
             Passwords are encrypted on the server and never shown after saving.
+            The optional Sentinel Hub instance ID shows Sentinel-2 images on
+            the inspection map; it is never shown after saving either.
           </p>
           <div className="formgrid sectiongap">
             <label>
@@ -97,6 +111,18 @@ export default function Accounts() {
               value={password}
               onChange={setPassword}
             />
+            <label>
+              {editing?.has_sen_instance
+                ? "Replacement Sentinel Hub instance ID (optional)"
+                : "Sentinel Hub instance ID (optional)"}
+              <input
+                value={instance}
+                onChange={(e) => setInstance(e.target.value.trim())}
+                pattern="[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+                title="A Sentinel Hub configuration instance ID (UUID)"
+                autoComplete="off"
+              />
+            </label>
           </div>
           <div className="actions sectiongap">
             <Button primary type="submit" disabled={busy}>
@@ -118,6 +144,9 @@ export default function Accounts() {
             <h2>{account.label || "Copernicus account"}</h2>
             <p>{account.username}</p>
             <small>Last tested: {date(account.tested_at)}</small>
+            <small>
+              Sentinel Hub instance: {account.has_sen_instance ? "set" : "none"}
+            </small>
             <div className="actions sectiongap">
               <Button
                 disabled={busy}

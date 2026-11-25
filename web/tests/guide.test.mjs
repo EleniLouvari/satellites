@@ -11,7 +11,7 @@ test("generated guide follows the pipeline and every internal link resolves", as
   const { buildGuide } = await import("../scripts/build-guide.mjs");
   buildGuide();
   const home = fs.readFileSync(path.join(output, "index.html"), "utf8");
-  const stages = ["openEO acquisition", "Parcel statistics", "Feature enrichment", "EDA", "ML classification", "Inspection"];
+  const stages = ["openEO acquisition", "HUB catalog acquisition", "Parcel statistics", "Feature enrichment", "EDA", "ML classification", "Inspection"];
   let previous = -1;
   for (const stage of stages) {
     const position = home.indexOf(`>${stage}</span>`);

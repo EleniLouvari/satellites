@@ -17,6 +17,12 @@ follow: `1_parcel_stats_openEO_fill.ipynb` → `2_parcel_features.ipynb` →
 Existing external input and output paths and saved notebook outputs are retained.
 Review the path/configuration cell before running a notebook against your data.
 
+`projects/neuro/1_parcel_stats_hub_ard.ipynb` is the alternative acquisition
+example for HUB `ARD_S2`/`ARD_S1`. It loads `.env` before catalog imports and starts
+with five parcels and S2-only features. S1-only and combined sensor configurations
+use separate output folders. See the [HUB guide](../docs/data_preparation/hub/README.md)
+for authentication, physical values, gamma0 provenance, and resume behavior.
+
 The Neuro classification notebook joins EDA `is_outlier` by parcel ID with a
 one-to-one check, retains it in metadata when selecting columns, and excludes it
 from model features. It enables `inspection_include_outlier=True`: Step 5 raises

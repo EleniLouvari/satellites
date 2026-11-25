@@ -308,17 +308,17 @@ and neither do Low–Medium/Medium parcels whose declaration matches the predict
 (set `inspection_check_matching_declarations=True` to queue them);
 base Medium–High/High/Very High disagreements are suspected declaration conflicts;
 remaining cases need evidence verification. The data-reliability thresholds are
-calibrated to the predicted parcels by default
-(`inspection_data_reliability_threshold_mode="percentile"`); the applied values are
+applied as written by default (`inspection_data_reliability_threshold_mode="absolute"`);
+set `"percentile"` to calibrate them to the predicted parcels. The applied values are
 saved as `inspection_data_reliability_low_threshold` and
 `inspection_data_reliability_medium_threshold`. Outlier adjustment preserves check
 type except NONE raised to Low–Medium or above enters evidence review; it never creates
 a declaration conflict. The queue uses final priority first; within a band, parcels
 with the higher `inspection_score` come first (unscored rows last, remaining ties
 in input order), so the score weights set the visiting order inside a band.
-Geometry counts as medium or high complexity only when the parcel passes both its
-percentile threshold and the absolute complexity threshold
-(`inspection_geometry_threshold_mode="percentile"`, the default); the result is
+By default geometry complexity uses only the absolute complexity thresholds
+(`inspection_geometry_threshold_mode="absolute"`); with `"percentile"` the parcel must
+pass both its percentile threshold and the complexity threshold. The result is
 saved as `geometry_complexity_level`.
 
 With existing saved member probabilities and an OOF reliability contract,

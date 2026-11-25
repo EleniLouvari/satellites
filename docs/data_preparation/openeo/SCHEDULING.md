@@ -17,14 +17,13 @@ leave the rasters in place. This option defaults to `False` and overrides
 `keep_cleaned_checkpoint` once statistics are safely saved. Reports and remote
 job records are retained. Changing this flag does not invalidate existing caches.
 
-With this flag and `scheduling="batches"`, each account slot processes and cleans
-up its downloaded batch before taking another task. Local raster work is
-serialized across the account threads by the existing NetCDF lock; other slots
-can still download. The lock remains held until statistics and reports are
-saved, NetCDF files are deleted, references to batch results are released, and
-garbage collection finishes. Workers return only a batch number. Cleanup mode
-also processes rasters sequentially for direct/partition callers, regardless of
-`batch_workers`. Final partition assembly loads the saved statistics only after
+With this flag and `scheduling="batches"`, downloaded batches enter a run-wide local
+process pool bounded by `batch_workers`, without waiting for all downloads in a partition.
+One local worker processes synchronously; multiple local workers use separate processes.
+Each process retains its own NetCDF lock and memory requirements. Statistics and reports
+are saved before NetCDF cleanup, and workers return only a batch number. Direct/partition
+callers use up to `batch_workers` processes per active partition, but start local processing
+only after that partition's downloads finish. Final partition assembly loads saved statistics after
 raster processing finishes. That assembly still needs memory for the tabular
 results; Python/native allocators may retain freed memory for reuse rather than
 immediately reducing the process's reported RAM. This bounds accumulation of new raw

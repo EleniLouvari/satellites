@@ -1,5 +1,0 @@
-diagnostic_group,rows,share
-Borda agrees + correct,3,0.42857142857142855
-Borda agrees + incorrect,2,0.2857142857142857
-Borda disagrees + correct,1,0.14285714285714285
-Borda disagrees + incorrect,1,0.14285714285714285

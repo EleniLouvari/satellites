@@ -1,6 +1,0 @@
-inspection_need,parcels,share_percent,median_inspection_score
-HIGH,1,12.5,12.0
-MEDIUM_HIGH,1,12.5,89.5
-MEDIUM,3,37.5,49.25
-LOW,2,25.0,5.5
-VERY_LOW,1,12.5,7.0

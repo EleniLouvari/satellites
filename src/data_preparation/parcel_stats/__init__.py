@@ -7,6 +7,7 @@ and output schemas are shared.
 from importlib import import_module
 
 _EXPORTS = {
+    "HubZonalStats": (".hub", "HubZonalStats"),
     "OpenEOZonalStats": (".openeo", "OpenEOZonalStats"),
     "OpenEOJobManagerZonalStats": (".job_manager", "OpenEOJobManagerZonalStats"),
     "prepare_run": (".run_config", "prepare_run"),

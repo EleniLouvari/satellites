@@ -12,6 +12,7 @@ import DeleteAction from "../../components/DeleteAction";
 import RenameAction from "../../components/RenameAction";
 import Progress from "../../components/Progress";
 import MlLive from "./MlLive";
+import MlInspection from "./MlInspection";
 import ColumnFilter, { useColumnFilter } from "../../components/ColumnFilter";
 import { Button, Heading, Notice, Status } from "../../components/ui";
 import {
@@ -47,6 +48,8 @@ type MlRun = {
   name: string;
   status: string;
   steps_done: number;
+  /** The single best scenario of its EDA analysis; its parcels can be inspected. */
+  is_best: boolean;
   feature_columns: string[];
   config: Record<string, unknown>;
   artifacts: MlArtifact[];
@@ -87,10 +90,17 @@ type Rerun = {
 
 export default function MlPage({
   source,
+  initialOpenId,
   onBack,
+  onFocus,
 }: {
   source: MlSource;
+  /** Open this saved scenario directly instead of the list of scenarios. */
+  initialOpenId?: string;
+  /** Return to the EDA analysis this page belongs to. */
   onBack: () => void;
+  /** Reports the scenario on screen (undefined on the list or new-scenario views) for the page path. */
+  onFocus?: (item?: { id: string; name: string }) => void;
 }) {
   const requestId = useRef(crypto.randomUUID());
   const [options, setOptions] = useState<Options>();
@@ -98,8 +108,9 @@ export default function MlPage({
   const [config, setConfig] = useState<Record<string, unknown>>({});
   const [selected, setSelected] = useState<string[]>([]);
   const [runs, setRuns] = useState<MlRun[]>([]);
-  const [tab, setTab] = useState("Start");
-  const [openId, setOpenId] = useState<string>();
+  const [loaded, setLoaded] = useState(false);
+  const [tab, setTab] = useState(initialOpenId ? "Scenarios" : "Start");
+  const [openId, setOpenId] = useState<string | undefined>(initialOpenId);
   const [report, setReport] = useState<{ run: MlRun; page: string }>();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -108,6 +119,16 @@ export default function MlPage({
   const [rerun, setRerun] = useState<Rerun>();
   const [rerunValid, setRerunValid] = useState(true);
   const base = `/eda/${source.edaId}/ml`;
+  const focusId =
+    tab === "Scenarios" || tab === "Inspection"
+      ? openId
+      : tab === "Report"
+        ? report?.run.ml_id
+        : undefined;
+  const focusName = runs.find((run) => run.ml_id === focusId)?.name;
+  useEffect(() => {
+    onFocus?.(focusId && focusName ? { id: focusId, name: focusName } : undefined);
+  }, [focusId, focusName, onFocus]);
 
   useEffect(() => {
     let live = true;
@@ -118,6 +139,9 @@ export default function MlPage({
         })
         .catch((e) => {
           if (live) setError(e.message);
+        })
+        .finally(() => {
+          if (live) setLoaded(true);
         });
     api<Options>(`${base}/options`)
       .then((value) => {
@@ -231,6 +255,20 @@ export default function MlPage({
       setBusy(false);
     }
   }
+  async function markBest(run: MlRun, best: boolean) {
+    setError("");
+    try {
+      const row = await api<MlRun>(`/ml/${run.ml_id}/best`, "PUT", { best });
+      // Only one scenario of an EDA analysis is the best.
+      setRuns((rows) =>
+        rows.map((r) =>
+          r.ml_id === row.ml_id ? row : best ? { ...r, is_best: false } : r,
+        ),
+      );
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
   function openRerun(run: MlRun, step: RerunStep) {
     setRerunValid(true);
     setRerun(
@@ -253,7 +291,7 @@ export default function MlPage({
         subtitle={`${source.title} · ${source.runName}`}
       >
         <div className="actions">
-          <Button onClick={onBack}>Back to my runs</Button>
+          <Button onClick={onBack}>Back to EDA analysis</Button>
         </div>
       </Heading>
       <Notice message={error} />
@@ -267,7 +305,7 @@ export default function MlPage({
             items={runs.map((run) => ({
               id: run.ml_id,
               title: run.name,
-              meta: `${date(run.created_at)} · ${run.feature_columns.length} features · ${run.steps_done} of ${STEPS.length} steps`,
+              meta: `${run.is_best ? "★ Best scenario · " : ""}${date(run.created_at)} · ${run.feature_columns.length} features · ${run.steps_done} of ${STEPS.length} steps`,
               status: run.status === "paused" ? "waiting" : run.status,
             }))}
             onOpen={(id) => {
@@ -496,7 +534,11 @@ export default function MlPage({
       {tab === "Scenarios" && (
         <div className="eda-history">
           {!runs.some((run) => run.ml_id === openId) && (
-            <p>This scenario is no longer available.</p>
+            <p>
+              {loaded
+                ? "This scenario is no longer available."
+                : "Loading this scenario…"}
+            </p>
           )}
           {runs.filter((run) => run.ml_id === openId).map((run) => {
             const states = stepStates(run.status, run.steps_done);
@@ -529,7 +571,7 @@ export default function MlPage({
                   />
                 </div>
                 <Notice message={run.error ?? ""} />
-                <ol className="ml-steps">
+                <ol className={`ml-steps${run.is_best ? " with-inspection" : ""}`}>
                   {STEPS.map((step, index) => (
                     <li key={step.id} className={states[index]}>
                       <b>
@@ -564,6 +606,25 @@ export default function MlPage({
                       )}
                     </li>
                   ))}
+                  {run.is_best && (
+                    <li className={run.status === "complete" ? "inspection" : "pending"}>
+                      <b>6</b>
+                      <strong>Inspection</strong>
+                      <small>
+                        {run.status === "complete"
+                          ? "Check the parcels that need it"
+                          : "After all steps finish"}
+                      </small>
+                      {run.status === "complete" && (
+                        <button
+                          className="linkbutton"
+                          onClick={() => setTab("Inspection")}
+                        >
+                          Open parcel list
+                        </button>
+                      )}
+                    </li>
+                  )}
                 </ol>
                 {["running", "queued"].includes(run.status) &&
                   run.progress?.stage && <Progress value={run.progress} />}
@@ -617,6 +678,21 @@ export default function MlPage({
                       Final dashboard
                     </Button>
                   )}
+                  {run.status === "complete" &&
+                    (run.is_best ? (
+                      <>
+                        <Button primary onClick={() => setTab("Inspection")}>
+                          Inspect parcels
+                        </Button>
+                        <Button onClick={() => void markBest(run, false)}>
+                          Unmark as best
+                        </Button>
+                      </>
+                    ) : (
+                      <Button primary onClick={() => void markBest(run, true)}>
+                        Mark as best scenario
+                      </Button>
+                    ))}
                   {run.status === "complete" && files.has(PREDICTIONS) && (
                     <a
                       className="btn primary"
@@ -822,6 +898,18 @@ export default function MlPage({
           })}
         </div>
       )}
+
+      {tab === "Inspection" &&
+        runs
+          .filter((run) => run.ml_id === openId)
+          .map((run) => (
+            <MlInspection
+              key={run.ml_id}
+              mlId={run.ml_id}
+              name={run.name}
+              onBack={() => setTab("Scenarios")}
+            />
+          ))}
 
       {tab === "Report" && report && (
         <section className="eda-report">

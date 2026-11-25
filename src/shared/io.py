@@ -413,6 +413,8 @@ def write_data(
     file_path = file_path.replace("\\", "/")
 
     _, ext = os.path.splitext(file_path)
+    if file_path.endswith(_PKL_XZ_EXTENSION):
+        ext = _PKL_XZ_EXTENSION
 
     # If no extension is provided, determine the default based on the DataFrame type
     if not ext:
@@ -539,7 +541,7 @@ def write_csv(df: pd.DataFrame | gpd.GeoDataFrame, file_path: str, plain_csv: bo
     df = df.copy()
     if isinstance(df, gpd.GeoDataFrame):
         # Drop the geometry column if it exists
-        df = df.drop(columns=["geometry"], inplace=True, errors="ignore")
+        df.drop(columns=["geometry"], inplace=True, errors="ignore")
         print("Geometry column found. It will be dropped.")
     if plain_csv:
         df.to_csv(file_path, index=False)

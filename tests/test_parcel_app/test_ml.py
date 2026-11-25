@@ -112,7 +112,7 @@ def test_ml_subgroups_explain_fields_of_their_own_group():
     assert by_name["inspection_data_weight"]["subgroup"] == "weights"
     # The percentile calibration is a choice whose two percentiles only apply in percentile mode.
     mode = by_name["inspection_data_reliability_threshold_mode"]
-    assert (mode["default"], mode["choices"], mode["subgroup"]) == ("percentile", ["percentile", "absolute"], "data_reliability")
+    assert (mode["default"], mode["choices"], mode["subgroup"]) == ("absolute", ["absolute", "percentile"], "data_reliability")
     assert by_name["inspection_medium_data_reliability_percentile"]["enabled_when"] == {
         "inspection_scoring_enabled": [True],
         "inspection_data_reliability_threshold_mode": ["percentile"],
@@ -121,6 +121,7 @@ def test_ml_subgroups_explain_fields_of_their_own_group():
     assert sections["data_reliability"]["parent"] == "thresholds"
     assert sections["geometry"]["parent"] == "thresholds"
     assert by_name["inspection_geometry_threshold_mode"]["subgroup"] == "geometry"
+    assert by_name["inspection_geometry_threshold_mode"]["default"] == "absolute"
     assert by_name["inspection_medium_score_threshold"]["subgroup"] == "thresholds"
     assert all("percentile" in " ".join(sections[name]["description"]).lower()
                and "absolute" in " ".join(sections[name]["description"]).lower()
@@ -407,8 +408,8 @@ def test_ml_scenarios_of_an_eda_run_step_by_step_through_the_queue(clients, tmp_
     source_hash = checksum(source)
     run = db.one(
         "INSERT INTO analysis_runs(run_id,app_user_id,name,upload_id,parcel_id_field,processing,account_ids,output_dir,status) "
-        "VALUES(%s,%s,'ML source',%s,'parcel_id','{}','[]',%s,'complete') RETURNING *",
-        (run_id, user_id, upload["upload_id"], str(output)),
+        "VALUES(%s,%s,'ML source',%s,'parcel_id',%s,'[]',%s,'complete') RETURNING *",
+        (run_id, user_id, upload["upload_id"], '{"start_date": "2024-03-01", "end_date": "2024-09-30"}', str(output)),
     )
     register_file(run, "time_statistics", source)
     eda_body = {
@@ -451,6 +452,10 @@ def test_ml_scenarios_of_an_eda_run_step_by_step_through_the_queue(clients, tmp_
     assert owner.post(base, json=body).json()["ml_id"] == ml_id
     assert owner.post(base, json={**body, "name": "Renamed"}).status_code == 409
     assert db.one("SELECT count(*) AS n FROM web_jobs WHERE target_id=%s AND kind='ml'", (ml_id,))["n"] == 1
+    # The run list and EDA list count what lies beneath each entry for the run tree.
+    listed = next(item for item in owner.get("/api/runs").json() if item["run_id"] == run_id)
+    assert (listed["eda_count"], listed["ml_count"]) == (1, 1)
+    assert owner.get(f"/api/runs/{run_id}/eda").json()[0]["ml_count"] == 1
     link = f"/api/ml/{ml_id}"
     assert owner.post(f"{link}/continue", json={"through": 2}).status_code == 409  # a step is already queued
     assert owner.delete(link).status_code == 409  # queued work blocks deletion
@@ -572,6 +577,48 @@ def test_ml_scenarios_of_an_eda_run_step_by_step_through_the_queue(clients, tmp_
     execute_task(claim("ml", second))
     assert [(item["name"], item["status"]) for item in owner.get(base).json()] == [("Bayes only", "complete"), ("Trees", "complete")]
 
+    # Inspection: only the single best, finished scenario lists its parcels, most urgent first, with reviews.
+    inspect = f"{link}/inspection"
+    assert owner.get(inspect).status_code == 409  # not the best scenario yet
+    assert stranger.put(f"{link}/best", json={"best": True}).status_code == 404
+    assert owner.put(f"{link}/best", json={"best": True}).json()["is_best"] is True
+    assert owner.put(f"/api/ml/{second}/best", json={"best": True}).status_code == 200
+    assert {item["ml_id"]: item["is_best"] for item in owner.get(base).json()} == {ml_id: False, second: True}
+    assert owner.put(f"{link}/best", json={"best": True}).status_code == 200
+    page = owner.get(inspect, params={"limit": 500}).json()
+    assert page["total"] == 230 and page["id_column"] == "parcel_id" and (page["checked"], page["approved"]) == (0, 0)
+    levels = [item["level"] for item in page["rows"] if item["level"] is not None]
+    assert levels and levels == sorted(levels, reverse=True)
+    # predicted_class repeats crop_prediction, so the table shows only the configured prediction column.
+    assert "crop_prediction" in page["columns"] and "predicted_class" not in page["columns"]
+    assert all(len(item["values"]) == len(page["columns"]) for item in page["rows"])
+    parcel = page["rows"][0]["values"][page["columns"].index("parcel_id")]
+    assert page["rows"][0]["review"] == {"check_status": "not_checked", "approved": False, "comment": "", "updated_at": None}
+    review = f"{inspect}/review"
+    assert stranger.put(review, json={"parcel_id": parcel, "check_status": "field"}).status_code == 404
+    assert owner.put(review, json={"parcel_id": parcel, "check_status": "not_checked", "approved": True}).status_code == 422
+    assert owner.put(review, json={"parcel_id": parcel, "check_status": "drone"}).status_code == 422
+    assert owner.put(review, json={"parcel_id": "no-such-parcel", "check_status": "field"}).status_code == 404
+    saved = owner.put(review, json={"parcel_id": parcel, "check_status": "field", "approved": True, "comment": "Wheat seen"})
+    assert saved.status_code == 200 and saved.json()["approved"] is True
+    shape = owner.get(f"{inspect}/geometry", params={"parcel_id": parcel})
+    assert shape.status_code == 200 and shape.json()["geometry"]["type"] == "Polygon"
+    assert stranger.get(f"{inspect}/geometry", params={"parcel_id": parcel}).status_code == 404
+    assert owner.get(f"{inspect}/geometry", params={"parcel_id": "no-such-parcel"}).status_code == 404
+    # Sentinel-2 tiles use the parcel statistics run's dates and cloud limit; without an instance ID there are none.
+    sentinel2 = owner.get(f"{inspect}/sentinel2").json()
+    assert sentinel2["available"] is False and (sentinel2["start_date"], sentinel2["end_date"]) == ("2024-03-01", "2024-09-30")
+    assert sentinel2["max_cloud_cover"] == 70  # the parcel statistics default when the run did not set it
+    assert owner.get(f"{inspect}/sentinel2/14/9200/6250.png").status_code == 404
+    assert owner.get(f"{inspect}/sentinel2/3/0/0.png").status_code == 404  # below the minimum zoom
+    assert owner.get(f"{inspect}/sentinel2/dates", params={"parcel_id": parcel}).status_code == 404
+    assert owner.get(f"{inspect}/sentinel2/14/9200/6250.png", params={"date": "not-a-date"}).status_code == 422
+    assert stranger.get(f"{inspect}/sentinel2").status_code == 404
+    first = owner.get(inspect, params={"limit": 1}).json()
+    assert first["rows"][0]["review"]["comment"] == "Wheat seen" and (first["checked"], first["approved"]) == (1, 1)
+    assert owner.put(f"{link}/best", json={"best": False}).json()["is_best"] is False
+    assert owner.put(review, json={"parcel_id": parcel, "check_status": "field"}).status_code == 409
+
     # A changed parcel result stops new scenarios and leaves finished ones intact.
     third = owner.post(base, json={**other, "request_id": str(uuid4())}).json()["ml_id"]
     source.write_bytes(b"changed-after-submission")
@@ -627,3 +674,50 @@ def test_live_log_tail_keeps_the_last_lines_without_colours_or_private_paths(tmp
     tail = routes.log_tail(log, tmp_path).splitlines()
     assert len(tail) == 3 and tail[-1].startswith("line 49")
     assert "\x1b" not in "".join(tail) and str(tmp_path) not in "".join(tail)
+
+
+def test_inspection_order_puts_the_most_urgent_parcels_first_and_colours_them(tmp_path):
+    from parcel_app.pipelines.ml.inspection import need_level, ordered_predictions
+
+    path = tmp_path / "predictions.csv"
+    lines = ["parcel_id,inspection_need,inspection_score", "a,VERY_LOW,0.9", "b,HIGH,0.2", "c,VERY_HIGH,",
+             "d,HIGH,0.7", "e,UNKNOWN,0.99", "f,VERY_HIGH,0.1"]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    columns, rows = ordered_predictions(str(path), "sha")
+    assert columns == ["parcel_id", "inspection_need", "inspection_score"]
+    # Need band first, then score (highest first); a missing score follows its band, an unknown band goes last.
+    assert [row[0] for row in rows] == ["f", "c", "d", "b", "a", "e"]
+    assert (need_level("VERY_HIGH"), need_level("VERY_LOW"), need_level("UNKNOWN")) == (1, 0, None)
+    assert 0 < need_level("MEDIUM") < need_level("HIGH") < 1
+
+
+
+def test_inspection_geometry_is_one_attribute_free_wgs84_parcel(tmp_path):
+    import geopandas as gpd
+    from shapely.geometry import box
+
+    from parcel_app.pipelines.ml.inspection import parcel_geometry
+
+    # Integer identifiers are matched by their text, as the predictions table shows them; metres become degrees.
+    path = tmp_path / "parcels.parquet"
+    gpd.GeoDataFrame({"id": [1, 2]}, geometry=[box(0, 0, 10, 10), box(500000, 4300000, 500100, 4300100)],
+                     crs=32634).to_parquet(path)
+    feature = parcel_geometry(str(path), "id", "2")
+    assert feature["type"] == "Feature" and feature["properties"] == {}
+    x, y = feature["geometry"]["coordinates"][0][0]
+    assert 20 < x < 22 and 38 < y < 40
+    with pytest.raises(HTTPException) as missing:
+        parcel_geometry(str(path), "id", "3")
+    assert missing.value.status_code == 404
+
+
+def test_inspection_hides_predicted_class_only_when_it_copies_the_prediction_column():
+    from parcel_app.pipelines.ml.inspection import shown_columns
+
+    columns = ["parcel_id", "crop", "crop_prediction", "predicted_class", "inspection_need"]
+    assert shown_columns(columns, {"target_column": "crop", "prediction_column": None}) == [0, 1, 2, 4]
+    assert shown_columns(columns, {"target_column": "crop", "prediction_column": "crop_prediction"}) == [0, 1, 2, 4]
+    # The configured prediction column is predicted_class itself, or is missing: nothing is hidden.
+    named = ["parcel_id", "crop", "predicted_class", "inspection_need"]
+    assert shown_columns(named, {"target_column": "crop", "prediction_column": "predicted_class"}) == [0, 1, 2, 3]
+    assert shown_columns(named, {"target_column": "crop", "prediction_column": None}) == [0, 1, 2, 3]

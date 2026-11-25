@@ -197,8 +197,11 @@ aggregation**, not that the final parcel table has already been written.
 
 ### D. Calculate each parcel's statistics
 
-For each parcel, the engine reads its bounding window from `_final.nc` and
-rasterizes the polygon with `all_touched=True`. Boundary-intersecting cells
+Parcels are processed in spatial read groups (see section 5). For each parcel,
+the engine rasterizes the polygon within its own bounding window with
+`all_touched=True` and takes that window's pixels from its group's block. Each
+parcel has an independent mask, so overlapping parcels and cells shared along a
+boundary count for every parcel they touch. Boundary-intersecting cells
 participate, with no fractional-area weighting.
 
 For each output variable and reporting period, it reduces the finite values
@@ -278,13 +281,30 @@ where one sensor has no observation. Zero expected slots produce null ratios.
 The code keeps raster checkpoints on disk to avoid loading the entire
 time-by-band cube at once. It reads individual band/time layers for cleaning,
 spatial blocks across all dates for temporal filling, and all physical bands
-for one time slice during index creation. Parcel statistics read one parcel
-window and output variable across all periods in a single request, rasterizing
-each parcel once. Parcels are visited in checkpoint-chunk order and the netCDF
-chunk cache is raised to up to 512 MiB per checkpoint variable while the final
-checkpoint is open, so neighbouring parcels reuse chunks already read. Output
-rows keep the input parcel order. Memory per parcel is about
-`dates * window_rows * window_columns * 6` bytes for one output.
+for one time slice during index creation.
+
+Parcel statistics group parcels by the 256 x 256 checkpoint chunk that contains
+the upper-left pixel of each parcel window. Parcels outside the raster share
+placeholder windows. Each group reads one block covering the union of its parcel windows,
+one output at a time. A read loads the output values with both provenance masks,
+`3 * outputs * groups` requests in all, instead of 3 requests per output and
+parcel. Every parcel is then reduced in memory with its own mask, using the same
+reducers as before, so results are identical. Output rows keep the input parcel
+order.
+
+A block read takes `dates * block_rows * block_columns * 6` bytes: a float32
+value plus two uint8 masks per cell. When all dates exceed the 64 MiB payload
+target, the group reads one reporting period at a time, because pooled statistics
+need all acquisitions of a period together. When even its longest period exceeds
+the target, the group splits into single parcels, each read with its own window.
+Independent parcel masks have a separate 16 MiB summed-window budget per group,
+including overlapping parcels. Groups split further to meet this mask budget.
+An individual parcel exceeding either budget is processed alone; these budgets
+are not hard limits on total process RAM. Parcel pixel copies, reducer temporaries,
+backend caches and result tables require additional memory. Exact medians and
+percentiles hold a period's pooled parcel sample in memory, which can be large
+for an oversized parcel. The progress message `Parcel statistics read group X/Y finished`
+appears about ten times per batch.
 
 This reduces memory demand but still requires complete spatial layers and
 temporary arrays. The default is `temporal_fill_block_rows=2048` in both the
@@ -344,6 +364,7 @@ These messages appear in `satellite_parcel_statistics.log`, or its worker log:
 | `Cleaned acquisition X/Y ...` | Spatial filling/interpolation and audit assembly for that time slice. “Acquisition” can also refer to a composite slice here. |
 | `Saved output indices for acquisition X/Y` | Requested output layers are being written into the final partial checkpoint. |
 | `Using completed post-index checkpoint ...` | Reusing `_final.nc` and proceeding to parcel statistics. |
+| `Parcel statistics read group X/Y finished (N/M parcels).` | Parcel statistics progress; groups are spatial blocks of parcels. |
 | `Calculated ... locally for ... parcels ...` | Raster aggregation has finished; durable batch-table writes follow. |
 
 These counters describe the current stage, not an overall completion percentage.

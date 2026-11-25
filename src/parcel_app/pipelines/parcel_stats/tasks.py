@@ -43,6 +43,7 @@ def validate(job):
         raise ValueError("Error: Uploaded file changed; upload the original file again.")
     config = {
         "schema_version": 1,
+        "source": run.get("source", "openeo"),
         "input": {
             "path": str(path),
             "layer": run["layer"],
@@ -102,15 +103,25 @@ def _snapshot_input(job, run):
     return {**run, "config": config}
 
 
+def _provider_credentials(run):
+    """Keep provider secrets in worker memory and out of persisted configuration."""
+    if run.get("source", "openeo") == "hub":
+        from parcel_app.sources.hub.credentials import require_configuration, run_secrets
+
+        require_configuration()
+        return [], run_secrets()
+    accounts = run_credentials(run)
+    return accounts, [item for pair in accounts for item in pair]
+
+
 def _execute_run(job):
     """Execute the dictionary runner with immutable config and selected credentials."""
     from data_preparation.parcel_stats.runner import resume_parcel_stats, run_parcel_stats
 
     run = _snapshot_input(job, _run(job))
-    accounts = run_credentials(run)
+    accounts, secrets = _provider_credentials(run)
     if checksum(Path(run["config"]["input"]["path"])) != run["summary"]["input_sha256"]:
         raise ValueError("Error: Uploaded file changed; restore the original file before resuming.")
-    secrets = [item for pair in accounts for item in pair]
     private_paths = [
         str(get_settings().storage_root),
         run["output_dir"],
@@ -189,7 +200,12 @@ def _publish_diagnostics(job):
     if not (Path(run["output_dir"]) / "run.json").is_file():
         # No initialized run; diagnostics must not occupy the fresh run directory.
         return
-    secrets = [item for pair in run_credentials(run) for item in pair]
+    if run.get("source", "openeo") == "hub":
+        from parcel_app.sources.hub.credentials import run_secrets
+
+        secrets = run_secrets()
+    else:
+        secrets = [item for pair in run_credentials(run) for item in pair]
     with db.connection() as conn:
         owned_claim(job, conn)
         register_diagnostics(run, secrets, conn=conn)

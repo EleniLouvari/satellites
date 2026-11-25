@@ -7,13 +7,15 @@
     "guide": "node scripts/build-guide.mjs",
     "dev": "npm run guide && vite --host 0.0.0.0",
     "build": "npm run guide && tsc -b && vite build",
-    "test": "npm run guide && node --test tests/config.test.mjs tests/stop.test.mjs tests/help.test.mjs tests/guide.test.mjs"
+    "test": "npm run guide && node --test tests/config.test.mjs tests/source.test.mjs tests/stop.test.mjs tests/help.test.mjs tests/guide.test.mjs tests/hub-preview.test.mjs"
   },
   "dependencies": {
+    "leaflet": "1.9.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "@types/leaflet": "1.9.20",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.4",

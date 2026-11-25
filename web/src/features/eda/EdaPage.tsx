@@ -45,22 +45,29 @@ type Options = {
 
 export default function EdaPage({
   run,
+  initialOpenId,
   onBack,
   onMl,
+  onFocus,
 }: {
   run: Run;
+  /** Open this saved analysis directly instead of the list of analyses. */
+  initialOpenId?: string;
   onBack: () => void;
   onMl: (source: { edaId: string; title: string; runName: string }) => void;
+  /** Reports the analysis on screen (undefined on the list or set-up views) for the page path. */
+  onFocus?: (item?: { id: string; name: string }) => void;
 }) {
   const requestId = useRef(crypto.randomUUID());
   const [options, setOptions] = useState<Options>();
   const [config, setConfig] = useState<Record<string, unknown>>({});
   const [selected, setSelected] = useState<string[]>([]);
   const [history, setHistory] = useState<EdaRun[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const previousHistory = useRef<EdaRun[]>([]);
   const [reportId, setReportId] = useState<string>();
-  const [tab, setTab] = useState("Start");
-  const [openId, setOpenId] = useState<string>();
+  const [tab, setTab] = useState(initialOpenId ? "History" : "Start");
+  const [openId, setOpenId] = useState<string | undefined>(initialOpenId);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [valid, setValid] = useState(true);
@@ -74,6 +81,12 @@ export default function EdaPage({
       setTab("Report");
     }
   }, [history]);
+  const focusId =
+    tab === "History" ? openId : tab === "Report" ? reportId : undefined;
+  const focusName = history.find((item) => item.eda_id === focusId)?.name;
+  useEffect(() => {
+    onFocus?.(focusId && focusName ? { id: focusId, name: focusName } : undefined);
+  }, [focusId, focusName, onFocus]);
   useEffect(() => {
     let live = true;
     Promise.allSettled([
@@ -91,6 +104,7 @@ export default function EdaPage({
         }
         if (analyses.status === "fulfilled") setHistory(analyses.value);
         else setError(analyses.reason.message);
+        setLoaded(true);
       })
       .catch((e) => {
         if (live) setError(e.message);
@@ -373,7 +387,11 @@ export default function EdaPage({
         {tab === "History" && (
           <div className="eda-history">
             {!history.some((item) => item.eda_id === openId) && (
-              <p>This analysis is no longer available.</p>
+              <p>
+                {loaded
+                  ? "This analysis is no longer available."
+                  : "Loading this analysis…"}
+              </p>
             )}
             {history.filter((item) => item.eda_id === openId).map((item) => (
               <section className="panel pad" key={item.eda_id}>

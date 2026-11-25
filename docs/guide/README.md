@@ -6,7 +6,10 @@ order, or open Help from a pipeline page to jump directly to its guide.
 
 ## The journey
 
-1. **openEO acquisition:** configure parcels, imagery and accounts; plan and download Sentinel cubes.
+1. **Imagery acquisition:** choose one source for each run.
+   - **openEO:** configure parcels, imagery and accounts; plan and download Sentinel cubes.
+   - **HUB catalog:** read analysis-ready Sentinel-2/Sentinel-1 imagery (`ARD_S2`, `ARD_S1`)
+     with the server's catalog access and build local cubes batch by batch.
 2. **Parcel statistics:** clean physical bands, fill gaps, calculate indices and summarize pixels by parcel.
 3. **Feature enrichment (optional):** Python and notebook workflows can add temporal and environmental features.
 4. **EDA:** inspect data quality, relationships, outliers and candidate features.
@@ -15,11 +18,15 @@ order, or open Help from a pipeline page to jump directly to its guide.
 
 Acquisition and local statistics are stages of the same parcel-statistics run in the app.
 They have separate guide sections because they do different work and have different completion signals.
+Both sources feed the same local cleaning, index and statistics pipeline. HUB Sentinel-1
+features come from gamma0 backscatter and openEO's from sigma0, so treat them as different
+source families when comparing runs.
 
 ## What you need
 
 - A parcel file (GeoPackage, GeoParquet or GeoJSON) with a unique parcel identifier.
-- Copernicus accounts and the dates, bands and processing options for imagery acquisition.
+- The dates, bands and processing options for imagery acquisition, plus either Copernicus
+  accounts (openEO) or HUB catalog access configured by the server operator.
 - A target column with known labels to train a supervised classifier. Rows without labels can still be predicted.
 - One row per entity for classification; geometry is useful for spatial splitting and diagnostics.
 
@@ -28,7 +35,7 @@ scenarios from a **completed EDA analysis**. Several ML scenarios can compare di
 feature/model choices on the same EDA analysis.
 
 The Python EDA and ML libraries also accept independently prepared DataFrames or
-GeoDataFrames. They do not require that their inputs were produced by openEO.
+GeoDataFrames. They do not require that their inputs were produced by openEO or HUB.
 
 ## Read a stage in three passes
 
@@ -44,6 +51,8 @@ ownership; it is optional for understanding the main workflow.
 
 - A finished remote openEO job is not a completed parcel-statistics run. Download,
   local processing and verified publication must also finish.
+- HUB runs have no remote jobs. Their progress counts HUB batches, which appear once
+  the catalog inventory is resolved, and then partition assembly.
 - Filled pixels are not equivalent to observed pixels. Read the local processing
   guide to interpret provenance and valid-pixel counts.
 - EDA feature proposals are diagnostics. Final selection requires train-only validation.

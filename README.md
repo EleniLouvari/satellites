@@ -1,4 +1,4 @@
-# Satellites
+# Satellites Parcel Statistics
 
 Satellite imagery acquisition, parcel statistics, exploratory analysis, and
 restartable geospatial classification.
@@ -18,7 +18,7 @@ EDA analysis can start ML classification scenarios, run step by step or all at o
 .\scripts\run_web_app.bat start
 ```
 
-Open http://localhost:8080. Configure the existing database and credential key
+Open <http://localhost:8080>. Configure the existing database and credential key
 first; see the [setup and operation guide](docs/web_app/README.md), including
 password setup for existing application users and HTTPS deployment for a team.
 
@@ -26,7 +26,7 @@ password setup for existing application users and HTTPS deployment for a team.
 
 | Directory | Purpose |
 | --- | --- |
-| `src/data_preparation/sources/` | openEO cube acquisition and HUB catalog utilities |
+| `src/data_preparation/sources/` | openEO acquisition and HUB Sentinel ARD discovery/window reads |
 | `src/data_preparation/parcel_stats/` | Shared local statistics engine and source-specific workflows |
 | `src/data_preparation/features/` | Temporal reduction, elevation, soil, and nearest-lake features |
 | `src/eda/` | EDA, feature-screening diagnostics, plots, and HTML reports |
@@ -99,6 +99,7 @@ authenticate application logins or modify database tables.
 
 ```python
 from data_preparation.parcel_stats import (
+    HubZonalStats,
     OpenEOZonalStats,
     OpenEOJobManagerZonalStats,
 )
@@ -111,8 +112,9 @@ from ml_classification import (
 from ml_classification.sensitivity import ClassificationSensitivityRunner
 ```
 
-The current parcel-statistics exports support openEO Sentinel acquisition; a
-Planet parcel-statistics adapter is not included in this checkout.
+Parcel-statistics exports support openEO Sentinel acquisition and
+[HUB Sentinel ARD](docs/data_preparation/hub/README.md). A Planet parcel-statistics
+adapter is not included in this checkout.
 
 The data flow is imagery acquisition → parcel statistics → environmental and
 temporal features → EDA → classification. EDA and ML also accept independently

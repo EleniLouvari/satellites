@@ -13,12 +13,13 @@ src/
     cli.py                       satellites parcel-stats validate/run/resume
     sources/
       openeo/cubes.py             authentication, cube graphs, remote jobs
-      hub/                       catalog queries, asset downloads and audits
+      hub/                       catalog discovery, signed asset access, ARD window cubes
     parcel_stats/
       run_config.py              offline dictionary/JSON preflight and partitioning
       runner.py                  run locking, state, resume and verified publication
       accounts.py                application-user-scoped PostgreSQL credentials
       core/base.py               shared construction, local execution, worker state
+      core/results.py            shared result assembly and partition completion
       core/configuration.py      validators and unchanged cache signatures
       core/parcel_batches.py     parcel geometry preparation and batching
       core/raster_cleaning.py    shared local raster cleaning
@@ -31,6 +32,7 @@ src/
         reshape.py               derived geometry features and ML reshaping
       core/crs.py                projected CRS selection
       openeo.py                  openEO acquisition plus local statistics
+      hub.py                     HUB ARD acquisition plus local statistics
       job_manager.py             restartable openEO tile workflow
       multiuser.py               multi-account orchestration
     features/
@@ -56,15 +58,15 @@ src/
     io.py constants.py assertions.py
     geometry.py                  geometry validation and distance units
     postgress.py                 database connections and table reads
-    spatial_statistics/          buffer-based parcel clustering
+    spatial_statistics/          buffer- and grid-based parcel clustering
     data_cleaning/               outlier analysis, interpolation, and variograms
     notebook.py                  explicit notebook setup
 ```
 
-`OpenEOZonalStats` uses `ParcelStatsBase` for local processing. The base retains
+`OpenEOZonalStats` and `HubZonalStats` use `ParcelStatsBase` for local processing. The base retains
 sensor configuration names for constructor/cache compatibility, but imports no
 acquisition service. Public parcel-statistics exports are loaded lazily. HUB
-catalog utilities remain available; the former Planet delivery and statistics
+acquisition reads Sentinel ARD COG windows; the former Planet delivery and statistics
 adapters are not included in this checkout.
 
 EDA and classification consume tables and shared helpers. They do not import
@@ -90,20 +92,23 @@ src/parcel_app/
     worker.py            worker service (`python -m parcel_app.jobs.worker --lane run|small`)
     process_control.py   process groups / Windows job objects for stoppable tasks
   sources/               data providers, one package each
-    openeo/              Copernicus accounts, connection test, run credentials, remote job cleanup
+    openeo/              Copernicus accounts, connection test, run credentials, remote job cleanup,
+                         Sentinel-2 inspection-map tiles and dates (sentinel2_tiles.py)
+    hub/                 configured-only availability and worker service-credential boundary
   pipelines/             analyses, one package each (routes.py, tasks.py, ...)
     uploads/             parcel file upload and inspection
     parcel_stats/        configuration, validation, runs, results, bundles, deletion
     eda/                 EDA of a completed parcel-statistics result
-    ml/                  ML classification scenarios of a completed EDA analysis, run step by step
-  migrations/            001_core.sql, 002_eda.sql, 003_ml.sql; applied in name order by `manage migrate`
+    ml/                  ML classification scenarios of a completed EDA analysis, run step by step;
+                         inspection.py: best scenario, inspection list, reviews and parcel map
+  migrations/            001_core.sql … 006_hub_source.sql; applied in name order by `manage migrate`
 ```
 
 Each `sources/*` and `pipelines/*` package declares its background job kinds
 (`JOBS`) and API routers (`ROUTERS`) in its `__init__.py`; `jobs/registry.py`
 lists the enabled packages. The worker lanes, job dispatch, failure handling,
 interrupted-job recovery and the API routes are all derived from that list.
-To add a data provider (HUB) or a pipeline (ML), follow
+To add another data provider or pipeline, follow
 [Extending Parcel Studio](web_app/EXTENDING.md).
 
 The React frontend in `web/src/` mirrors this split: `api.ts` (API client and
@@ -117,6 +122,9 @@ types), `components/` (shared widgets and the schema-driven `ConfigForm`), and
 The retained implementation is `clustering.py:spatial_clustering_using_buffer`,
 used by the parcel acquisition notebook. Its geometry and distance-unit helpers
 remain in `shared.geometry`.
+`spatial_clustering_using_grid` in the same module labels each feature with the
+regular grid cell that contains its centroid (consecutive integers for non-empty
+cells), using the same assignment rule as `split_geodataframe_by_grid`.
 
 ### Shared utility cleanup
 

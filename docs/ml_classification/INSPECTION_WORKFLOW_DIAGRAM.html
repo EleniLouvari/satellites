@@ -166,13 +166,13 @@ td:last-child { text-align: center; color: var(--muted); font-variant-numeric: t
 <div class="step" id="s3"><span class="n">3</span>
 <h3>Express each uncertainty as a risk from 0 to 1</h3>
 <ul><li><code>confidence_risk</code>: HIGH = 0, MEDIUM = 0.5, LOW = 1.</li><li><code>data_risk</code> = 1 − data reliability. Scores outside 0 to 1 are treated as missing.</li><li><code>geometry_risk</code> = the percentile rank of the parcel's complexity among all predicted parcels. It is relative: 0.5 is the median parcel of this run.</li></ul><p><b>Geometry level</b> (<code>geometry_complexity_level</code>, LOW, MEDIUM or HIGH). In <code>percentile</code> mode a parcel is MEDIUM only when its rank is at least 0.50 <i>and</i> its complexity score at least 0.60, HIGH when its rank is at least 0.75 and its score at least 0.90. A run of simple parcels therefore stays LOW. <code>absolute</code> mode uses the scores alone. For scale: compact parcels score about 0.1–0.3, 2:1 strips 0.35–0.5, 3:1 strips 0.5–0.7, 5:1 strips 0.75–0.95.</p>
-<div class="flags"><span class="flag">inspection_geometry_threshold_mode = &quot;percentile&quot;</span><span class="flag">inspection_medium_geometry_risk_threshold = 0.50</span><span class="flag">inspection_high_geometry_risk_threshold = 0.75</span><span class="flag">inspection_medium_geometry_complexity_threshold = 0.60</span><span class="flag">inspection_high_geometry_complexity_threshold = 0.90</span></div>
+<div class="flags"><span class="flag">inspection_geometry_threshold_mode = &quot;absolute&quot;</span><span class="flag">inspection_medium_geometry_risk_threshold = 0.50</span><span class="flag">inspection_high_geometry_risk_threshold = 0.75</span><span class="flag">inspection_medium_geometry_complexity_threshold = 0.60</span><span class="flag">inspection_high_geometry_complexity_threshold = 0.90</span></div>
 </div>
 <div class="arrow"></div>
 <div class="step" id="s4"><span class="n">4</span>
 <h3>Set the data-reliability boundaries for this run</h3>
-<ul><li><code>percentile</code> (default): low = the smaller of 0.60 and the 5th percentile of the scores; medium = the smaller of 0.80 and the 25th percentile. This only relaxes the limits, so a season with ordinary cloud gaps does not make most parcels weak evidence.</li><li><code>absolute</code>: 0.60 and 0.80 exactly as configured.</li></ul><p>The applied values are saved on every row and in <code>predict_summary.json</code>; rules, reasons and reports all read the saved values.</p>
-<div class="flags"><span class="flag">inspection_data_reliability_threshold_mode = &quot;percentile&quot;</span><span class="flag">inspection_low_data_reliability_threshold = 0.60</span><span class="flag">inspection_medium_data_reliability_threshold = 0.80</span><span class="flag">inspection_low_data_reliability_percentile = 0.05</span><span class="flag">inspection_medium_data_reliability_percentile = 0.25</span></div>
+<ul><li><code>percentile</code>: low = the smaller of 0.60 and the 5th percentile of the scores; medium = the smaller of 0.80 and the 25th percentile. This only relaxes the limits, so a season with ordinary cloud gaps does not make most parcels weak evidence.</li><li><code>absolute</code> (default): 0.60 and 0.80 exactly as configured.</li></ul><p>The applied values are saved on every row and in <code>predict_summary.json</code>; rules, reasons and reports all read the saved values.</p>
+<div class="flags"><span class="flag">inspection_data_reliability_threshold_mode = &quot;absolute&quot;</span><span class="flag">inspection_low_data_reliability_threshold = 0.60</span><span class="flag">inspection_medium_data_reliability_threshold = 0.80</span><span class="flag">inspection_low_data_reliability_percentile = 0.05</span><span class="flag">inspection_medium_data_reliability_percentile = 0.25</span></div>
 </div>
 <div class="arrow"></div>
 <div class="step" id="s5"><span class="n">5</span>
@@ -231,7 +231,7 @@ td:last-child { text-align: center; color: var(--muted); font-variant-numeric: t
 </figure>
 </div>
 <p>The matched rule is saved in <code>inspection_rule</code> and the result in <code>inspection_need_before_outlier</code>.</p>
-<div class="flags"><span class="flag">class_reliability_enabled = True</span><span class="flag">inspection_geometry_threshold_mode = &quot;percentile&quot;</span></div>
+<div class="flags"><span class="flag">class_reliability_enabled = True</span><span class="flag">inspection_geometry_threshold_mode = &quot;absolute&quot;</span></div>
 </div>
 <div class="arrow"></div>
 <div class="step" id="s8"><span class="n">8</span>
@@ -296,10 +296,10 @@ td:last-child { text-align: center; color: var(--muted); font-variant-numeric: t
 <div class="tablewrap"><table>
 <thead><tr><th>Flag</th><th>Default</th><th>Meaning</th><th>Step</th></tr></thead>
 <tbody>
-<tr><td><code>inspection_data_reliability_threshold_mode</code></td><td>&quot;percentile&quot;</td><td>percentile relaxes the two limits to the run's percentiles; absolute applies them as written.</td><td>4</td></tr>
+<tr><td><code>inspection_data_reliability_threshold_mode</code></td><td>&quot;absolute&quot;</td><td>absolute applies the two limits as written; percentile relaxes them to the run's percentiles.</td><td>4</td></tr>
 <tr><td><code>inspection_medium_data_reliability_threshold</code></td><td>0.80</td><td>Data reliability must be strictly above the applied value to count as high.</td><td>4, 7</td></tr>
 <tr><td><code>inspection_medium_data_reliability_percentile</code></td><td>0.25</td><td>Percentile used for the medium limit in percentile mode.</td><td>4</td></tr>
-<tr><td><code>inspection_geometry_threshold_mode</code></td><td>&quot;percentile&quot;</td><td>percentile needs both the rank and the complexity score; absolute uses the score alone.</td><td>3, 7</td></tr>
+<tr><td><code>inspection_geometry_threshold_mode</code></td><td>&quot;absolute&quot;</td><td>absolute uses the score alone; percentile needs both the rank and the complexity score.</td><td>3, 7</td></tr>
 <tr><td><code>inspection_medium_geometry_risk_threshold</code></td><td>0.50</td><td>Percentile mode: rank from which a parcel can be medium complexity.</td><td>3, 7</td></tr>
 <tr><td><code>inspection_medium_geometry_complexity_threshold</code></td><td>0.60</td><td>Complexity score from which a parcel can be medium complexity. 0 disables this condition.</td><td>3, 7</td></tr>
 <tr><td><code>rank_confidence_minimum_models</code></td><td>3</td><td>Fewer voting models gives invalid confidence and priority Unknown.</td><td>6</td></tr>
